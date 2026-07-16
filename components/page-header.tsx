@@ -1,0 +1,86 @@
+"use client";
+
+import * as React from "react";
+import { RefreshCw } from "lucide-react";
+import { Button } from "./ui/button";
+import { fmtCurrency, fmtSignedPercent } from "@/lib/format";
+import { useBundle } from "@/hooks/use-bundle";
+import { useUi } from "@/lib/state";
+import { cn } from "@/lib/utils";
+
+/** Shared price header shown across most pages. */
+export function PageHeader({ pageTitle }: { pageTitle: string }) {
+  const { data, loading, reload } = useBundle();
+  // Individual selectors keep zustand's `useSyncExternalStore` snapshot stable.
+  const period = useUi((s) => s.period);
+  const setPeriod = useUi((s) => s.setPeriod);
+  const interval = useUi((s) => s.interval);
+  const setInterval = useUi((s) => s.setInterval);
+
+  const price = data?.quote.price;
+  const changePct = data?.quote.changePercent ?? null;
+  const dir = changePct === null ? 0 : Math.sign(changePct);
+
+  return (
+    <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-border mb-6">
+      <div className="min-w-0">
+        <p className="metric-label mb-1">{pageTitle}</p>
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">
+            {data?.ticker ?? "—"}{" "}
+            <span className="text-muted-foreground font-normal text-lg">
+              {data?.companyName && data.companyName !== data.ticker ? data.companyName : ""}
+            </span>
+          </h1>
+          {price !== undefined && price !== null && (
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold tabular-nums">{fmtCurrency(price)}</span>
+              {changePct !== null && (
+                <span
+                  className={cn(
+                    "chip tabular-nums",
+                    dir > 0 ? "chip-bull" : dir < 0 ? "chip-bear" : "chip-neu",
+                  )}
+                >
+                  {fmtSignedPercent(changePct)}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {data?.sector && (
+          <p className="text-sm text-muted-foreground mt-1">
+            {data.sector}
+            {data.industry ? ` · ${data.industry}` : ""}
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <select
+          value={period}
+          onChange={(e) => setPeriod(e.target.value)}
+          className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          aria-label="Period"
+        >
+          {["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"].map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        <select
+          value={interval}
+          onChange={(e) => setInterval(e.target.value)}
+          className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          aria-label="Interval"
+        >
+          {["1d", "1wk", "1mo"].map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        <Button variant="outline" size="icon" onClick={reload} disabled={loading} aria-label="Refresh">
+          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+        </Button>
+      </div>
+    </header>
+  );
+}

@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+data
+*.db
+*.db-journal
+*.sqlite
+.DS_Store
+.vscode
+.idea
+coverage
+npm-debug.log

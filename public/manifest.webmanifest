@@ -1,0 +1,15 @@
+{
+  "name": "Key Stock \u2014 Keysight Analysis",
+  "short_name": "Key Stock",
+  "description": "Stock analysis dashboard for Keysight Technologies (KEYS).",
+  "start_url": "/overview",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1220",
+  "theme_color": "#0f1220",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

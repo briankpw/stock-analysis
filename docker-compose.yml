@@ -1,0 +1,49 @@
+services:
+  ui:
+    build: .
+    container_name: key-stock-ui
+    ports:
+      - "5001:5001"
+    environment:
+      - NODE_ENV=production
+      - PORT=5001
+      - STOCK_TICKER=${STOCK_TICKER:-KEYS}
+      - COMPANY_NAME=${COMPANY_NAME:-Keysight Technologies}
+      - DEFAULT_PERIOD=${DEFAULT_PERIOD:-1y}
+      - DEFAULT_INTERVAL=${DEFAULT_INTERVAL:-1d}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-900}
+      - PAPER_STARTING_CASH=${PAPER_STARTING_CASH:-100000}
+      - PAPER_COMMISSION=${PAPER_COMMISSION:-0}
+      - BOT_DB_PATH=/app/data/bot.db
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - key-stock-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5001/api/watchlist"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build: .
+    container_name: key-stock-worker
+    command: ["npm", "run", "worker"]
+    environment:
+      - NODE_ENV=production
+      - STOCK_TICKER=${STOCK_TICKER:-KEYS}
+      - BOT_DB_PATH=/app/data/bot.db
+      - BOT_POLL_INTERVAL_SECONDS=${BOT_POLL_INTERVAL_SECONDS:-900}
+      - BOT_LOOKBACK_PERIOD=${BOT_LOOKBACK_PERIOD:-1y}
+      - BOT_LOOKBACK_INTERVAL=${BOT_LOOKBACK_INTERVAL:-1d}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - key-stock-data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - ui
+
+volumes:
+  key-stock-data:

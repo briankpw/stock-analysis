@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+ * Theme tokens
+ * ==========================================================================
+ * HSL values (no `hsl(...)` wrapper) so Tailwind's alpha modifier syntax
+ * works: `bg-primary/40` => `hsl(var(--primary) / 40%)`.
+ * The `[data-theme="light"]` selector is written to `<html>` by next-themes.
+ * ========================================================================== */
+
+@layer base {
+  :root,
+  [data-theme="dark"] {
+    --background: 224 26% 8%;
+    --foreground: 210 40% 96%;
+
+    --card: 224 22% 12%;
+    --card-foreground: 210 40% 96%;
+
+    --muted: 224 15% 20%;
+    --muted-foreground: 220 10% 65%;
+
+    --border: 224 15% 24%;
+    --input: 224 15% 24%;
+    --ring: 245 80% 70%;
+
+    --primary: 245 80% 70%;
+    --primary-foreground: 224 26% 8%;
+
+    --success: 152 60% 50%;
+    --success-foreground: 224 26% 8%;
+
+    --warning: 38 90% 60%;
+    --warning-foreground: 224 26% 8%;
+
+    --danger: 0 75% 60%;
+    --danger-foreground: 224 26% 8%;
+
+    --radius: 0.75rem;
+
+    /* Gradient stops for the animated background */
+    --bg-stop-1: 246 90% 62%;
+    --bg-stop-2: 320 75% 60%;
+    --bg-stop-3: 200 90% 55%;
+  }
+
+  [data-theme="light"] {
+    --background: 220 22% 97%;
+    --foreground: 224 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 224 25% 15%;
+
+    --muted: 224 15% 92%;
+    --muted-foreground: 224 10% 40%;
+
+    --border: 224 15% 88%;
+    --input: 224 15% 88%;
+    --ring: 245 80% 55%;
+
+    --primary: 245 80% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --success: 152 60% 40%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 95% 45%;
+    --warning-foreground: 0 0% 100%;
+
+    --danger: 0 70% 50%;
+    --danger-foreground: 0 0% 100%;
+
+    --bg-stop-1: 246 90% 65%;
+    --bg-stop-2: 320 75% 68%;
+    --bg-stop-3: 200 90% 62%;
+  }
+
+  * { border-color: hsl(var(--border)); }
+
+  html { -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    background-image:
+      radial-gradient(1200px 600px at 10% -10%, hsl(var(--bg-stop-1) / 0.20) 0%, transparent 60%),
+      radial-gradient(1000px 500px at 100% 10%, hsl(var(--bg-stop-2) / 0.16) 0%, transparent 55%),
+      radial-gradient(900px 500px at 50% 100%, hsl(var(--bg-stop-3) / 0.14) 0%, transparent 55%);
+    background-attachment: fixed;
+    font-feature-settings: "cv02", "cv03", "cv04";
+  }
+}
+
+/* ==========================================================================
+ * Utility classes for common patterns — keep JSX terse and consistent.
+ * ========================================================================== */
+@layer components {
+  .glass {
+    @apply bg-card/70 backdrop-blur-md border border-border/70;
+  }
+
+  .kpi-card {
+    @apply glass rounded-xl p-4 transition-transform duration-200 hover:-translate-y-0.5;
+  }
+
+  .metric-label {
+    @apply text-xs font-medium uppercase tracking-wider text-muted-foreground;
+  }
+
+  .metric-value {
+    @apply text-2xl font-semibold tabular-nums text-foreground;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider rounded-full border;
+  }
+
+  .chip-bull { @apply text-success border-success/40 bg-success/10; }
+  .chip-bear { @apply text-danger  border-danger/40  bg-danger/10; }
+  .chip-neu  { @apply text-muted-foreground border-border/60 bg-muted/40; }
+
+  .page-intro {
+    @apply glass rounded-xl border-l-4 border-l-primary px-4 py-3 mb-6 flex gap-3 items-start;
+  }
+  .page-intro-badge {
+    @apply text-[0.7rem] font-bold uppercase tracking-wider text-primary shrink-0 pt-0.5;
+  }
+  .page-intro-body { @apply text-sm text-muted-foreground leading-relaxed; }
+  .page-intro-body strong { @apply text-foreground; }
+}
