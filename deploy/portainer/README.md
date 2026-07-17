@@ -16,9 +16,11 @@ The stack runs two containers that share a single SQLite database on a persisten
 | `ui`    | `${IMAGE}`      | Next.js 15 dashboard on port `5001`                           |
 | `worker`| `${IMAGE}`      | Bot loop that polls Yahoo + SEC / House feeds and fires alerts |
 
-Both containers mount `${STACK_NAME}_data:/app/data`, which holds `bot.db` (paper trading, watchlist, signals, portfolio presets, notifications).
+Both containers mount `${DATA_MOUNT}:/app/data`, which holds `bot.db` (paper trading, watchlist, signals, portfolio presets, notifications). `DATA_MOUNT` is either a Docker-managed named volume (the default) or an absolute host path (bind mount) — see [Data persistence](#data-persistence) below.
 
 Both containers ship hardened defaults: `init: true` (tini as PID 1 for clean signal handling), `read_only: true` root filesystem (only `/app/data` and `/tmp` are writable), `cap_drop: [ALL]`, `no-new-privileges`, per-service memory limits (`ui: 512 MB`, `worker: 768 MB`), and log rotation (`json-file`, 10 MB × 3).
+
+Both containers attach to an **external** Docker network named by `DOCKER_NETWORK` (default `bridge`). The network must already exist on the host — Compose does not create it. See [Networking](#networking) below.
 
 ---
 
@@ -76,10 +78,13 @@ All variables are optional — `stack.yml` provides safe defaults. See `stack.en
 
 | Variable                | Default                                 | Notes                                                         |
 | ----------------------- | --------------------------------------- | ------------------------------------------------------------- |
-| `STACK_NAME`              | `key-stock`                             | Prefix for container / volume / network names.                                    |
+| `STACK_NAME`              | `key-stock`                             | Prefix for container / default volume / default network name.                     |
 | `IMAGE`                   | `key-stock:latest`                      | Set to a registry ref (prefer a version tag over `latest`) to skip the build.     |
-| `UI_PORT`                 | `5001`                                  | Host port. Change if `5001` collides with something else.                         |
+| `APP_PORT`                | `5001`                                  | Port the UI listens on (used for both container and host mapping — `${APP_PORT}:${APP_PORT}`). |
 | `TZ`                      | `UTC`                                   | e.g. `Asia/Singapore`, `America/New_York`.                                        |
+| `DATA_MOUNT`              | `key_stock_data`                        | Docker volume name **or** absolute host path — see [Data persistence](#data-persistence). |
+| `DOCKER_NETWORK`          | `bridge`                                | Name of an **external** Docker network the stack attaches to. Must already exist. |
+| `PUID` / `PGID`           | `1000` / `1000`                         | UID/GID the container process drops to. Set to match the host owner of `DATA_MOUNT` when using a bind path. |
 | `APP_TOKEN`               | *(empty)*                               | Enables bearer-token auth for `/api/*`. **Set this before any public exposure.**  |
 | `STOCK_TICKER`            | `KEYS`                                  | Default active ticker on first load.                                              |
 | `SEC_USER_AGENT`          | `Key Stock Dashboard research@example.com` | **Must be a real contact email.** The app refuses to start if this contains `example.com`. |
@@ -147,19 +152,65 @@ If you proxy under a sub-path, override `NEXT_PUBLIC_PWA_SW_URL` accordingly (se
 
 ## Operations
 
-### Persistent data
+### Data persistence
 
-Everything the app writes (paper trading positions, watchlist, alert signals, custom portfolio presets, notification history) lives in the `${STACK_NAME}_data` volume — the default name is `key-stock_data`, and it changes with `STACK_NAME`. Backup with:
+Everything the app writes (paper trading positions, watchlist, alert signals, custom portfolio presets, notification history) lives at `/app/data/bot.db` inside the container. The host-side location is controlled by `DATA_MOUNT`:
+
+| `DATA_MOUNT`               | Mount mode              | Storage location on host                          | Notes                                                       |
+| -------------------------- | ----------------------- | ------------------------------------------------- | ----------------------------------------------------------- |
+| `key_stock_data` (default) | Docker named volume     | `/var/lib/docker/volumes/${STACK_NAME}_data/_data` | Docker manages ownership — entrypoint still chowns to PUID:PGID. |
+| `/opt/keystock/data`       | Bind mount (host path)  | `/opt/keystock/data`                              | You own the path; entrypoint auto-chowns to PUID:PGID on start. |
+
+**File ownership is controlled by `PUID` / `PGID`** — the container's entrypoint runs as root just long enough to `chown -R $PUID:$PGID /app/data`, then drops privileges via `su-exec` and exec's the Node process as that UID. This means:
+
+- You can point `DATA_MOUNT` at any host path without pre-chowning; the entrypoint fixes it up on every start.
+- Set `PUID`/`PGID` to match the host user you want to be able to read the SQLite file directly:
+  ```bash
+  id -u    # → PUID
+  id -g    # → PGID
+  ```
+- Defaults are `PUID=1000`, `PGID=1000` (first regular user on Ubuntu/Debian). If your host uses a different scheme (macOS is typically `501:20`, some NAS distros use `1024:100`), override both.
+
+If the bind mount is on a filesystem that rejects `chown` from inside the container (some NFS setups with `root_squash`, ZFS with restricted xattrs), the entrypoint prints a warning and you'll need to prep the directory yourself:
 
 ```bash
+sudo mkdir -p /opt/keystock/data
+sudo chown -R "$PUID:$PGID" /opt/keystock/data
+```
+
+**Backup** — the command depends on which mode you're using:
+
+```bash
+# Named-volume mode (default)
 STACK_NAME=${STACK_NAME:-key-stock}
 docker run --rm \
   -v "${STACK_NAME}_data:/data" \
   -v "$PWD:/backup" \
   alpine tar czf "/backup/${STACK_NAME}-data-$(date +%F).tgz" -C /data .
+
+# Bind-mount mode — just tar the host directory directly
+sudo tar czf "keystock-data-$(date +%F).tgz" -C /opt/keystock/data .
 ```
 
-Restore is the reverse — extract the tarball into a fresh volume, then start the stack.
+Restore is the reverse — extract the tarball into a fresh volume (or the same bind path), then start the stack.
+
+### Networking
+
+Both services attach to an external Docker network named by `DOCKER_NETWORK` (default `bridge`). The network **must exist before the stack starts** — Compose won't create it, and Portainer will refuse to deploy the stack otherwise. Two common patterns:
+
+```bash
+# 1) Use Docker's built-in bridge (nothing to create — the default just works).
+#    Note: the default bridge doesn't do container DNS, so the reverse-proxy
+#    pattern (2) is preferable if you plan to add a Traefik/Caddy sidecar.
+DOCKER_NETWORK=bridge
+
+# 2) Attach to a pre-existing reverse-proxy network so Traefik / Caddy can
+#    route to the `ui` container by its container name.
+docker network create traefik_proxy   # once, on the host
+DOCKER_NETWORK=traefik_proxy
+```
+
+Whichever you pick, the container reachable name inside that network is `${STACK_NAME}-ui` (the value of `container_name` in `stack.yml`), so a Traefik router pointed at `${STACK_NAME}-ui:5001` will find it.
 
 ### Health checks
 

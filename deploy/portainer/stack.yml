@@ -60,12 +60,24 @@ services:
     <<: *default_security
     logging: *default_logging
     ports:
-      - "${UI_PORT:-5001}:5001"
+      # APP_PORT drives BOTH sides — the container listener (via the PORT
+      # env below) AND the host-side mapping. Same value on each side keeps
+      # in-cluster links and reverse-proxy configs identical to what you'd
+      # hit from the host.
+      - "${APP_PORT:-5001}:${APP_PORT:-5001}"
     environment:
       NODE_ENV: production
-      PORT: "5001"
+      PORT: "${APP_PORT:-5001}"
       HOSTNAME: 0.0.0.0
       TZ: ${TZ:-UTC}
+      # ── Runtime UID / GID (LinuxServer.io convention) ──────────────
+      # The entrypoint chowns /app/data to this pair and su-exec's the
+      # Node process as it. Set these to the OWNER of your DATA_MOUNT
+      # host path (e.g. `id -u` / `id -g` on the host user that will
+      # own the bind-mounted directory). Default 1000:1000 matches the
+      # first regular user on most Linux distros.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       # Cap the V8 old-space so a bad JSON.parse can't OOM the host. Sized
       # ~75% of the memory limit below to leave room for native buffers.
       NODE_OPTIONS: "--max-old-space-size=384"
@@ -102,11 +114,21 @@ services:
       TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
       TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
     volumes:
-      - key_stock_data:/app/data
+      # ── Data mount ────────────────────────────────────────────────────
+      # DATA_MOUNT accepts either a Docker named volume name (default) or
+      # an absolute host path for a bind mount:
+      #   DATA_MOUNT=key_stock_data          — managed named volume (default)
+      #   DATA_MOUNT=/opt/keystock/data      — bind to a host directory
+      # See deploy/portainer/README.md for the chown requirements when you
+      # switch to a bind path.
+      - ${DATA_MOUNT:-key_stock_data}:/app/data
     networks:
-      - key_stock
+      - app_net
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5001/api/health"]
+      # Compose expands ${APP_PORT} at config-resolution time so the
+      # container-side wget still hits the right port when APP_PORT is
+      # overridden.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${APP_PORT:-5001}/api/health"]
       interval: 30s
       timeout: 8s
       retries: 3
@@ -139,6 +161,10 @@ services:
     environment:
       NODE_ENV: production
       TZ: ${TZ:-UTC}
+      # Must match the UI's PUID/PGID so both processes can read/write
+      # the shared SQLite file. See ui.environment for the full comment.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       # Worker parses PDFs and holds bar arrays in memory, so it gets a bit
       # more headroom than the UI.
       NODE_OPTIONS: "--max-old-space-size=512"
@@ -157,9 +183,11 @@ services:
       TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
       TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
     volumes:
-      - key_stock_data:/app/data
+      # Must match the UI's DATA_MOUNT — both services share the same
+      # SQLite file on this path.
+      - ${DATA_MOUNT:-key_stock_data}:/app/data
     networks:
-      - key_stock
+      - app_net
     deploy:
       resources:
         limits:
@@ -168,10 +196,29 @@ services:
           memory: 192M
 
 volumes:
+  # Declaration for the DEFAULT case where DATA_MOUNT is a bare name
+  # (i.e. a managed named volume). Compose ignores this declaration when
+  # DATA_MOUNT is set to an absolute host path — a bind mount doesn't
+  # need a top-level `volumes:` entry.
   key_stock_data:
     name: ${STACK_NAME:-key-stock}_data
 
 networks:
-  key_stock:
-    name: ${STACK_NAME:-key-stock}_net
-    driver: bridge
+  # ── External network attachment ──────────────────────────────────────
+  # `external: true` means Docker must already have this network before
+  # the stack starts — Compose will not create it. This is deliberate:
+  #
+  #   * DOCKER_NETWORK=bridge (default) attaches both services to Docker's
+  #     built-in `bridge` network. Note that the default bridge does NOT
+  #     provide DNS by service name — that's fine here because the UI and
+  #     worker only communicate through the shared SQLite file, not HTTP.
+  #
+  #   * DOCKER_NETWORK=traefik_proxy (or your reverse-proxy net) attaches
+  #     to a pre-existing user-defined bridge / overlay so a reverse proxy
+  #     already on that network can route to the `ui` container by name.
+  #
+  # Create the network beforehand if it doesn't exist:
+  #     docker network create <name>
+  app_net:
+    external: true
+    name: ${DOCKER_NETWORK:-bridge}
