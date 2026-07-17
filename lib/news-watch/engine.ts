@@ -17,8 +17,8 @@
  */
 
 import { fetchNews, RateLimitedError } from "@/lib/data";
-import { notifyNewsEvent } from "@/lib/bot/notifier";
-import { getState, setState } from "@/lib/bot/store";
+import { notifyNewsBatch } from "@/lib/bot/notifier";
+import { getState, setState, tryLockTick } from "@/lib/bot/store";
 import {
   impactFromScore,
   labelFromScore,
@@ -33,6 +33,7 @@ import {
   type NewsItemInput,
   type NewsSubscription,
 } from "./store";
+import { runInTransaction } from "@/lib/db";
 
 export const NEWS_STATE_KEYS = {
   LAST_TICK_AT: "news.last_tick_at",
@@ -50,10 +51,11 @@ export interface NewsTickReport {
   errors: string[];
 }
 
-// Cap Telegram spam. A brand-new subscription silent-seeds via
-// `seedNewsHistory`, but a bursty news day might still push more than
-// we want. Skipped items get their notification rows recorded anyway
-// so they won't fire on the next tick either.
+// Cap Telegram spam. With per-ticker grouping (below) this caps the
+// number of "batch" messages per tick — one per subscribed ticker that
+// picked up new headlines. Each batch itself caps how many headlines it
+// renders (see `notifyNewsBatch`), so a bursty news day for a single
+// ticker still fits in one message.
 const MAX_TELEGRAM_PER_TICK = 15;
 
 /**
@@ -120,6 +122,23 @@ export async function runNewsTick(): Promise<NewsTickReport> {
     errors: [],
   };
 
+  const release = tryLockTick("news");
+  if (!release) {
+    report.ok = false;
+    report.errors.push("Another news tick is already running.");
+    return report;
+  }
+  try {
+    return await runNewsTickBody(ranAt, report);
+  } finally {
+    release();
+  }
+}
+
+async function runNewsTickBody(
+  ranAt: string,
+  report: NewsTickReport,
+): Promise<NewsTickReport> {
   const subs = listNewsSubscriptions();
   report.subscriptionCount = subs.length;
   if (subs.length === 0) {
@@ -159,28 +178,48 @@ export async function runNewsTick(): Promise<NewsTickReport> {
   const eventIds = candidates.map((c) => newsEventId(c.item.ticker, c.item.link));
   const unnotified = pickUnnotifiedNewsEventIds(eventIds);
 
-  let sent = 0;
+  // Bucket unnotified headlines by ticker so a busy news day for AAPL
+  // collapses to a single grouped Telegram message instead of one per
+  // headline. Order within each bucket follows the fetch order (Yahoo
+  // returns newest first).
+  const byTicker = new Map<string, NewsItemInput[]>();
   for (const { item } of candidates) {
     const eid = newsEventId(item.ticker, item.link);
     if (!unnotified.has(eid)) continue;
+    const list = byTicker.get(item.ticker) ?? [];
+    list.push(item);
+    byTicker.set(item.ticker, list);
+  }
+
+  let sentBatches = 0;
+  for (const [ticker, items] of byTicker) {
+    if (items.length === 0) continue;
 
     let telegramOk: boolean | null = null;
     let telegramDetail: string | null = null;
-    if (sent < MAX_TELEGRAM_PER_TICK) {
-      const res = await notifyNewsEvent(item);
+    if (sentBatches < MAX_TELEGRAM_PER_TICK) {
+      const res = await notifyNewsBatch(ticker, items);
       telegramOk = res.ok;
       telegramDetail = res.detail;
       if (res.ok) {
-        sent += 1;
+        sentBatches += 1;
         report.notifiesSent += 1;
       } else {
-        report.errors.push(`telegram(${eid}): ${res.detail}`);
+        report.errors.push(`telegram(${ticker} x${items.length}): ${res.detail}`);
       }
     } else {
       telegramDetail = "skipped: per-tick cap reached";
     }
 
-    recordNewsNotification(item, telegramOk, telegramDetail);
+    // Record dedup per headline regardless of the batch outcome — this
+    // mirrors the old per-event behaviour where skipped sends still
+    // wrote a history row so we don't re-fire on the next tick. One
+    // transaction per ticker bucket keeps this cheap under news floods.
+    runInTransaction(() => {
+      for (const item of items) {
+        recordNewsNotification(item, telegramOk, telegramDetail);
+      }
+    });
   }
 
   persistStatus(ranAt, report);

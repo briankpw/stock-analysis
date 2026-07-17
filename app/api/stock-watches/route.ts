@@ -15,6 +15,7 @@ import {
   upsertStockWatch,
 } from "@/lib/stock-watch/store";
 import { resolveTickerCik } from "@/lib/stock-watch/ticker-cik";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +23,11 @@ export const dynamic = "force-dynamic";
 const actionSchema = z.enum(["BUY", "SELL"]);
 
 const upsertSchema = z.object({
-  ticker: z.string().min(1).max(12),
+  ticker: z
+    .string()
+    .min(1)
+    .max(12)
+    .regex(/^[A-Za-z0-9.\-]+$/, "ticker must be alphanumeric with `.-`"),
   actions: z.array(actionSchema).min(1).optional(),
 });
 
@@ -51,10 +56,8 @@ export async function POST(req: Request) {
       cikResolved: cik !== null,
     });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }
 
@@ -66,9 +69,7 @@ export async function DELETE(req: Request) {
     const ok = deleteStockWatch(ticker);
     return NextResponse.json({ ok });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

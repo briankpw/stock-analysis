@@ -13,8 +13,8 @@
  * loop and a manual "Run stock tick now" button can invoke it.
  */
 
-import { notifyStockInsiderEvent } from "@/lib/bot/notifier";
-import { getState, setState } from "@/lib/bot/store";
+import { notifyStockInsiderBatch } from "@/lib/bot/notifier";
+import { getState, setState, tryLockTick } from "@/lib/bot/store";
 import {
   fetchIssuerInsiderTransactions,
   type IssuerInsiderTransaction,
@@ -27,6 +27,7 @@ import {
   type StockWatch,
 } from "./store";
 import { resolveTickerCik } from "./ticker-cik";
+import { runInTransaction } from "@/lib/db";
 
 export const STOCK_STATE_KEYS = {
   LAST_TICK_AT: "stock.last_tick_at",
@@ -60,10 +61,11 @@ async function ensureCik(watch: StockWatch): Promise<string | null> {
   }
 }
 
-// Cap Telegram spam on the very first run so a fresh watch on AAPL
-// (which files dozens of Form 4s per week) doesn't dump 50 alerts.
-// We still record dedup rows for the skipped ones so they won't
-// re-fire on the next tick either.
+// Cap Telegram spam. With per-ticker grouping enabled below, this caps
+// the number of "batch" messages per tick — one per watched ticker with
+// new insider activity. Each batch itself caps how many rows it renders
+// (see `notifyStockInsiderBatch`), so the effective volume of events
+// surfaced per tick is much higher than before.
 const MAX_TELEGRAM_PER_TICK = 15;
 
 export async function runStockTick(): Promise<StockTickReport> {
@@ -79,6 +81,23 @@ export async function runStockTick(): Promise<StockTickReport> {
     errors: [],
   };
 
+  const release = tryLockTick("stock");
+  if (!release) {
+    report.ok = false;
+    report.errors.push("Another stock tick is already running.");
+    return report;
+  }
+  try {
+    return await runStockTickBody(ranAt, report);
+  } finally {
+    release();
+  }
+}
+
+async function runStockTickBody(
+  ranAt: string,
+  report: StockTickReport,
+): Promise<StockTickReport> {
   const watches = listStockWatches();
   report.watchCount = watches.length;
   if (watches.length === 0) {
@@ -117,27 +136,46 @@ export async function runStockTick(): Promise<StockTickReport> {
     eligible.map(({ tx }) => tx.eventId),
   );
 
-  let sentCount = 0;
+  // Bucket unnotified transactions by ticker so multiple Form 4s filed
+  // at the same issuer on the same tick collapse into a single Telegram
+  // message. Preserves the arrival order within each ticker bucket.
+  const byTicker = new Map<string, IssuerInsiderTransaction[]>();
   for (const { tx } of eligible) {
     if (!unnotified.has(tx.eventId)) continue;
+    const list = byTicker.get(tx.ticker) ?? [];
+    list.push(tx);
+    byTicker.set(tx.ticker, list);
+  }
+
+  let sentBatches = 0;
+  for (const [ticker, txs] of byTicker) {
+    if (txs.length === 0) continue;
 
     let telegramOk: boolean | null = null;
     let telegramDetail: string | null = null;
-    if (sentCount < MAX_TELEGRAM_PER_TICK) {
-      const res = await notifyStockInsiderEvent(tx);
+    if (sentBatches < MAX_TELEGRAM_PER_TICK) {
+      const res = await notifyStockInsiderBatch(ticker, txs);
       telegramOk = res.ok;
       telegramDetail = res.detail;
       if (res.ok) {
-        sentCount += 1;
+        sentBatches += 1;
         report.notifiesSent += 1;
       } else {
-        report.errors.push(`telegram(${tx.eventId}): ${res.detail}`);
+        report.errors.push(`telegram(${ticker} x${txs.length}): ${res.detail}`);
       }
     } else {
       telegramDetail = "skipped: per-tick cap reached";
     }
 
-    recordStockNotification(tx, telegramOk, telegramDetail);
+    // Persist a dedup row per transaction so the individual events won't
+    // re-fire on the next tick, regardless of whether Telegram accepted
+    // the batch (matches the old per-event behaviour). Batch inserts in
+    // one transaction to avoid N WAL fsyncs on a busy tick.
+    runInTransaction(() => {
+      for (const tx of txs) {
+        recordStockNotification(tx, telegramOk, telegramDetail);
+      }
+    });
   }
 
   persistStatus(ranAt, report);

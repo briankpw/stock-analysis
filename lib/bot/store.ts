@@ -132,3 +132,39 @@ export const DEFAULT_ACTIVE_STRATEGIES: StrategyKey[] = [
   "rsi_reversion",
   "macd_cross",
 ];
+
+
+// ---- Tick concurrency guard ------------------------------------------------
+//
+// Multiple in-flight ticks (worker loop + UI "Run now" button + another
+// browser tab hammering the same endpoint) would double-fetch external
+// APIs and can send duplicate Telegram alerts. We serialize them via a
+// per-process mutex map. It's intentionally *in-memory* so a crashed
+// process doesn't leave a stale DB lock behind that has to be cleared
+// manually; the trade-off is that concurrency between UI and worker
+// processes isn't prevented (they don't share memory). For this app's
+// scale that's acceptable — the DB-level dedup rows keep behaviour
+// correct even if two ticks somehow overlap.
+
+const _tickLocks = new Set<string>();
+
+/**
+ * Try to acquire an exclusive lock for `name`. Returns a release function
+ * on success and `null` if another caller already holds the lock.
+ *
+ * Usage:
+ *
+ *   const release = tryLockTick("bot");
+ *   if (!release) return { ok: false, error: "tick already running" };
+ *   try { await runTickBody(); } finally { release(); }
+ */
+export function tryLockTick(name: string): (() => void) | null {
+  if (_tickLocks.has(name)) return null;
+  _tickLocks.add(name);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    _tickLocks.delete(name);
+  };
+}

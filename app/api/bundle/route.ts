@@ -4,6 +4,7 @@ import { enrich, latestSignals } from "@/lib/indicators";
 import { allGroups } from "@/lib/ratios";
 import { analyze } from "@/lib/insights";
 import { settings } from "@/lib/config";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,9 +61,7 @@ export async function GET(req: Request) {
       industry: bundle.info.industry ?? null,
     });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      { status: 502 },
-    );
+    const r = redactError(e, 502, "Upstream data unavailable");
+    return NextResponse.json({ error: r.message }, { status: r.status });
   }
 }

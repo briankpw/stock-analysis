@@ -35,11 +35,20 @@ export function addWatchlist(symbol: string, displayName?: string): void {
 
 export function removeWatchlist(symbol: string): void {
   const sym = symbol.trim().toUpperCase();
-  const remaining = getDb().prepare("SELECT COUNT(*) as n FROM watchlist").get() as { n: number };
+  const db = getDb();
+  const remaining = db.prepare("SELECT COUNT(*) as n FROM watchlist").get() as { n: number };
   if (remaining.n <= 1) {
     throw new Error("Cannot remove the last watchlist entry");
   }
-  getDb().prepare("DELETE FROM watchlist WHERE symbol = ?").run(sym);
+  // Cascade into the two per-ticker watch tables so we don't leave the
+  // engine polling a symbol the user just removed. News history and the
+  // deep notification tables are preserved so the user can still see the
+  // trail of past alerts.
+  db.transaction(() => {
+    db.prepare("DELETE FROM stock_watches WHERE ticker = ?").run(sym);
+    db.prepare("DELETE FROM news_subscriptions WHERE ticker = ?").run(sym);
+    db.prepare("DELETE FROM watchlist WHERE symbol = ?").run(sym);
+  })();
 }
 
 export function formatOption(entry: WatchlistEntry): string {

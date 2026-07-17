@@ -1,16 +1,42 @@
 node_modules
 .next
-.git
-.gitignore
-.env
-.env.local
-.env.*.local
 data
 *.db
 *.db-journal
 *.sqlite
+
+# ---- VCS -----------------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+
+# ---- Local secrets & env -------------------------------------------------
+.env
+.env.local
+.env.*.local
+
+# ---- Editor / OS -----------------------------------------------------------
 .DS_Store
 .vscode
 .idea
+
+# ---- Test / build artefacts ---------------------------------------------
 coverage
 npm-debug.log
+*.log
+dist
+.next-cache
+
+# ---- Non-runtime docs & deploy config -------------------------------------
+# Portainer / compose configuration is not needed inside the image itself
+# — it just describes how the image is deployed. Keeping it out shrinks
+# the build context and stops accidental `COPY .` from including it.
+deploy
+*.md
+!README.md
+
+# ---- Agent / IDE metadata that never belongs in an image -----------------
+.cursor
+.cursorignore
+terminals
+agent-transcripts

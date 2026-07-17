@@ -18,8 +18,9 @@ import {
   STATE_KEYS,
   shouldNotify,
   getState,
+  tryLockTick,
 } from "./store";
-import { notifySignal } from "./notifier";
+import { notifySignalsBatch } from "./notifier";
 import { runPortfolioTick } from "../portfolio-watch/engine";
 import { runStockTick } from "../stock-watch/engine";
 import { runNewsTick } from "../news-watch/engine";
@@ -45,6 +46,25 @@ export async function runTick(ticker: string): Promise<TickReport> {
     errors: [],
   };
 
+  // Refuse overlapping ticks so a UI "Run now" click during the worker's
+  // 15-min loop doesn't double-fetch Yahoo or double-send Telegram.
+  const release = tryLockTick(`bot:${ticker}`);
+  if (!release) {
+    report.ok = false;
+    report.errors.push("Another tick is already running for this ticker.");
+    return report;
+  }
+  try {
+    return await runTickBody(ticker, report);
+  } finally {
+    release();
+  }
+}
+
+async function runTickBody(
+  ticker: string,
+  report: TickReport,
+): Promise<TickReport> {
   const bars = await fetchHistory(
     ticker,
     settings.bot.lookbackPeriod,
@@ -62,6 +82,15 @@ export async function runTick(ticker: string): Promise<TickReport> {
   const active = getState<StrategyKey[]>(STATE_KEYS.ACTIVE_STRATEGIES, DEFAULT_ACTIVE_STRATEGIES);
   report.strategies = active;
 
+  // First pass: run every strategy, classify each output into either
+  // "notify-eligible" (fresh BUY/SELL for this bar) or "record only"
+  // (HOLD, or a duplicate we already notified on this bar). We defer
+  // Telegram sends so we can batch same-ticker signals into one message
+  // — sending N separate notifications for N strategies firing at once
+  // is exactly the kind of spam we want to avoid.
+  const notifyBuffer: Array<{ key: StrategyKey; signal: Signal }> = [];
+  const recordOnly: Array<{ signal: Signal }> = [];
+
   for (const key of active) {
     const fn = STRATEGIES[key];
     if (!fn) continue;
@@ -72,17 +101,38 @@ export async function runTick(ticker: string): Promise<TickReport> {
       report.errors.push(`${key}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
-    const notifyEligible = shouldNotify(ticker, signal);
-    if (signal.type !== "HOLD") {
-      report.signalsFired += 1;
-      if (notifyEligible) {
-        const res = await notifySignal(ticker, signal);
-        recordSignal(ticker, signal, { notified: res.ok });
+    if (signal.type === "HOLD") continue;
+    report.signalsFired += 1;
+    if (shouldNotify(ticker, signal)) {
+      notifyBuffer.push({ key, signal });
+    } else {
+      recordOnly.push({ signal });
+    }
+  }
+
+  // Duplicates: persist without notifying (they were already delivered
+  // on this bar).
+  for (const { signal } of recordOnly) {
+    recordSignal(ticker, signal, { notified: false });
+  }
+
+  // Fresh signals: send ONE Telegram message covering the whole batch,
+  // then mark each individual signal as notified in the store. If the
+  // batched send fails we still record the signals (with `notified:false`)
+  // so shouldNotify() won't fire them again next tick after Telegram
+  // recovers — the same behaviour as the previous per-signal path.
+  if (notifyBuffer.length > 0) {
+    const signals = notifyBuffer.map((n) => n.signal);
+    const res = await notifySignalsBatch(ticker, signals);
+    if (res.ok) {
+      report.notifiesSent += 1;
+      for (const { signal } of notifyBuffer) {
+        recordSignal(ticker, signal, { notified: true });
         markNotified(ticker, signal);
-        if (res.ok) report.notifiesSent += 1;
-        else report.errors.push(`notify(${key}): ${res.detail}`);
-      } else {
-        // Duplicate for this bar — record without notifying.
+      }
+    } else {
+      report.errors.push(`notify(batch:${notifyBuffer.map((n) => n.key).join(",")}): ${res.detail}`);
+      for (const { signal } of notifyBuffer) {
         recordSignal(ticker, signal, { notified: false });
       }
     }

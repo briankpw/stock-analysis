@@ -11,88 +11,161 @@
 #
 #   2) Portainer -> Stacks -> Add stack -> Web editor
 #      Paste this file, then set env var `IMAGE` to a prebuilt image such as
-#      `ghcr.io/<you>/key-stock:latest`. Comment out the two `build:` blocks
-#      or leave them — when `image:` is set, Compose skips build.
+#      `ghcr.io/<you>/key-stock:1.0.0`. When `image:` resolves to a valid
+#      registry ref, Compose skips the build blocks.
 #
-# Persistent state (paper trading, watchlist, bot signals, portfolio presets)
-# lives in the `key_stock_data` named volume mounted at /app/data. Do NOT
-# delete this volume unless you want to wipe everything.
+# Persistent state (paper trading, watchlist, bot signals, portfolio presets,
+# notifications history) lives in the `key_stock_data` named volume mounted
+# at /app/data. Do NOT delete this volume unless you want to wipe everything.
+#
+# Hardening applied here (see deploy/portainer/README.md for the full audit
+# writeup):
+#   * init: true         -> tini is PID 1, so SIGTERM propagates to Node
+#   * read_only: true    -> only /app/data and /tmp are writable
+#   * cap_drop: [ALL]    -> no Linux capabilities retained
+#   * security_opt       -> no-new-privileges blocks setuid escalation
+#   * resources.limits   -> memory ceiling per service
+#   * logging            -> json-file with rotation (10MB × 3 files)
 # =============================================================================
+
+# YAML anchor reused by both services — they build from the same context /
+# Dockerfile, and share most env / hardening settings. Compose supports
+# `<<: *anchor` for a shallow merge.
+x-build: &default_build
+  context: ../..
+  dockerfile: Dockerfile
+
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-security: &default_security
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 services:
   ui:
     image: ${IMAGE:-key-stock:latest}
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    build: *default_build
     container_name: ${STACK_NAME:-key-stock}-ui
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    <<: *default_security
+    logging: *default_logging
     ports:
       - "${UI_PORT:-5001}:5001"
     environment:
       NODE_ENV: production
       PORT: "5001"
+      HOSTNAME: 0.0.0.0
       TZ: ${TZ:-UTC}
+      # Cap the V8 old-space so a bad JSON.parse can't OOM the host. Sized
+      # ~75% of the memory limit below to leave room for native buffers.
+      NODE_OPTIONS: "--max-old-space-size=384"
 
-      # ---- Ticker / defaults ------------------------------------------------
+      # ---- Optional bearer-token auth --------------------------------------
+      # When set, every /api/* call (except /api/health) must present
+      # Authorization: Bearer <APP_TOKEN> or an app_token cookie. Leave
+      # empty for a fully-open local install. Prefer a long random string
+      # (e.g. `openssl rand -hex 32`) when exposing to the internet.
+      APP_TOKEN: ${APP_TOKEN:-}
+
+      # ---- Ticker / defaults -----------------------------------------------
       STOCK_TICKER:     ${STOCK_TICKER:-KEYS}
       COMPANY_NAME:     ${COMPANY_NAME:-Keysight Technologies}
       DEFAULT_PERIOD:   ${DEFAULT_PERIOD:-1y}
       DEFAULT_INTERVAL: ${DEFAULT_INTERVAL:-1d}
 
-      # ---- Caching ----------------------------------------------------------
+      # ---- Caching ---------------------------------------------------------
       CACHE_TTL_SECONDS:           ${CACHE_TTL_SECONDS:-900}
       PORTFOLIO_CACHE_TTL_SECONDS: ${PORTFOLIO_CACHE_TTL_SECONDS:-21600}
       SEC_USER_AGENT:              ${SEC_USER_AGENT:-Key Stock Dashboard research@example.com}
 
-      # ---- Paper trading ----------------------------------------------------
+      # ---- Paper trading ---------------------------------------------------
       PAPER_STARTING_CASH: ${PAPER_STARTING_CASH:-100000}
       PAPER_COMMISSION:    ${PAPER_COMMISSION:-0}
 
-      # ---- Bot / persistence -----------------------------------------------
+      # ---- Bot / persistence ----------------------------------------------
       BOT_DB_PATH: /app/data/bot.db
 
-      # ---- Telegram (optional) ---------------------------------------------
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID:-}
+      # ---- Telegram (optional) --------------------------------------------
+      # Prefer TELEGRAM_BOT_TOKEN_FILE when the value is sensitive — that
+      # points at a Docker secret mount and never leaks into `docker inspect`.
+      TELEGRAM_BOT_TOKEN:      ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
+      TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
     volumes:
       - key_stock_data:/app/data
     networks:
       - key_stock
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5001/api/watchlist"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5001/api/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 8s
       retries: 3
-      start_period: 20s
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
   worker:
     image: ${IMAGE:-key-stock:latest}
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    # Worker uses the same image as ui — no separate build block needed.
     container_name: ${STACK_NAME:-key-stock}-worker
-    command: ["npm", "run", "worker"]
+    command: ["node", "dist/worker.js"]
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    <<: *default_security
+    logging: *default_logging
     depends_on:
       ui:
-        condition: service_started
+        # Wait for UI's /api/health to be green before starting the worker.
+        # This makes UI the schema-owner: the migrations in lib/db.ts run
+        # once, and the worker inherits a stable schema on first tick.
+        condition: service_healthy
     environment:
       NODE_ENV: production
       TZ: ${TZ:-UTC}
+      # Worker parses PDFs and holds bar arrays in memory, so it gets a bit
+      # more headroom than the UI.
+      NODE_OPTIONS: "--max-old-space-size=512"
+      # Worker doesn't listen on any port — this just documents intent for
+      # `docker inspect` readers.
+      PORT: ""
 
       STOCK_TICKER:              ${STOCK_TICKER:-KEYS}
+      SEC_USER_AGENT:            ${SEC_USER_AGENT:-Key Stock Dashboard research@example.com}
       BOT_LOOKBACK_PERIOD:       ${BOT_LOOKBACK_PERIOD:-1y}
       BOT_LOOKBACK_INTERVAL:     ${BOT_LOOKBACK_INTERVAL:-1d}
       BOT_POLL_INTERVAL_SECONDS: ${BOT_POLL_INTERVAL_SECONDS:-900}
       BOT_DB_PATH:               /app/data/bot.db
 
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_BOT_TOKEN:      ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
+      TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
     volumes:
       - key_stock_data:/app/data
     networks:
       - key_stock
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 192M
 
 volumes:
   key_stock_data:

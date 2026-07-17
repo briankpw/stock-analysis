@@ -82,24 +82,22 @@
   /* --------------------------------------------------------------------
    * Mobile hygiene
    * --------------------------------------------------------------------
-   * The app is meant to feel like a native shell on phones — no accidental
-   * horizontal page scrolling, no pinch/double-tap zoom, no iOS-only text
-   * auto-inflation on rotate. Content that legitimately needs to scroll
-   * (wide tables, long JSON) sits inside its own `overflow-x-auto`
-   * container, which still works because we only pin the *page* — not
-   * individual elements.
+   * We want to kill *horizontal* page scrolling and pinch/double-tap
+   * zoom, but the page must still scroll *vertically*. Setting
+   * `overflow-x: hidden` on both <html> and <body> creates nested
+   * scroll-containers which some mobile WebViews resolve by disabling
+   * vertical scroll entirely — that was the previous bug.
+   *
+   * Fix: leave <html> alone as the viewport's scroll container, and use
+   * `overflow-x: clip` on <body>. `clip` explicitly does *not* create a
+   * scroll context, so vertical scrolling on <html> is unaffected. The
+   * older `hidden` value is only used as a fallback for engines that
+   * don't yet understand `clip`.
    * ------------------------------------------------------------------ */
   html {
     -webkit-tap-highlight-color: transparent;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
-    /* Kill the 300ms tap delay and iOS double-tap-to-zoom (the viewport
-       meta already disables pinch, but Safari still honours double-tap
-       unless `touch-action` says otherwise). */
-    touch-action: manipulation;
-    /* Belt-and-braces: prevent stray absolutely-positioned children from
-       widening the document past the viewport. */
-    overflow-x: hidden;
   }
   body {
     background-color: hsl(var(--background));
@@ -110,10 +108,8 @@
       radial-gradient(900px 500px at 50% 100%, hsl(var(--bg-stop-3) / 0.16) 0%, transparent 55%);
     background-attachment: fixed;
     font-feature-settings: "cv02", "cv03", "cv04";
-    overflow-x: hidden;
-    /* Keep pull-to-refresh feeling snappy but stop rubber-banding from
-       cascading into parent scrollers. */
-    overscroll-behavior-y: contain;
+    overflow-x: hidden;      /* fallback for older engines */
+    overflow-x: clip;        /* modern: clips X without breaking Y-scroll */
   }
 
   /* Anything intrinsically-sized should never blow past its parent's
@@ -123,11 +119,14 @@
   }
 
   /* Long tokens (URLs, tickers with underscores, contract IDs, ISINs)
-     wrap instead of forcing horizontal page scroll. Doesn't affect
-     `<pre>` — it stays inside its own `overflow-x-auto` container. */
-  p, li, dd, dt, span, td, th, h1, h2, h3, h4 {
+     wrap instead of forcing horizontal page scroll — but only in true
+     prose containers. Applying this to <td>/<th>/<span> was a mistake:
+     it makes data-table cells shrink and break numbers mid-digit, which
+     defeats horizontal-scroll-inside-card. Tables now keep default
+     `word-break: normal` and scroll inside their `.table-scroll`
+     wrapper (see below); prose still wraps via inherited overflow-wrap. */
+  p, li, dd, dt {
     overflow-wrap: anywhere;
-    word-break: break-word;
   }
 
   /* Native form controls: iOS Safari auto-zooms into <input>/<select>
@@ -179,6 +178,44 @@
     padding-left: max(2rem, env(safe-area-inset-left));
     padding-right: max(2rem, env(safe-area-inset-right));
   }
+}
+
+/* ==========================================================================
+ * Data-table scrolling
+ * --------------------------------------------------------------------------
+ * Wide tables (insider transactions, institutional holders, portfolio
+ * person-stock lists) don't try to squeeze all of their columns onto a
+ * 375 px screen. Instead they render at their natural width and the
+ * card scrolls them horizontally — which is dramatically easier to read
+ * than wrapping numbers mid-digit.
+ *
+ * Consumers just wrap a `<table>` in `<div class="table-scroll">`; the
+ * table itself keeps its Tailwind `w-full` (so it fills wider screens)
+ * plus `min-w-max` (Tailwind: `min-w-max`) — or the equivalent CSS,
+ * baked into `.data-table` below — to force the horizontal scroll on
+ * narrow screens.
+ * ========================================================================== */
+.table-scroll {
+  /* Horizontal scroll inside the card. iOS gets momentum scroll. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.table-scroll > table {
+  /* Render the table at its natural (content-driven) width instead of
+     letting it shrink to the container. Equivalent to Tailwind's
+     `min-w-max`. Combined with the wrapper's `overflow-x: auto`, this
+     means numbers/dates never get squeezed onto two lines on a
+     375 px screen — instead the card scrolls horizontally. */
+  min-width: max-content;
+}
+/* Numeric / short-string columns line up cleanly when they stay on one
+   line. Cells with long prose (issuer descriptions, transaction notes)
+   can opt back into wrapping by adding `whitespace-normal` in JSX. */
+.table-scroll > table th,
+.table-scroll > table td.nums,
+.table-scroll > table td.nowrap {
+  white-space: nowrap;
 }
 
 /* ==========================================================================

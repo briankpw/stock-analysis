@@ -121,6 +121,14 @@ export interface TechnicalInputs {
   bb20: { upper: NullableSeries; lower: NullableSeries; middle: NullableSeries };
   levels: SupportResistance;
   kdj: KdjResult;
+  /**
+   * Optional market-mood backdrop (CNN Fear & Greed Index, 0–100).
+   * When present, extreme readings contribute a *contrarian* vote:
+   * Extreme Fear (<25) counts as bullish, Extreme Greed (>75) as bearish.
+   * Everything else is neutral and doesn't fire. When omitted, the
+   * signal is simply skipped and doesn't hurt confidence.
+   */
+  fearGreedScore?: number | null;
 }
 
 /**
@@ -135,8 +143,9 @@ export interface TechnicalInputs {
  *   6. Short-term return + volume (1)  — 5-day return with participation
  *   7. KDJ cross / zone (1)            — stochastic momentum (leading signal)
  *   8. Support / resistance proximity (1) — near-support = buy, near-resistance = sell
+ *   9. Market mood backdrop (1)        — CNN Fear & Greed extremes, contrarian
  *
- * Max attainable weight: 10. The score is (bullish - bearish) / max, in [-1, +1].
+ * Max attainable weight: 11. The score is (bullish - bearish) / max, in [-1, +1].
  */
 export function computeTechnicalSignal(inp: TechnicalInputs): TechnicalSignal {
   const contribs: Contribution[] = [];
@@ -431,8 +440,49 @@ export function computeTechnicalSignal(inp: TechnicalInputs): TechnicalSignal {
     }
   }
 
+  // ---- 9) Market mood backdrop — CNN Fear & Greed (weight 1) -----------
+  //
+  // Interpreted *contrarian-ly*, following the way the index itself is
+  // designed to be read ("Be fearful when others are greedy, and greedy
+  // when others are fearful"):
+  //   score < 25   → Extreme Fear     → bullish  (crowd panic, mean-reversion buy)
+  //   score 25-45  → Fear             → neutral  (not extreme enough)
+  //   score 45-55  → Neutral          → neutral
+  //   score 55-75  → Greed            → neutral
+  //   score > 75   → Extreme Greed    → bearish  (crowd euphoria, pullback risk)
+  //
+  // We deliberately only fire at the extremes so this signal has to earn
+  // its vote. If `fearGreedScore` is missing (e.g. CNN is offline) the
+  // signal is simply omitted — it doesn't drag down confidence.
+  {
+    const g = inp.fearGreedScore;
+    if (g !== undefined && g !== null && Number.isFinite(g)) {
+      if (g < 25) {
+        contribs.push({
+          key: "mood.extremeFear",
+          weight: 1,
+          direction: 1,
+          category: "position",
+          detailEn: `Market mood: Extreme Fear (F&G = ${g.toFixed(0)}) — often a contrarian buy signal.`,
+          params: { value: g.toFixed(0) },
+        });
+      } else if (g > 75) {
+        contribs.push({
+          key: "mood.extremeGreed",
+          weight: 1,
+          direction: -1,
+          category: "position",
+          detailEn: `Market mood: Extreme Greed (F&G = ${g.toFixed(0)}) — pullback risk, often a contrarian sell signal.`,
+          params: { value: g.toFixed(0) },
+        });
+      }
+      // 25 ≤ score ≤ 75 → no contribution (kept off the row list so
+      // "Contributing signals" doesn't fill with neutral chatter).
+    }
+  }
+
   // ---- Aggregate --------------------------------------------------------
-  const MAX_WEIGHT = 10; // 2 + 2 + 1 + 1 + 1 + 1 + 1 (KDJ) + 1 (S/R)
+  const MAX_WEIGHT = 11; // 2 + 2 + 1 + 1 + 1 + 1 + 1 (KDJ) + 1 (S/R) + 1 (F&G)
   let bullishWeight = 0;
   let bearishWeight = 0;
   const rows: SignalRow[] = [];

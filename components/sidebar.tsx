@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3, LineChart, Newspaper, Wallet, Bot, Activity,
-  Home, ChartBar, Menu, X, Users, Briefcase,
+  Home, ChartBar, Menu, X, Users, Briefcase, Gauge,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
 import { LevelToggle } from "./level-toggle";
@@ -32,6 +32,15 @@ const TICKER_NAV = [
   { href: "/paper",       labelKey: "nav.paper",      icon: Wallet },
   { href: "/bot",         labelKey: "nav.bot",        icon: Bot },
   { href: "/raw",         labelKey: "nav.raw",        icon: ChartBar },
+] as const;
+
+/**
+ * Market-wide (not ticker-scoped) pages. Broadcasts like CNN's Fear & Greed
+ * gauge live here — they colour every ticker's read but don't depend on
+ * which one is selected.
+ */
+const MARKET_NAV = [
+  { href: "/market", labelKey: "nav.market", icon: Gauge },
 ] as const;
 
 export function Sidebar() {
@@ -122,6 +131,29 @@ export function Sidebar() {
           <nav className="flex-1 overflow-y-auto p-3 space-y-1">
             <p className="metric-label px-3 pb-1.5">{t("sidebar.ticker")}</p>
             {TICKER_NAV.map((item) => {
+              const Icon = item.icon;
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {t(item.labelKey)}
+                </Link>
+              );
+            })}
+
+            {/* Market-wide indicators live in their own section — they
+                don't depend on the currently-selected ticker. */}
+            <p className="metric-label px-3 pt-3 pb-1.5">{t("sidebar.market")}</p>
+            {MARKET_NAV.map((item) => {
               const Icon = item.icon;
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return (

@@ -16,6 +16,7 @@ import {
   getPortfolioTickState,
   runPortfolioTick,
 } from "@/lib/portfolio-watch/engine";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,9 +44,7 @@ export async function POST(req: Request) {
     const removed = clearNotifications();
     return NextResponse.json({ ok: true, removed });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

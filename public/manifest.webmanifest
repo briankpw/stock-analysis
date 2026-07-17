@@ -1,7 +1,7 @@
 {
-  "name": "Key Stock \u2014 Keysight Analysis",
-  "short_name": "Key Stock",
-  "description": "Stock analysis dashboard for Keysight Technologies (KEYS).",
+  "name": "Stock Analysis",
+  "short_name": "Stock Analysis",
+  "description": "Interactive stock analysis dashboard \u2014 ratios, charts, technicals, news sentiment, portfolios, paper trading, and alert bot.",
   "start_url": "/overview",
   "scope": "/",
   "display": "standalone",

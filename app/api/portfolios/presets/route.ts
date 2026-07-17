@@ -7,6 +7,7 @@ import {
   removeCustomPreset,
 } from "@/lib/portfolio-presets";
 import { listPresets } from "@/lib/portfolios";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,10 +65,8 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: true, index: listPresets() });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }
 
@@ -88,9 +87,7 @@ export async function DELETE(req: Request) {
     removeCustomPreset(category, id);
     return NextResponse.json({ ok: true, index: listPresets() });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

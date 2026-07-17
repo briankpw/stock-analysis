@@ -5,7 +5,6 @@ import { HelpCircle, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
 import { KeyTerms } from "@/components/key-terms";
-import { FearGreedCard } from "@/components/fear-greed-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBundle } from "@/hooks/use-bundle";
@@ -14,7 +13,7 @@ import { fmtCurrency, fmtNumber, fmtSigned, fmtSignedPercent } from "@/lib/forma
 import { signalHint } from "@/lib/knowledge";
 import { useIsBeginner, useLocale, type Locale } from "@/lib/state";
 import { useT, translateSignalValue } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
+import { cn, renderMiniMarkdown } from "@/lib/utils";
 import type { LatestSignals } from "@/lib/indicators";
 import type { Analysis, ConclusionParts, Insight, Category } from "@/lib/insights";
 
@@ -203,7 +202,10 @@ function VerdictCard({ analysis, t }: { analysis: Analysis; t: TFn }) {
 
   const verdictLabel = t(`verdict.${analysis.verdictKey}`);
   const conclusionText = composeConclusion(analysis.conclusionParts, t);
-  const conclusionHtml = conclusionText.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // conclusionText interpolates the ticker query param + other bits — escape
+  // before running the `**bold**` transform so a crafted URL can't smuggle
+  // HTML into the innerHTML sink below.
+  const conclusionHtml = renderMiniMarkdown(conclusionText);
 
   return (
     <Card className={cn("overflow-hidden p-4 sm:p-6 bg-gradient-to-br", tint)}>
@@ -263,16 +265,6 @@ export default function OverviewPage() {
     <div className="mx-auto max-w-7xl">
       <PageHeader pageTitleKey="nav.overview" />
       <PageIntro pageKey="overview" />
-
-      {/*
-       * Market-wide Fear & Greed gauge. Rendered outside the ticker-data
-       * gate so the market mood shows up immediately even while the
-       * per-ticker bundle is still loading — this card manages its own
-       * loading / error state via `useFearGreed()`.
-       */}
-      <div className="mb-6">
-        <FearGreedCard />
-      </div>
 
       {data?.rateLimited && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}

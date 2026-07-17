@@ -16,7 +16,9 @@ The stack runs two containers that share a single SQLite database on a persisten
 | `ui`    | `${IMAGE}`      | Next.js 15 dashboard on port `5001`                           |
 | `worker`| `${IMAGE}`      | Bot loop that polls Yahoo + SEC / House feeds and fires alerts |
 
-Both containers mount `key_stock_data:/app/data`, which holds `bot.db` (paper trading, watchlist, signals, portfolio presets, notifications).
+Both containers mount `${STACK_NAME}_data:/app/data`, which holds `bot.db` (paper trading, watchlist, signals, portfolio presets, notifications).
+
+Both containers ship hardened defaults: `init: true` (tini as PID 1 for clean signal handling), `read_only: true` root filesystem (only `/app/data` and `/tmp` are writable), `cap_drop: [ALL]`, `no-new-privileges`, per-service memory limits (`ui: 512 MB`, `worker: 768 MB`), and log rotation (`json-file`, 10 MB × 3).
 
 ---
 
@@ -74,16 +76,58 @@ All variables are optional — `stack.yml` provides safe defaults. See `stack.en
 
 | Variable                | Default                                 | Notes                                                         |
 | ----------------------- | --------------------------------------- | ------------------------------------------------------------- |
-| `STACK_NAME`            | `key-stock`                             | Prefix for container / volume / network names.                |
-| `IMAGE`                 | `key-stock:latest`                      | Set to a registry ref to skip the local build.                |
-| `UI_PORT`               | `5001`                                  | Host port. Change if `5001` collides with something else.     |
-| `TZ`                    | `UTC`                                   | e.g. `Asia/Singapore`, `America/New_York`.                    |
-| `STOCK_TICKER`          | `KEYS`                                  | Default active ticker on first load.                          |
-| `SEC_USER_AGENT`        | `Key Stock Dashboard research@example.com` | **Change this to a real contact email before public deploys.** |
-| `TELEGRAM_BOT_TOKEN`    | *(empty)*                               | Obtain from [@BotFather](https://t.me/BotFather).             |
-| `TELEGRAM_CHAT_ID`      | *(empty)*                               | Obtain from [@userinfobot](https://t.me/userinfobot).         |
+| `STACK_NAME`              | `key-stock`                             | Prefix for container / volume / network names.                                    |
+| `IMAGE`                   | `key-stock:latest`                      | Set to a registry ref (prefer a version tag over `latest`) to skip the build.     |
+| `UI_PORT`                 | `5001`                                  | Host port. Change if `5001` collides with something else.                         |
+| `TZ`                      | `UTC`                                   | e.g. `Asia/Singapore`, `America/New_York`.                                        |
+| `APP_TOKEN`               | *(empty)*                               | Enables bearer-token auth for `/api/*`. **Set this before any public exposure.**  |
+| `STOCK_TICKER`            | `KEYS`                                  | Default active ticker on first load.                                              |
+| `SEC_USER_AGENT`          | `Key Stock Dashboard research@example.com` | **Must be a real contact email.** The app refuses to start if this contains `example.com`. |
+| `TELEGRAM_BOT_TOKEN`      | *(empty)*                               | Bot token from [@BotFather](https://t.me/BotFather). See below for the secret-file alternative. |
+| `TELEGRAM_BOT_TOKEN_FILE` | *(empty)*                               | Path to a mounted secret file (e.g. `/run/secrets/telegram_bot_token`). Takes precedence over the inline var. |
+| `TELEGRAM_CHAT_ID`        | *(empty)*                               | Obtain from [@userinfobot](https://t.me/userinfobot).                             |
 
 Leaving `TELEGRAM_*` blank disables outbound alerts — the worker still records signals to SQLite, they just aren't pushed anywhere.
+
+### Bearer-token auth (`APP_TOKEN`)
+
+When you set `APP_TOKEN=<something-long-and-random>`, every request to `/api/*` must present it as either:
+
+```
+Authorization: Bearer <APP_TOKEN>
+```
+
+or a browser cookie:
+
+```
+Cookie: app_token=<APP_TOKEN>
+```
+
+The one exception is `GET /api/health`, which is always public so Docker's healthcheck keeps working.
+
+Generate a token with `openssl rand -hex 32`. Store it in the stack env, then set the same cookie in your browser (DevTools -> Application -> Cookies) or put your reverse proxy in charge of appending the header. Leave `APP_TOKEN` empty for a wide-open local install.
+
+### Telegram token as a Docker secret
+
+For production, prefer the file-based path over the inline env var:
+
+```yaml
+# Adjacent compose override, e.g. deploy/portainer/stack.override.yml
+services:
+  ui:
+    secrets:
+      - telegram_bot_token
+  worker:
+    secrets:
+      - telegram_bot_token
+    environment:
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+secrets:
+  telegram_bot_token:
+    file: /path/on/host/telegram_bot_token
+```
+
+The app reads `TELEGRAM_BOT_TOKEN_FILE` first, falls back to `TELEGRAM_BOT_TOKEN`, and only uses the value in memory.
 
 ---
 
@@ -105,20 +149,21 @@ If you proxy under a sub-path, override `NEXT_PUBLIC_PWA_SW_URL` accordingly (se
 
 ### Persistent data
 
-Everything the app writes (paper trading positions, watchlist, alert signals, custom portfolio presets, notification history) lives in the `${STACK_NAME}_data` volume. Backup with:
+Everything the app writes (paper trading positions, watchlist, alert signals, custom portfolio presets, notification history) lives in the `${STACK_NAME}_data` volume — the default name is `key-stock_data`, and it changes with `STACK_NAME`. Backup with:
 
 ```bash
+STACK_NAME=${STACK_NAME:-key-stock}
 docker run --rm \
-  -v key-stock_data:/data \
-  -v $PWD:/backup \
-  alpine tar czf /backup/key-stock-data-$(date +%F).tgz -C /data .
+  -v "${STACK_NAME}_data:/data" \
+  -v "$PWD:/backup" \
+  alpine tar czf "/backup/${STACK_NAME}-data-$(date +%F).tgz" -C /data .
 ```
 
 Restore is the reverse — extract the tarball into a fresh volume, then start the stack.
 
 ### Health checks
 
-Portainer surfaces the `ui` container as **healthy** when `GET /api/watchlist` returns 200. If it stays **unhealthy**, check the container logs — the most common causes are:
+Portainer surfaces the `ui` container as **healthy** when `GET /api/health` returns 200. This endpoint is intentionally lightweight — it doesn't open the database or call any upstream — so it stays green even if Yahoo / SEC are throttling. It is also whitelisted by the middleware so it works when `APP_TOKEN` is set. If the container stays **unhealthy**, check the container logs — the most common causes are:
 
 - SEC blocking requests (change `SEC_USER_AGENT` to a real email).
 - Yahoo Finance transient 429s (the app already backs off; wait 5 minutes).

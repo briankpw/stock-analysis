@@ -28,8 +28,8 @@ import {
   type PoliticianReport,
 } from "@/lib/portfolios";
 import { listPresets } from "@/lib/portfolios";
-import { notifyPortfolioEvent } from "@/lib/bot/notifier";
-import { getState, setState } from "@/lib/bot/store";
+import { notifyPortfolioBatch } from "@/lib/bot/notifier";
+import { getState, setState, tryLockTick } from "@/lib/bot/store";
 import type {
   EventAction,
   EventCategory,
@@ -46,6 +46,7 @@ import {
   recordNotification,
   type PortfolioWatch,
 } from "./store";
+import { runInTransaction } from "@/lib/db";
 
 export const PORTFOLIO_STATE_KEYS = {
   LAST_TICK_AT: "portfolio.last_tick_at",
@@ -180,6 +181,25 @@ export async function runPortfolioTick(): Promise<PortfolioTickReport> {
     errors: [],
   };
 
+  // Refuse overlapping ticks so the worker's cadence + a UI "Run now"
+  // click don't compete for the same SEC/House-Clerk quota.
+  const release = tryLockTick("portfolio");
+  if (!release) {
+    report.ok = false;
+    report.errors.push("Another portfolio tick is already running.");
+    return report;
+  }
+  try {
+    return await runPortfolioTickBody(ranAt, report);
+  } finally {
+    release();
+  }
+}
+
+async function runPortfolioTickBody(
+  ranAt: string,
+  report: PortfolioTickReport,
+): Promise<PortfolioTickReport> {
   const watches = listWatches();
   report.watchCount = watches.length;
   if (watches.length === 0) {
@@ -222,43 +242,81 @@ export async function runPortfolioTick(): Promise<PortfolioTickReport> {
 
   const unnotified = pickUnnotifiedEventIds(matches.map((m) => m.event.id));
 
-  // Cap the number of Telegram messages per tick so a huge PTR batch on
-  // first run doesn't flood the chat. The rest survive in the events
-  // list (uncached, they'll re-appear next tick) so nothing is silently
-  // lost — but we'll persist the dedup rows for skipped ones to avoid
-  // sending them next tick either. Trade-off tuned for reliability.
-  const MAX_TELEGRAM_PER_TICK = 20;
-  let sentCount = 0;
+  // Bucket unnotified matches by event category so a batch of politician
+  // trades on the same tick becomes ONE Telegram message instead of N.
+  // We keep the dedup / history writes per-event (below) so a partially
+  // failed send doesn't cause a re-notification on the next tick.
+  const buckets: Record<
+    "people" | "politicians" | "funds",
+    Match[]
+  > = { people: [], politicians: [], funds: [] };
+  for (const m of matches) {
+    if (!unnotified.has(m.event.id)) continue;
+    buckets[m.event.category].push(m);
+  }
 
-  for (const { event, watches: matched } of matches) {
-    if (!unnotified.has(event.id)) continue;
+  // Cap the number of Telegram messages (i.e. category buckets we
+  // actually send) per tick. Each bucket already caps its own item list
+  // inside `notifyPortfolioBatch`, so the effective cap on the number of
+  // events surfaced per tick is much higher than before.
+  const MAX_BATCHES_PER_TICK = 6;
+  let sentBatches = 0;
+
+  for (const category of ["people", "politicians", "funds"] as const) {
+    const bucket = buckets[category];
+    if (bucket.length === 0) continue;
+
+    // Merge the watch rules that matched anywhere in this category into
+    // a single short description string. e.g. "person: politicians/pelosi,
+    // ticker: NVDA". This is what shows up in the footer of the grouped
+    // message.
+    const rulesSet = new Set<string>();
+    for (const m of bucket) {
+      for (const r of describeWatches(m.watches).split(" + ")) {
+        rulesSet.add(r);
+      }
+    }
+    const matchedRules = [...rulesSet].join(", ");
 
     let telegramOk: boolean | null = null;
     let telegramDetail: string | null = null;
-    if (sentCount < MAX_TELEGRAM_PER_TICK) {
-      const res = await notifyPortfolioEvent(event, describeWatches(matched));
+    if (sentBatches < MAX_BATCHES_PER_TICK) {
+      const res = await notifyPortfolioBatch(
+        category,
+        bucket.map((m) => m.event),
+        matchedRules,
+      );
       telegramOk = res.ok;
       telegramDetail = res.detail;
       if (res.ok) {
-        sentCount += 1;
+        sentBatches += 1;
         report.notifiesSent += 1;
       } else {
-        report.errors.push(`telegram(${event.id}): ${res.detail}`);
+        report.errors.push(`telegram(${category} x${bucket.length}): ${res.detail}`);
       }
     } else {
       telegramDetail = "skipped: per-tick cap reached";
     }
 
-    recordNotification(
-      event,
-      matched.map((w) =>
-        w.kind === "person"
-          ? `person:${w.id}`
-          : `ticker:${w.id}`,
-      ),
-      telegramOk,
-      telegramDetail,
-    );
+    // Record dedup rows for every event in the bucket regardless of
+    // whether Telegram accepted the batch — this mirrors the old
+    // behaviour where a skipped send still wrote a history row so we
+    // don't re-fire the same alert next tick. Wrap the whole bucket in
+    // one transaction so we pay one WAL fsync instead of N.
+    runInTransaction(() => {
+      for (const { event, watches: matched } of bucket) {
+        recordNotification(
+          event,
+          matched.map((w) =>
+            w.kind === "person"
+              ? `person:${w.id}`
+              : `ticker:${w.id}`,
+          ),
+          telegramOk,
+          telegramDetail,
+        );
+      }
+    });
   }
 
   persistStatus(ranAt, report);

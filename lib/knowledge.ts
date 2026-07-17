@@ -519,6 +519,10 @@ const PAGE_INTROS: Readonly<Record<string, Localized<string>>> = {
     en: "The alert bot watches strategies (SMA crossover, RSI reversion, MACD cross) continuously in the background. When a buy or sell signal fires, it can ping your Telegram. It never places orders.",
     "zh-CN": "提醒机器人在后台持续监控策略（SMA 均线交叉、RSI 回归、MACD 交叉）。当买入或卖出信号触发时，可推送到你的 Telegram。它不会真的下单。",
   },
+  market: {
+    en: "Market-wide mood, updated every US market close. CNN's **Fear & Greed Index** blends seven signals — momentum, breadth, put/call, VIX, junk-bond spreads and safe-haven demand — into a single 0–100 gauge. Extreme readings are usually **contrarian**: buy when the crowd is fearful, be cautious when they're greedy. This same reading is also folded into the **Buy / Sell Signal** on the Price & Volume page as a market-backdrop check.",
+    "zh-CN": "全市场情绪，美股每次收盘后更新。CNN 的**恐惧与贪婪指数**融合七项信号——动量、广度、认沽/认购、VIX、垃圾债利差、避险需求——形成 0–100 的单一读数。极值通常具有**逆向**含义：他人恐惧时买入，他人贪婪时谨慎。此读数同时被引入价格与成交量页面的**买入/卖出信号**，作为市场大背景校验。",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1036,13 +1040,68 @@ const TECHNICAL_TERMS: Readonly<Record<string, Localized<TermDef>>> = {
   },
   "Technical Signal": {
     en: {
-      what: "A weighted vote across seven technical indicators — trend regime, recent SMA crosses, MACD, RSI, Bollinger position, short-term return with volume, and support/resistance proximity — that produces a Buy / Hold / Sell verdict.",
-      deeper: "Each contributing signal gets a signed weight (positive = bullish, negative = bearish). The net vote is normalised by the maximum possible weight, giving a score in −100 to +100. Above +50 = Strong Buy · +15 to +50 = Buy · −15 to +15 = Hold · −50 to −15 = Sell · below −50 = Strong Sell. Educational only — not investment advice.",
+      what: "A weighted vote across nine checks — trend regime, recent SMA crosses, MACD, RSI, Bollinger position, short-term return with volume, KDJ, support/resistance proximity, and the market-wide Fear & Greed extremes — that produces a Buy / Hold / Sell verdict.",
+      deeper: "Each contributing signal gets a signed weight (positive = bullish, negative = bearish). The net vote is normalised by the maximum possible weight, giving a score in −100 to +100. Above +50 = Strong Buy · +15 to +50 = Buy · −15 to +15 = Hold · −50 to −15 = Sell · below −50 = Strong Sell. Fear & Greed is folded in contrarian-style: crowd panic reads as a mild buy, crowd euphoria as a mild sell. Educational only — not investment advice.",
     },
     "zh-CN": {
       label: "技术面信号",
-      what: "对七项技术指标进行加权投票：趋势状态、近期均线交叉、MACD、RSI、布林带位置、含量能的短期回报，以及支撑/阻力位邻近度——生成 买入 / 观望 / 卖出 的综合判断。",
-      deeper: "每个信号带有一个有符号权重（正 = 看多，负 = 看空）。净得分除以理论最大权重，得到 −100 到 +100 的分值。> +50 强烈买入 · +15 到 +50 买入 · −15 到 +15 观望 · −50 到 −15 卖出 · < −50 强烈卖出。仅供学习参考，非投资建议。",
+      what: "对九项检查进行加权投票：趋势状态、近期均线交叉、MACD、RSI、布林带位置、含量能的短期回报、KDJ、支撑/阻力位邻近度，以及全市场恐惧与贪婪的极端读数——生成 买入 / 观望 / 卖出 的综合判断。",
+      deeper: "每个信号带有一个有符号权重（正 = 看多，负 = 看空）。净得分除以理论最大权重，得到 −100 到 +100 的分值。> +50 强烈买入 · +15 到 +50 买入 · −15 到 +15 观望 · −50 到 −15 卖出 · < −50 强烈卖出。恐惧与贪婪按逆向方式引入：群体恐慌视为弱买入，群体狂热视为弱卖出。仅供学习参考，非投资建议。",
+    },
+  },
+  Contrarian: {
+    en: {
+      what: "Investing against the crowd — buying when everyone else is selling in panic, selling when everyone is chasing gains. Popularised by Warren Buffett's line: 'Be fearful when others are greedy, and greedy when others are fearful.'",
+      deeper: "Contrarian reasoning treats extreme sentiment as a signal that the market has priced too far in one direction. It's why the CNN Fear & Greed Index's extreme readings are often read as buy (fear) or sell (greed) triggers rather than confirmation.",
+    },
+    "zh-CN": {
+      label: "逆向投资",
+      what: "与人群反向操作——他人恐慌抛售时买入，他人追涨时卖出。巴菲特名言：\"他人贪婪时我恐惧，他人恐惧时我贪婪\"即是此意。",
+      deeper: "逆向思维把极端情绪视为市场定价过度的信号。这也是为什么 CNN 恐惧与贪婪指数的极端读数常被视为买入（恐惧）或卖出（贪婪）触发点，而非顺势确认。",
+    },
+  },
+  VIX: {
+    en: {
+      what: "The Cboe Volatility Index — the market's expectation of S&P 500 volatility over the next 30 days, derived from option prices. Under 15 = calm · 15-25 = normal · above 25 = stressed · above 40 = panic.",
+      deeper: "Often called the 'fear gauge'. It rises when option buyers pay up for protection, which is usually when the market is falling. VIX is one of the seven inputs to CNN's Fear & Greed Index.",
+    },
+    "zh-CN": {
+      label: "VIX 波动率指数",
+      what: "芝加哥期权交易所波动率指数——由期权价格推导出的市场对未来 30 天标普 500 波动率的预期。< 15 平静 · 15-25 正常 · > 25 紧张 · > 40 恐慌。",
+      deeper: "常被称为\"恐慌指数\"。当期权买方为对冲支付更高成本时上升，通常伴随市场下跌。VIX 是 CNN 恐惧与贪婪指数的七项输入之一。",
+    },
+  },
+  "Put/Call Ratio": {
+    en: {
+      what: "Volume of put options divided by volume of call options. Above 1 = more downside protection being bought (bearish crowd); well below 1 = more upside speculation (bullish crowd).",
+      deeper: "The 5-day version feeds directly into CNN's Fear & Greed. Extremes are read contrarian-ly — very high ratios often mark short-term bottoms because everyone is already hedged.",
+    },
+    "zh-CN": {
+      label: "认沽/认购比率",
+      what: "认沽期权成交量除以认购期权成交量。> 1 表示更多下行保护买入（人群偏空）；< 1 表示更多上行投机（人群偏多）。",
+      deeper: "5 日均值直接输入 CNN 恐惧与贪婪指数。极值常被逆向解读——极高比率往往标志短期底部，因为所有人都已在对冲。",
+    },
+  },
+  "Market Breadth": {
+    en: {
+      what: "How broadly a market's advance or decline is participating across stocks. Strong breadth = most stocks moving together; weak breadth = a few mega-caps carrying the index.",
+      deeper: "Common measures include the advance/decline line, new 52-week highs vs lows, and up-volume vs down-volume. Poor breadth in a rising market is a warning that leadership is thinning out.",
+    },
+    "zh-CN": {
+      label: "市场广度",
+      what: "指数上涨或下跌时，参与其中的股票范围有多广。广度强 = 大多数个股同向；广度弱 = 少数大市值股票拉动指数。",
+      deeper: "常用指标包括涨跌家数线、52 周新高对新低、涨跌成交量对比。上涨市场中广度转弱是领涨面变窄的警示。",
+    },
+  },
+  "Safe Haven Demand": {
+    en: {
+      what: "How much investors are preferring bonds over stocks over the last 20 trading days. When bonds outperform, investors are seeking safety (bearish for stocks); when stocks outperform, appetite is on (bullish).",
+      deeper: "One of CNN's seven Fear & Greed inputs — measured as the difference between S&P 500 and 10-year Treasury total returns over the trailing 20 days.",
+    },
+    "zh-CN": {
+      label: "避险需求",
+      what: "衡量过去 20 个交易日投资者对债券相对股票的偏好。债券跑赢 = 追求避险（股票偏空）；股票跑赢 = 风险偏好上升（偏多）。",
+      deeper: "CNN 恐惧与贪婪的七项输入之一——由标普 500 与 10 年期国债过去 20 天总回报之差衡量。",
     },
   },
 

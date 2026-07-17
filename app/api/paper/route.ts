@@ -2,20 +2,25 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPortfolio, placeOrder, recentTrades, resetPortfolio, valuePortfolio } from "@/lib/paper-trading";
 import { fetchQuote } from "@/lib/data";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const orderSchema = z.object({
-  symbol: z.string().min(1).max(20),
+  symbol: z
+    .string()
+    .min(1)
+    .max(12)
+    .regex(/^[A-Za-z0-9.\-]+$/, "symbol must be alphanumeric with `.` or `-`"),
   side: z.enum(["buy", "sell"]),
-  shares: z.number().positive(),
-  price: z.number().positive(),
+  shares: z.number().positive().finite(),
+  price: z.number().positive().finite(),
   note: z.string().max(500).optional(),
 });
 
 const resetSchema = z.object({
-  startingCash: z.number().positive().optional(),
+  startingCash: z.number().positive().finite().optional(),
 });
 
 export async function GET() {
@@ -47,10 +52,8 @@ export async function POST(req: Request) {
     const trade = placeOrder(body);
     return NextResponse.json({ ok: true, trade });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }
 
@@ -62,9 +65,7 @@ export async function DELETE(req: Request) {
     resetPortfolio(body.startingCash);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

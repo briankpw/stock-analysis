@@ -4,6 +4,7 @@ import * as React from "react";
 import { useIsBeginner, useLocale } from "@/lib/state";
 import { pageIntro } from "@/lib/knowledge";
 import { useT } from "@/lib/i18n";
+import { renderMiniMarkdown } from "@/lib/utils";
 
 /**
  * Beginner-mode helper block shown at the top of each page. Automatically
@@ -18,8 +19,10 @@ export function PageIntro({ pageKey }: { pageKey: string }) {
   const text = pageIntro(pageKey, locale);
   if (!text) return null;
 
-  // Basic markdown-lite: `**bold**` → <strong>.
-  const html = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Escape HTML first, then apply the `**bold**` transform — otherwise
+  // any future interpolation into pageIntro strings could inject tags
+  // into the innerHTML sink below.
+  const html = renderMiniMarkdown(text);
 
   return (
     <div className="page-intro animate-slide-up">

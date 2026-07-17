@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchHolders, RateLimitedError } from "@/lib/data";
 import { settings } from "@/lib/config";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,11 +21,12 @@ export async function GET(req: Request) {
     return NextResponse.json(holders);
   } catch (e) {
     if (e instanceof RateLimitedError) {
-      return NextResponse.json({ rateLimited: true, error: e.message }, { status: 429 });
+      return NextResponse.json(
+        { rateLimited: true, error: "Upstream rate-limited" },
+        { status: 429 },
+      );
     }
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      { status: 502 },
-    );
+    const r = redactError(e, 502, "Holders data unavailable");
+    return NextResponse.json({ error: r.message }, { status: r.status });
   }
 }

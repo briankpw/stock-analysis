@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchNews, RateLimitedError } from "@/lib/data";
+import { redactError } from "@/lib/http";
 import {
   aggregate,
   impactFromScore,
@@ -61,7 +62,10 @@ export async function GET(req: Request) {
     if (e instanceof RateLimitedError) {
       rateLimited = true;
     } else {
-      fetchError = e instanceof Error ? e.message : String(e);
+      // Detail is logged server-side via redactError below; we only keep a
+      // boolean-ish presence so the fallback branch can decide whether to
+      // serve stored data or a 502.
+      fetchError = redactError(e, 502, "News source unavailable").message;
     }
   }
 

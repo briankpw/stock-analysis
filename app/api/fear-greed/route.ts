@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { redactError, timedFetch } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -128,9 +129,10 @@ export async function GET() {
   }
 
   try {
-    const res = await fetch(CNN_URL, {
+    const res = await timedFetch(CNN_URL, {
       headers: HEADERS,
       cache: "no-store",
+      timeoutMs: 15_000,
     });
     if (!res.ok) {
       return NextResponse.json(
@@ -143,9 +145,7 @@ export async function GET() {
     _cache = { payload: slim, expiresAt: now + CACHE_TTL_MS };
     return NextResponse.json(slim);
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      { status: 502 },
-    );
+    const r = redactError(e, 502, "Fear & Greed source unavailable");
+    return NextResponse.json({ error: r.message }, { status: r.status });
   }
 }

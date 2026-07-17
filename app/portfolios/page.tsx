@@ -152,7 +152,7 @@ function PersonHoldingsCard({ holdings }: { holdings: InsiderHolding[] }) {
   return (
     <Card>
       <CardHeader><CardTitle>Current holdings ({holdings.length})</CardTitle></CardHeader>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -238,7 +238,7 @@ function PersonTransactionsCard({ transactions }: { transactions: InsiderTransac
   return (
     <Card>
       <CardHeader><CardTitle>Recent transactions ({transactions.length})</CardTitle></CardHeader>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -530,7 +530,7 @@ function PoliticianHoldingsCard({ holdings }: { holdings: PoliticianHolding[] })
           "low" and "high".
         </p>
       </CardHeader>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -621,7 +621,7 @@ function PoliticianTradesCard({
   return (
     <Card>
       <CardHeader><CardTitle>Individual trades ({trades.length})</CardTitle></CardHeader>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -887,7 +887,7 @@ function FundDetail({ preset }: { preset: FundPreset }) {
         </Card>
       ) : (
         <Card>
-          <div className="overflow-x-auto">
+          <div className="table-scroll">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">

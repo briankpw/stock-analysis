@@ -1,15 +1,16 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Sidebar } from "@/components/sidebar";
 
 export const metadata: Metadata = {
-  title: "Key Stock — Keysight Analysis",
+  title: "Stock Analysis",
   description:
-    "Interactive stock analysis dashboard for Keysight Technologies (KEYS) — ratios, charts, technicals, news sentiment, paper trading, and alert bot.",
-  applicationName: "Key Stock",
+    "Interactive stock analysis dashboard — ratios, charts, technicals, news sentiment, portfolios, paper trading, and alert bot.",
+  applicationName: "Stock Analysis",
   manifest: "/manifest.webmanifest",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Key Stock" },
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Stock Analysis" },
   icons: {
     icon: [
       { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
@@ -23,10 +24,12 @@ export const viewport: Viewport = {
   themeColor: "#0f1220",
   width: "device-width",
   initialScale: 1,
-  // Lock the layout on mobile: no pinch-zoom, no user-driven scale so
-  // the app feels like a native shell instead of a scaled webpage.
-  maximumScale: 1,
-  userScalable: false,
+  // Allow the user to pinch-zoom (up to 5x). WCAG 2.1 SC 1.4.4 requires
+  // users to be able to resize text — disabling `userScalable` fails that.
+  // The layout still feels app-like because the CSS handles safe-area
+  // padding and no-horizontal-scroll; blocking scale isn't the win.
+  maximumScale: 5,
+  userScalable: true,
   // Extend the background into the iOS safe area (notch / home indicator).
   viewportFit: "cover",
 };
@@ -43,17 +46,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </main>
           </div>
         </Providers>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-                });
-              }
-            `,
-          }}
-        />
+        {/*
+          Service-worker registrar. Using next/script keeps the app CSP-clean
+          because Next.js emits it as a hashed inline script during build,
+          rather than the raw `dangerouslySetInnerHTML` bag of characters.
+        */}
+        <Script id="sw-register" strategy="afterInteractive">
+          {`if ('serviceWorker' in navigator) {
+              window.addEventListener('load', function () {
+                navigator.serviceWorker.register('/service-worker.js').catch(function () {});
+              });
+            }`}
+        </Script>
       </body>
     </html>
   );

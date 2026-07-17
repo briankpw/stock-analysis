@@ -16,12 +16,17 @@ import {
   upsertNewsSubscription,
 } from "@/lib/news-watch/store";
 import { seedNewsHistory } from "@/lib/news-watch/engine";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const upsertSchema = z.object({
-  ticker: z.string().min(1).max(12),
+  ticker: z
+    .string()
+    .min(1)
+    .max(12)
+    .regex(/^[A-Za-z0-9.\-]+$/, "ticker must be alphanumeric with `.-`"),
 });
 
 export async function GET() {
@@ -42,10 +47,8 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: true, subscription: sub, seeded });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }
 
@@ -57,9 +60,7 @@ export async function DELETE(req: Request) {
     const ok = deleteNewsSubscription(ticker);
     return NextResponse.json({ ok });
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

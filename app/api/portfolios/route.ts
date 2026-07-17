@@ -6,6 +6,7 @@ import {
   fetchPoliticianTrades,
   listPresets,
 } from "@/lib/portfolios";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,12 @@ export async function GET(req: Request) {
   const type = url.searchParams.get("type");
   const id = url.searchParams.get("id");
   const limitRaw = url.searchParams.get("limit");
-  const limit = limitRaw ? Math.max(10, Math.min(500, Number(limitRaw))) : 200;
+  // `Number("junk")` is NaN; treat that as "use default" instead of letting
+  // NaN propagate down to `.slice(0, NaN)` and return empty results silently.
+  const parsedLimit = limitRaw !== null ? Number(limitRaw) : NaN;
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.max(10, Math.min(500, parsedLimit))
+    : 200;
 
   try {
     if (!type) {
@@ -33,6 +39,11 @@ export async function GET(req: Request) {
     }
     if (!id) {
       return NextResponse.json({ error: "id query param required" }, { status: 400 });
+    }
+    // Preset ids are `[a-z0-9_-]+` (see /presets validation) — validate here
+    // too so a malformed id never becomes part of an SEC URL.
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(id)) {
+      return NextResponse.json({ error: "invalid id" }, { status: 400 });
     }
     if (type === "politician") {
       const report = await fetchPoliticianTrades(id, limit);
@@ -45,7 +56,9 @@ export async function GET(req: Request) {
     if (type === "person") {
       // Person route uses a tighter default (30) — each filing is one SEC XML
       // fetch, so we cap harder than the politician case.
-      const personLimit = limitRaw ? Math.max(5, Math.min(120, Number(limitRaw))) : 30;
+      const personLimit = Number.isFinite(parsedLimit)
+        ? Math.max(5, Math.min(120, parsedLimit))
+        : 30;
       const report = await fetchPersonInsiderReport(id, personLimit);
       return NextResponse.json(report);
     }
@@ -62,9 +75,7 @@ export async function GET(req: Request) {
         { status: 503 },
       );
     }
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      { status: 502 },
-    );
+    const r = redactError(e, 502, "Portfolio data unavailable");
+    return NextResponse.json({ error: r.message }, { status: r.status });
   }
 }

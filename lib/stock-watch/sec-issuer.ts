@@ -21,6 +21,7 @@ import {
   secHeaders,
   type SubmissionsResponse,
 } from "@/lib/portfolios";
+import { timedFetch } from "@/lib/http";
 
 const INSIDER_FORMS = new Set(["3", "4", "5", "3/A", "4/A", "5/A"]);
 
@@ -124,9 +125,10 @@ export async function fetchIssuerInsiderTransactions(
   limit = 20,
 ): Promise<IssuerInsiderReport> {
   const submissionsUrl = `${SEC_BASE}/submissions/CIK${cik}.json`;
-  const subRes = await fetch(submissionsUrl, {
+  const subRes = await timedFetch(submissionsUrl, {
     headers: secHeaders(),
     cache: "no-store",
+    timeoutMs: 20_000,
   });
   if (!subRes.ok) {
     throw new Error(`SEC submissions GET (${cik}) → HTTP ${subRes.status}`);
@@ -182,9 +184,10 @@ export async function fetchIssuerInsiderTransactions(
       const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${xmlFilename}`;
       const filingUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}&type=${f.form.replace("/A", "")}&dateb=&owner=include&count=40`;
       try {
-        const res = await fetch(xmlUrl, {
+        const res = await timedFetch(xmlUrl, {
           headers: secHeaders(),
           cache: "no-store",
+          timeoutMs: 20_000,
         });
         if (!res.ok) return { txs: [], ok: false };
         const xml = await res.text();

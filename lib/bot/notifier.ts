@@ -202,6 +202,202 @@ function formatShares(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
+// ---------------------------------------------------------------------------
+// Batch (grouped) senders
+// ---------------------------------------------------------------------------
+//
+// Each engine tick can produce many notify-eligible events. Sending one
+// Telegram message per event floods the chat. Instead we bucket events by
+// their natural "category" (portfolio → people/politicians/funds; stock →
+// ticker; news → ticker; bot → ticker) and post one grouped message per
+// bucket per tick.
+//
+// * Batches with a single item delegate to the existing singular formatter
+//   so the UX for the common "1 event per tick" case is unchanged.
+// * Each grouped message caps at MAX_ITEMS_PER_BATCH rows and adds an
+//   "…and N more" line to stay under Telegram's 4096-char limit.
+// * Failure to send is reported once for the whole batch — callers should
+//   still record each individual event in their dedup store so a failed
+//   Telegram send doesn't cause a re-notification on the next tick.
+
+const MAX_ITEMS_PER_BATCH = 15;
+
+function emojiForAction(action: "BUY" | "SELL" | "OTHER" | string): string {
+  if (action === "BUY") return "🟢";
+  if (action === "SELL") return "🔴";
+  return "⚪️";
+}
+
+function formatBarTs(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toISOString().slice(0, 16).replace("T", " ");
+}
+
+function formatDateSuffix(event: PortfolioEvent): string {
+  return event.tradeDate
+    ? ` on ${event.tradeDate}`
+    : event.filingDate
+      ? ` (filed ${event.filingDate})`
+      : "";
+}
+
+/**
+ * Batch-send several bot strategy signals that fired on the same ticker
+ * during a single tick. All signals in `signals` are assumed to relate
+ * to `ticker`.
+ */
+export async function notifySignalsBatch(
+  ticker: string,
+  signals: Signal[],
+): Promise<NotifyResult> {
+  if (signals.length === 0) return { ok: false, detail: "empty batch" };
+  if (signals.length === 1) return notifySignal(ticker, signals[0]!);
+
+  const rows: string[] = [];
+  const shown = signals.slice(0, MAX_ITEMS_PER_BATCH);
+  for (const s of shown) {
+    const priceStr = s.price === null ? "—" : `$${s.price.toFixed(2)}`;
+    const barStr = formatBarTs(s.barTs);
+    rows.push(
+      `${emojiForAction(s.type)} *${escapeMd(s.type)}* — _${escapeMd(s.strategy)}_ @ ${escapeMd(priceStr)}\n` +
+        `   Bar: ${escapeMd(barStr)} UTC · ${escapeMd(truncate(s.reason, 140))}`,
+    );
+  }
+  const overflow = signals.length - shown.length;
+  if (overflow > 0) rows.push(`_…and ${overflow} more_`);
+
+  const header = `📊 *${signals.length} signals* — *${escapeMd(ticker)}*`;
+  return sendText(`${header}\n\n${rows.join("\n\n")}`);
+}
+
+/**
+ * Batch-send several portfolio-watch events that share the same event
+ * category (e.g. all politicians, all people, or all funds). `matchedRules`
+ * is a display string summarising the union of watch rules that matched
+ * across the batch.
+ */
+export async function notifyPortfolioBatch(
+  category: "people" | "politicians" | "funds",
+  events: PortfolioEvent[],
+  matchedRules: string,
+): Promise<NotifyResult> {
+  if (events.length === 0) return { ok: false, detail: "empty batch" };
+  if (events.length === 1) return notifyPortfolioEvent(events[0]!, matchedRules);
+
+  const categoryLabel =
+    category === "politicians"
+      ? "politician"
+      : category === "people"
+        ? "insider"
+        : "fund manager";
+  const headerEmoji =
+    category === "politicians" ? "🏛️" : category === "people" ? "🏢" : "💼";
+
+  const rows: string[] = [];
+  const shown = events.slice(0, MAX_ITEMS_PER_BATCH);
+  for (const e of shown) {
+    const tickerStr = e.ticker ? ` · *${escapeMd(e.ticker)}*` : "";
+    const dateStr = formatDateSuffix(e);
+    const link = e.sourceUrl ? ` · [filing](${e.sourceUrl})` : "";
+    rows.push(
+      `${emojiForAction(e.action)} *${escapeMd(e.actionLabel)}* — ${escapeMd(e.presetName)}${tickerStr}${escapeMd(dateStr)}\n` +
+        `   ${escapeMd(truncate(e.companyName, 80))} · ${escapeMd(e.amountLabel)}${link}`,
+    );
+  }
+  const overflow = events.length - shown.length;
+  if (overflow > 0) rows.push(`_…and ${overflow} more_`);
+
+  const header = `${headerEmoji} *${events.length} new ${categoryLabel} events*`;
+  const footer = `\n\n_${escapeMd(matchedRules)}_`;
+  return sendText(`${header}\n\n${rows.join("\n\n")}${footer}`);
+}
+
+/**
+ * Batch-send several SEC Form 4 insider transactions filed at the same
+ * issuer (`ticker`) during a single stock-watch tick.
+ */
+export async function notifyStockInsiderBatch(
+  ticker: string,
+  txs: IssuerInsiderTransaction[],
+): Promise<NotifyResult> {
+  if (txs.length === 0) return { ok: false, detail: "empty batch" };
+  if (txs.length === 1) return notifyStockInsiderEvent(txs[0]!);
+
+  const rows: string[] = [];
+  const shown = txs.slice(0, MAX_ITEMS_PER_BATCH);
+  for (const tx of shown) {
+    const dateStr = tx.transactionDate
+      ? ` on ${tx.transactionDate}`
+      : tx.filingDate
+        ? ` (filed ${tx.filingDate})`
+        : "";
+    const priceStr =
+      tx.pricePerShare !== null && Number.isFinite(tx.pricePerShare)
+        ? ` @ $${tx.pricePerShare.toFixed(2)}`
+        : "";
+    const sharesStr =
+      Number.isFinite(tx.shares) && tx.shares > 0
+        ? `${formatShares(tx.shares)} sh${priceStr}`
+        : priceStr.trim() || "—";
+    const relation = tx.reporterRelation ? ` (${escapeMd(tx.reporterRelation)})` : "";
+    rows.push(
+      `${emojiForAction(tx.action)} *${escapeMd(tx.actionLabel)}* — *${escapeMd(tx.reporterName)}*${relation}\n` +
+        `   ${escapeMd(sharesStr)}${escapeMd(dateStr)}`,
+    );
+  }
+  const overflow = txs.length - shown.length;
+  if (overflow > 0) rows.push(`_…and ${overflow} more_`);
+
+  // Any of the txs' filingUrl works for a "see filings" link — SEC's
+  // browse-edgar view for the issuer is more useful than a per-accession
+  // deep-link when the batch spans multiple filings, but we settle for
+  // the first filing's URL to avoid another network call.
+  const firstUrl = txs[0]!.filingUrl;
+  const linkLine = firstUrl ? `\n[Open latest Form 4](${firstUrl})` : "";
+
+  const header = `🏢 *${txs.length} insider transactions* — *${escapeMd(ticker)}*`;
+  const footer = `\n\n_stock watch: ${escapeMd(ticker)}_${linkLine}`;
+  return sendText(`${header}\n\n${rows.join("\n\n")}${footer}`);
+}
+
+/**
+ * Batch-send several news headlines for the same `ticker` picked up in
+ * one news-watch tick.
+ */
+export async function notifyNewsBatch(
+  ticker: string,
+  items: NewsItemInput[],
+): Promise<NotifyResult> {
+  if (items.length === 0) return { ok: false, detail: "empty batch" };
+  if (items.length === 1) return notifyNewsEvent(items[0]!);
+
+  const rows: string[] = [];
+  const shown = items.slice(0, MAX_ITEMS_PER_BATCH);
+  for (const item of shown) {
+    const emoji =
+      item.label === "bullish"
+        ? "🟢"
+        : item.label === "bearish"
+          ? "🔴"
+          : "⚪️";
+    const scoreStr =
+      item.score !== null && Number.isFinite(item.score)
+        ? ` · ${item.score >= 0 ? "+" : ""}${item.score.toFixed(2)}`
+        : "";
+    const publisher = item.publisher ? ` · ${escapeMd(item.publisher)}` : "";
+    const link = item.link ? ` · [read](${item.link})` : "";
+    rows.push(
+      `${emoji} ${escapeMd(truncate(item.title, 160))}${escapeMd(scoreStr)}${publisher}${link}`,
+    );
+  }
+  const overflow = items.length - shown.length;
+  if (overflow > 0) rows.push(`_…and ${overflow} more_`);
+
+  const header = `📰 *${items.length} headlines* — *${escapeMd(ticker)}*`;
+  const footer = `\n\n_news watch: ${escapeMd(ticker)}_`;
+  return sendText(`${header}\n\n${rows.join("\n")}${footer}`);
+}
+
 /**
  * Telegram Markdown (legacy) escapes just enough to survive most SEC
  * company names. `parse_mode: 'Markdown'` (v1) only trips on `_`, `*`,

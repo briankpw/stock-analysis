@@ -3,6 +3,7 @@ import {
   DataSourceUnavailableError,
   searchEntities,
 } from "@/lib/portfolios";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,9 +46,7 @@ export async function GET(req: Request) {
         { status: 503 },
       );
     }
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : String(e) },
-      { status: 502 },
-    );
+    const r = redactError(e, 502, "Search source unavailable");
+    return NextResponse.json({ error: r.message }, { status: r.status });
   }
 }

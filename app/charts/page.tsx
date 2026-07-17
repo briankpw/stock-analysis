@@ -9,6 +9,7 @@ import { TermTip } from "@/components/term-tip";
 import { TechnicalSignalCard } from "@/components/technical-signal-card";
 import { ErrorBanner, LoadingPage, RateLimitBanner } from "@/components/loading";
 import { useBundle } from "@/hooks/use-bundle";
+import { useFearGreed } from "@/hooks/use-fear-greed";
 import { useUi } from "@/lib/state";
 import { useT } from "@/lib/i18n";
 import { computeTechnicalSignal } from "@/lib/technical-signal";
@@ -55,11 +56,15 @@ function OverlayToggles() {
 
 export default function ChartsPage() {
   const { data, loading, error, reload } = useBundle();
+  // Market-mood backdrop — folded into the Buy/Sell verdict as a
+  // contrarian check. If CNN is unreachable the signal simply skips this
+  // input; no need to gate the rest of the page on it.
+  const { data: fearGreed } = useFearGreed();
   const t = useT();
 
   // Compute the technical Buy/Sell verdict from what's already on the
   // page — everything below the chart is derived from `data.indicators`
-  // and `data.bars`, so no extra fetch is needed.
+  // and `data.bars`, so no extra per-ticker fetch is needed.
   const signal = React.useMemo(() => {
     if (!data || data.bars.length === 0) return null;
     return computeTechnicalSignal({
@@ -71,8 +76,9 @@ export default function ChartsPage() {
       bb20: data.indicators.bb20,
       levels: data.indicators.levels,
       kdj: data.indicators.kdj,
+      fearGreedScore: fearGreed?.score ?? null,
     });
-  }, [data]);
+  }, [data, fearGreed]);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -127,6 +133,8 @@ export default function ChartsPage() {
               "Golden Cross",
               "Death Cross",
               "Technical Signal",
+              "Fear & Greed Index",
+              "Contrarian",
             ]}
           />
         </div>

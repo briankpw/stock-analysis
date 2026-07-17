@@ -32,7 +32,7 @@ export default function RawPage() {
               <p className="text-xs text-muted-foreground">Last 20 shown; download the full CSV via the sidebar (todo).</p>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="overflow-x-auto">
+              <div className="table-scroll">
                 <table className="w-full text-xs tabular-nums">
                   <thead className="text-left border-b border-border">
                     <tr>

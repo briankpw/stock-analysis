@@ -20,6 +20,7 @@
 import YahooFinance from "yahoo-finance2";
 import { settings } from "./config";
 import type { Bar } from "./indicators";
+import { createTtlCache } from "./utils";
 
 // -------- yahoo-finance2 instance --------------------------------------------
 // v3.x requires an explicit `new YahooFinance()` — the default export is a
@@ -54,9 +55,35 @@ const RATE_LIMIT_MARKERS = [
   "yfratelimiterror",
 ];
 
+/**
+ * Errors we treat as *permanent* — retrying them just wastes time and
+ * quota (invalid ticker, symbol not found, HTTP 4xx that isn't 429).
+ * Detected by substring on the message and short-circuit the retry loop.
+ */
+const PERMANENT_MARKERS = [
+  "not found",
+  "no data",
+  "invalid symbol",
+  "invalid ticker",
+  "empty history",
+  "http 400",
+  "http 401",
+  "http 403",
+  "http 404",
+  "http 410",
+  "http 422",
+];
+
 function isRateLimit(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return RATE_LIMIT_MARKERS.some((m) => msg.includes(m));
+}
+
+function isPermanent(err: unknown): boolean {
+  if (err instanceof RateLimitedError) return false; // 429 is transient
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (RATE_LIMIT_MARKERS.some((m) => msg.includes(m))) return false;
+  return PERMANENT_MARKERS.some((m) => msg.includes(m));
 }
 
 
@@ -73,6 +100,9 @@ async function retry<T>(
       return await fn();
     } catch (err) {
       lastErr = err;
+      // Permanent failures (invalid ticker, 404, ...) surface immediately;
+      // there is nothing a retry can fix and each attempt burns quota.
+      if (isPermanent(err)) break;
       if (attempt === attempts) break;
       const jitter = Math.random() * 500;
       const wait = baseDelay * 2 ** (attempt - 1) + jitter;
@@ -90,25 +120,20 @@ async function retry<T>(
 
 // -------- Very small TTL cache -----------------------------------------------
 // Deliberately in-memory only: this is a single-process Next.js app, so no
-// need for Redis. TTL comes from `CACHE_TTL_SECONDS` in the env.
-type CacheEntry<T> = { value: T; expiresAt: number };
-const cache = new Map<string, CacheEntry<unknown>>();
+// need for Redis. TTL comes from `CACHE_TTL_SECONDS` in the env. `maxSize`
+// prevents a runaway process (or a bad-actor request loop) from growing the
+// map unboundedly — oldest entries are evicted first.
+const cache = createTtlCache<unknown>({
+  defaultTtlMs: settings.cacheTtlSeconds * 1000,
+  maxSize: 500,
+});
 
 function cacheGet<T>(key: string): T | undefined {
-  const entry = cache.get(key);
-  if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) {
-    cache.delete(key);
-    return undefined;
-  }
-  return entry.value as T;
+  return cache.get(key) as T | undefined;
 }
 
 function cacheSet<T>(key: string, value: T): void {
-  cache.set(key, {
-    value,
-    expiresAt: Date.now() + settings.cacheTtlSeconds * 1000,
-  });
+  cache.set(key, value);
 }
 
 /**
@@ -121,7 +146,7 @@ export function invalidateCache(ticker?: string): void {
     return;
   }
   const marker = `:${ticker.toUpperCase()}:`;
-  for (const key of Array.from(cache.keys())) {
+  for (const key of cache.keys()) {
     if (key.includes(marker)) cache.delete(key);
   }
 }

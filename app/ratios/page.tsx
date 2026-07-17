@@ -13,7 +13,7 @@ import { useIsBeginner, useLocale } from "@/lib/state";
 import { useT } from "@/lib/i18n";
 import { metricHint, groupIntro, metricLabel, groupTitle } from "@/lib/knowledge";
 import { LOSS_TOKEN, type MetricGroup, type Tone } from "@/lib/ratios";
-import { cn } from "@/lib/utils";
+import { cn, renderMiniMarkdown } from "@/lib/utils";
 
 /** Map a semantic tone to the Tailwind text colour we render it with. */
 const TONE_TEXT: Record<Tone, string> = {
@@ -139,7 +139,9 @@ function GroupCard({ group }: { group: MetricGroup }) {
   const beginner = useIsBeginner();
   const locale = useLocale();
   const intro = beginner ? groupIntro(group.title, locale) : "";
-  const introHtml = intro.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Escape HTML before applying the mini-markdown so any future
+  // interpolation into `groupIntro` can't inject tags.
+  const introHtml = renderMiniMarkdown(intro);
   const localizedTitle = groupTitle(group.title, locale);
 
   return (

@@ -84,15 +84,20 @@ function SignalRow({
   detailEn,
   weight,
   category,
+  params,
 }: {
   keyId: string;
   detailEn: string;
   weight: number;
   category: string;
+  params?: Record<string, string | number>;
 }) {
   const t = useT();
   const bullish = weight > 0;
-  const localized = t(`ts.row.${keyId}`, {});
+  // Params are forwarded so localized strings can interpolate numeric
+  // context (e.g. the Fear & Greed score). Rows whose translations
+  // don't reference placeholders are unaffected.
+  const localized = t(`ts.row.${keyId}`, params ?? {});
   const label = localized === `ts.row.${keyId}` ? detailEn : localized;
   return (
     <li className="grid grid-cols-[auto_1fr_auto] items-start gap-3 py-2 border-b border-border/50 last:border-0">
@@ -228,6 +233,7 @@ export function TechnicalSignalCard({ signal }: { signal: TechnicalSignal }) {
                       detailEn={row.detailEn}
                       weight={row.weight}
                       category={row.category}
+                      params={row.params}
                     />
                   ))}
               </ul>

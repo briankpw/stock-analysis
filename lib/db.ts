@@ -24,6 +24,11 @@ export function getDb(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
+  // Two processes (ui + worker) share this file. WAL mode makes readers
+  // non-blocking, but write<->write collisions can still fire SQLITE_BUSY
+  // when both containers boot simultaneously and race on schema creation.
+  // A 5s wait is generous — every write path in the app finishes in <10ms.
+  db.pragma("busy_timeout = 5000");
 
   // ---- Schema (idempotent) ----------------------------------------------
   db.exec(`
@@ -263,9 +268,46 @@ export function getDb(): Database.Database {
     "INSERT OR IGNORE INTO watchlist (symbol, display_name, created_at) VALUES (?, ?, ?)",
   ).run(settings.ticker, settings.companyName, new Date().toISOString());
 
+  // ---- Schema versioning + forward-only migrations ---------------------
+  // Every additive change to the schema goes into the `MIGRATIONS` array
+  // as a new function. Existing databases will run only the migrations
+  // whose index is >= their recorded `schema_version`; fresh databases
+  // run every migration in order. This lets us evolve the schema without
+  // manual ALTER-in-console cargo-culting.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  const currentRow = db
+    .prepare("SELECT version FROM schema_version WHERE id = 1")
+    .get() as { version: number } | undefined;
+  const currentVersion = currentRow?.version ?? 0;
+  for (let i = currentVersion; i < MIGRATIONS.length; i++) {
+    const migrate = MIGRATIONS[i]!;
+    migrate(db);
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO schema_version (id, version, updated_at) VALUES (1, ?, ?) " +
+      "ON CONFLICT(id) DO UPDATE SET version = excluded.version, updated_at = excluded.updated_at",
+  ).run(MIGRATIONS.length, now);
+
   _db = db;
   return db;
 }
+
+/**
+ * Additive migrations. Each entry runs at most once per database — the
+ * `schema_version` row records how many have executed so far. When adding
+ * a new migration, append to this array; never renumber or reorder.
+ */
+const MIGRATIONS: Array<(db: Database.Database) => void> = [
+  // v1: no-op sentinel so newly-created databases still record a version.
+  () => {},
+];
 
 /** Testing / cleanup helper. */
 export function closeDb(): void {
@@ -273,4 +315,18 @@ export function closeDb(): void {
     _db.close();
     _db = null;
   }
+}
+
+/**
+ * Run `fn` inside a single SQLite transaction. Useful for batching multiple
+ * inserts (notifications, signals, watches) so WAL fsyncs happen once per
+ * batch rather than per row. Rethrows on failure so callers can decide
+ * whether to log / surface the error.
+ *
+ * The callback is synchronous — better-sqlite3 doesn't support async work
+ * inside `db.transaction()`. Callers should stage all async work (fetches,
+ * API calls) BEFORE opening the transaction.
+ */
+export function runInTransaction<T>(fn: () => T): T {
+  return getDb().transaction(fn)();
 }

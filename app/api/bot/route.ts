@@ -12,6 +12,7 @@ import {
 } from "@/lib/bot/store";
 import { STRATEGIES, type StrategyKey } from "@/lib/bot/strategy";
 import { settings, telegramConfigured } from "@/lib/config";
+import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,9 +68,7 @@ export async function POST(req: Request) {
       }
     }
   } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 400 },
-    );
+    const r = redactError(e, 400);
+    return NextResponse.json({ ok: false, error: r.message }, { status: r.status });
   }
 }

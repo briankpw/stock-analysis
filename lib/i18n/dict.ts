@@ -23,8 +23,8 @@ export interface Entry {
 
 export const DICT: Readonly<Record<string, Entry>> = {
   // -------- Brand --------
-  "brand.name":        { en: "Key Stock",           "zh-CN": "Key Stock" },
-  "brand.subtitle":    { en: "Analysis Dashboard",  "zh-CN": "股票分析仪表板" },
+  "brand.name":        { en: "Stock Analysis",      "zh-CN": "股票分析" },
+  "brand.subtitle":    { en: "Interactive Dashboard", "zh-CN": "交互式仪表板" },
 
   // -------- Sidebar sections --------
   "sidebar.view":            { en: "View",       "zh-CN": "视图" },
@@ -33,6 +33,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "sidebar.language":        { en: "Language",   "zh-CN": "语言" },
   "sidebar.ticker":          { en: "Ticker",     "zh-CN": "股票代码" },
   "sidebar.portfolios":      { en: "Portfolios", "zh-CN": "投资组合" },
+  "sidebar.market":          { en: "Market",     "zh-CN": "市场" },
   "sidebar.primaryNav":      { en: "Primary navigation",   "zh-CN": "主导航" },
   "sidebar.portfolioNav":    { en: "Portfolio presets",    "zh-CN": "投资组合预设" },
   "sidebar.toggleMenu":      { en: "Toggle menu",          "zh-CN": "切换菜单" },
@@ -47,6 +48,10 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "nav.paper":       { en: "Paper Trading",         "zh-CN": "模拟交易" },
   "nav.bot":         { en: "Alert Bot",             "zh-CN": "提醒机器人" },
   "nav.raw":         { en: "Raw Data",              "zh-CN": "原始数据" },
+  "nav.market":      { en: "Market Mood",           "zh-CN": "市场情绪" },
+
+  "market.heading":     { en: "Market Mood",                                          "zh-CN": "市场情绪" },
+  "market.subheading":  { en: "How the US market is feeling right now — updated every close.", "zh-CN": "美股当前的整体情绪——每次收盘后更新。" },
 
   // -------- Mode / experience / theme / locale toggles --------
   "mode.stock":       { en: "Stock",     "zh-CN": "个股" },
@@ -312,7 +317,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
 
   // -------- Technical Signal (Buy/Sell) card --------
   "ts.title":                  { en: "Technical Signal",         "zh-CN": "技术面信号" },
-  "ts.subtitle":               { en: "A weighted vote of today's indicators — trend, momentum, mean-reversion, and support/resistance proximity.", "zh-CN": "对今日各项指标（趋势、动量、均值回归、支撑/阻力位）加权投票的综合结果。" },
+  "ts.subtitle":               { en: "A weighted vote of today's indicators — trend, momentum, mean-reversion, support/resistance, and the market-wide Fear & Greed backdrop.", "zh-CN": "对今日各项指标（趋势、动量、均值回归、支撑/阻力位，以及全市场的恐惧与贪婪背景）加权投票的综合结果。" },
   "ts.scoreLabel":             { en: "Score",                    "zh-CN": "得分" },
   "ts.contributors":           { en: "Contributing signals ({n})", "zh-CN": "参与信号 ({n})" },
   "ts.noContribs":             { en: "Not enough data — every indicator returned neutral.", "zh-CN": "数据不足——所有指标均为中性。" },
@@ -360,6 +365,8 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ts.row.kdj.deathCross":           { en: "KDJ death cross — K just crossed below D.", "zh-CN": "KDJ 死叉——K 线刚下穿 D 线。" },
   "ts.row.kdj.oversold":             { en: "KDJ oversold and turning up (K below 20, rising through D).", "zh-CN": "KDJ 超卖回升（K 低于 20 并向上穿 D）。" },
   "ts.row.kdj.overbought":           { en: "KDJ overbought and turning down (K above 80, falling through D).", "zh-CN": "KDJ 超买回落（K 高于 80 并向下穿 D）。" },
+  "ts.row.mood.extremeFear":         { en: "Market in Extreme Fear (F&G = {value}) — often a contrarian buy signal.", "zh-CN": "市场处于极度恐惧（恐惧与贪婪 = {value}）——常被视为逆向买入信号。" },
+  "ts.row.mood.extremeGreed":        { en: "Market in Extreme Greed (F&G = {value}) — pullback risk, often a contrarian sell signal.", "zh-CN": "市场处于极度贪婪（恐惧与贪婪 = {value}）——存在回调风险，常被视为逆向卖出信号。" },
 
   // -------- Indicators page --------
   "indicators.title":               { en: "Technical Indicators", "zh-CN": "技术指标" },

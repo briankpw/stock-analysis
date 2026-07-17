@@ -18,6 +18,8 @@ import {
   listCustomPeople,
   listCustomPoliticians,
 } from "./portfolio-presets";
+import { timedFetch } from "./http";
+import { createTtlCache } from "./utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -347,21 +349,21 @@ export function findPersonPreset(id: string): PersonPreset | undefined {
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------
+//
+// Bounded TTL cache — same shape as `lib/data.ts`. Uses `createTtlCache` so
+// we get built-in expiration + LRU eviction rather than three ad-hoc copies
+// of the same pattern.
 
-type CacheEntry<T> = { value: T; expiresAt: number };
-const cache = new Map<string, CacheEntry<unknown>>();
+const cache = createTtlCache<unknown>({
+  defaultTtlMs: settings.portfolios.cacheTtlSeconds * 1000,
+  maxSize: 300,
+});
 
 function cacheGet<T>(key: string): T | undefined {
-  const entry = cache.get(key);
-  if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) {
-    cache.delete(key);
-    return undefined;
-  }
-  return entry.value as T;
+  return cache.get(key) as T | undefined;
 }
 function cacheSet<T>(key: string, value: T, ttlSeconds = settings.portfolios.cacheTtlSeconds): void {
-  cache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+  cache.set(key, value, ttlSeconds * 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,9 +441,10 @@ async function fetchHouseFilingsForYear(year: number): Promise<HouseFilingRaw[]>
   if (cached) return cached;
 
   const url = HOUSE_CLERK_ZIP(year);
-  const res = await fetch(url, {
+  const res = await timedFetch(url, {
     cache: "no-store",
     headers: { "User-Agent": settings.portfolios.secUserAgent },
+    timeoutMs: 45_000, // ZIP is ~700 KB; give downloads time on slow links
   });
   if (!res.ok) {
     throw new DataSourceUnavailableError("house-clerk", res.status);
@@ -509,9 +512,16 @@ export async function fetchPoliticianTrades(
   const preset = findPoliticianPreset(id);
   if (!preset) throw new Error(`Unknown politician preset: ${id}`);
 
-  const key = `portfolios:politician:${preset.id}:${limit}:${parseLimit}`;
+  // Cache key is anchored on `parseLimit` (the primary cost knob).
+  // Different `limit` values just re-slice the same underlying report
+  // on read, so we don't want them to invalidate the cache.
+  const key = `portfolios:politician:${preset.id}:${parseLimit}`;
   const cached = cacheGet<PoliticianReport>(key);
-  if (cached) return cached;
+  if (cached) {
+    // Reapply the caller's `limit` to the cached filings list so a
+    // narrower request doesn't accidentally return an over-wide payload.
+    return { ...cached, filings: cached.filings.slice(0, limit) };
+  }
 
   // The House Clerk source is House-of-Representatives only. Senate PTR
   // filings live on efdsearch.senate.gov and require an interactive
@@ -603,26 +613,59 @@ export async function fetchPoliticianTrades(
 // PTR PDF parsing — extract per-trade rows from a House Clerk PDF
 // ---------------------------------------------------------------------------
 
-/** Cache of extracted PDF text keyed by pdfUrl, so hot-reload doesn't repeat pdfjs work. */
-const _ptrTextCache = new Map<string, string>();
+/**
+ * Cache of extracted PDF text keyed by pdfUrl, so hot-reload doesn't repeat
+ * pdfjs work. Successful extractions are cached indefinitely (PTR filings
+ * are immutable once posted). Failures are cached with a short TTL so a
+ * transient 5xx doesn't permanently pin the entry as "empty".
+ */
+interface PtrCacheEntry {
+  text: string;
+  /** null = success, cache indefinitely; number = failure, expires at ms epoch. */
+  expiresAt: number | null;
+}
+const _ptrTextCache = new Map<string, PtrCacheEntry>();
+const PTR_FAILURE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 async function fetchPtrPdfText(pdfUrl: string): Promise<string | null> {
   const cached = _ptrTextCache.get(pdfUrl);
-  if (cached !== undefined) return cached || null;
+  if (cached) {
+    if (cached.expiresAt === null || cached.expiresAt > Date.now()) {
+      return cached.text || null;
+    }
+    _ptrTextCache.delete(pdfUrl);
+  }
 
-  const res = await fetch(pdfUrl, {
-    cache: "no-store",
-    headers: { "User-Agent": settings.portfolios.secUserAgent },
-  });
-  if (!res.ok) return null;
+  const rememberFailure = () => {
+    _ptrTextCache.set(pdfUrl, {
+      text: "",
+      expiresAt: Date.now() + PTR_FAILURE_TTL_MS,
+    });
+  };
+
+  let res: Response;
+  try {
+    res = await timedFetch(pdfUrl, {
+      cache: "no-store",
+      headers: { "User-Agent": settings.portfolios.secUserAgent },
+      timeoutMs: 30_000,
+    });
+  } catch {
+    rememberFailure();
+    return null;
+  }
+  if (!res.ok) {
+    rememberFailure();
+    return null;
+  }
   const bytes = new Uint8Array(await res.arrayBuffer());
 
   try {
     const { text } = await _pdfExtractText(bytes, { mergePages: true });
-    _ptrTextCache.set(pdfUrl, text);
+    _ptrTextCache.set(pdfUrl, { text, expiresAt: null });
     return text;
   } catch {
-    _ptrTextCache.set(pdfUrl, "");
+    rememberFailure();
     return null;
   }
 }
@@ -874,7 +917,11 @@ async function findLatest13F(cik: string): Promise<{
   filingDate: string;
 } | null> {
   const url = `${SEC_BASE}/submissions/CIK${cik}.json`;
-  const res = await fetch(url, { headers: secHeaders(), cache: "no-store" });
+  const res = await timedFetch(url, {
+    headers: secHeaders(),
+    cache: "no-store",
+    timeoutMs: 20_000,
+  });
   if (!res.ok) {
     throw new Error(`SEC submissions GET → HTTP ${res.status}`);
   }
@@ -908,7 +955,11 @@ async function findInfoTableXml(
   accessionDashless: string,
 ): Promise<string | null> {
   const indexUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/index.json`;
-  const res = await fetch(indexUrl, { headers: secHeaders(), cache: "no-store" });
+  const res = await timedFetch(indexUrl, {
+    headers: secHeaders(),
+    cache: "no-store",
+    timeoutMs: 20_000,
+  });
   if (!res.ok) return null;
   const body = (await res.json()) as {
     directory?: { item?: SecIndexEntry[] };
@@ -1012,7 +1063,11 @@ export async function fetchFund13F(id: string): Promise<FundReport> {
   let holdings: FundHolding[] = [];
   if (infoTableName) {
     const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${infoTableName}`;
-    const xmlRes = await fetch(xmlUrl, { headers: secHeaders(), cache: "no-store" });
+    const xmlRes = await timedFetch(xmlUrl, {
+      headers: secHeaders(),
+      cache: "no-store",
+      timeoutMs: 30_000,
+    });
     if (xmlRes.ok) {
       const xml = await xmlRes.text();
       holdings = parse13FXml(xml);
@@ -1282,14 +1337,28 @@ export async function fetchPersonInsiderReport(
   const preset = findPersonPreset(id);
   if (!preset) throw new Error(`Unknown person preset: ${id}`);
 
-  const clampedLimit = Math.max(5, Math.min(120, limit));
-  const key = `portfolios:person:${preset.id}:${clampedLimit}`;
+  const requestedLimit = Math.max(5, Math.min(120, limit));
+  // Always fetch at the max cap and slice on read. This means moving the
+  // "Recent filings" slider or re-visiting the page with a different
+  // preset limit never re-hits SEC — the cache is keyed on the preset id.
+  const MAX_LIMIT = 120;
+  const key = `portfolios:person:${preset.id}:${MAX_LIMIT}`;
   const cached = cacheGet<PersonReport>(key);
-  if (cached) return cached;
+  if (cached) {
+    return {
+      ...cached,
+      recentTransactions: cached.recentTransactions.slice(0, requestedLimit),
+    };
+  }
+  const clampedLimit = MAX_LIMIT;
 
   // Step 1 — pull the submissions index and pluck all insider filings.
   const submissionsUrl = `${SEC_BASE}/submissions/CIK${preset.cik}.json`;
-  const subRes = await fetch(submissionsUrl, { headers: secHeaders(), cache: "no-store" });
+  const subRes = await timedFetch(submissionsUrl, {
+    headers: secHeaders(),
+    cache: "no-store",
+    timeoutMs: 20_000,
+  });
   if (!subRes.ok) {
     throw new DataSourceUnavailableError("sec-edgar-submissions", subRes.status);
   }
@@ -1334,7 +1403,11 @@ export async function fetchPersonInsiderReport(
     const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${xmlFilename}`;
     const filingUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${preset.cik}&type=${f.form.replace("/A", "")}&dateb=&owner=include&count=40`;
     try {
-      const res = await fetch(xmlUrl, { headers: secHeaders(), cache: "no-store" });
+      const res = await timedFetch(xmlUrl, {
+        headers: secHeaders(),
+        cache: "no-store",
+        timeoutMs: 20_000,
+      });
       if (!res.ok) return { txs: [], ok: false };
       const xml = await res.text();
       const { transactions } = parseForm4Xml(xml, f.form, f.filingDate, f.accessionNumber, filingUrl);
@@ -1368,7 +1441,13 @@ export async function fetchPersonInsiderReport(
     source: submissionsUrl,
   };
   cacheSet(key, report);
-  return report;
+  // Respect the caller's requested limit even on cold-fetch — otherwise
+  // the first call would return `MAX_LIMIT` entries and subsequent calls
+  // (from cache) would return `requestedLimit`.
+  return {
+    ...report,
+    recentTransactions: report.recentTransactions.slice(0, requestedLimit),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,12 +1565,13 @@ async function fetchFtsPage(
   url.searchParams.set("entityName", entityName);
   url.searchParams.set("forms", forms);
   url.searchParams.set("hits", "100");
-  const res = await fetch(url.toString(), {
+  const res = await timedFetch(url.toString(), {
     cache: "no-store",
     headers: {
       "User-Agent": settings.portfolios.secUserAgent,
       "Accept": "application/json",
     },
+    timeoutMs: 15_000,
   });
   if (!res.ok) {
     throw new DataSourceUnavailableError("sec-edgar-fts", res.status);

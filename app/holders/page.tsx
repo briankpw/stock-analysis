@@ -164,7 +164,7 @@ function InsiderTable({ rows }: { rows: InsiderHolder[] }) {
 
   return (
     <Card>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -253,7 +253,7 @@ function InsiderTxnTable({ rows }: { rows: InsiderTransaction[] }) {
 
   return (
     <Card>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
@@ -349,7 +349,7 @@ function InstitutionTable({
 
   return (
     <Card>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
