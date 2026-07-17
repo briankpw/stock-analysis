@@ -122,25 +122,88 @@ function extractToken(req: NextRequest): string | null {
 // container orchestrators (Docker, Portainer, k8s) probe these on a fixed
 // interval and cannot present a bearer token. Keep the list minimal and
 // GET-only; anything here is effectively public.
-const UNPROTECTED_PATHS = new Set(["/api/health"]);
+const UNPROTECTED_PATHS = new Set([
+  "/api/health",
+  // Auth endpoints have to be reachable without an existing session,
+  // otherwise a fresh browser can never obtain one.
+  "/api/auth/login",
+  "/api/auth/status",
+]);
+
+// Page routes that must render for an unauthenticated visitor — the
+// login screen itself, obviously, plus any framework-managed system
+// URLs that should never be redirected.
+const UNPROTECTED_PAGES = new Set(["/login"]);
+
+// Path prefixes we never touch: Next.js internals, static PWA assets,
+// and anything under /_next/. Handled here (as opposed to via the
+// matcher) so the config stays a single expression and the exclusion
+// logic is testable.
+const IGNORED_PREFIXES = [
+  "/_next/",
+  "/icons/",
+  "/favicon.ico",
+  "/service-worker.js",
+  "/manifest.webmanifest",
+  "/robots.txt",
+];
+
+function isPageRequest(req: NextRequest): boolean {
+  // `sec-fetch-dest: document` is the most reliable browser signal for
+  // "top-level navigation". Fallback to Accept: text/html for older UAs
+  // and for curl -H 'Accept: text/html' style debugging.
+  if (req.headers.get("sec-fetch-dest") === "document") return true;
+  const accept = req.headers.get("accept") || "";
+  return accept.includes("text/html");
+}
+
+function redirectToLogin(req: NextRequest): NextResponse {
+  const url = req.nextUrl.clone();
+  const original = req.nextUrl.pathname + req.nextUrl.search;
+  url.pathname = "/login";
+  url.search = original && original !== "/" ? `?next=${encodeURIComponent(original)}` : "";
+  return NextResponse.redirect(url);
+}
 
 export function middleware(req: NextRequest): NextResponse | undefined {
   const { pathname } = req.nextUrl;
   const method = req.method.toUpperCase();
 
-  // ---- 0. Unprotected probe endpoints --------------------------------
-  // Healthcheck must succeed even when APP_TOKEN is set, otherwise Docker
-  // marks the container unhealthy on boot and enters a restart loop.
-  if (UNPROTECTED_PATHS.has(pathname) && (method === "GET" || method === "HEAD")) {
-    return undefined;
+  // ---- Ignored prefixes ---------------------------------------------
+  // Cheap prefix check up front so we don't run any logic against
+  // static assets. The matcher below already filters most of these,
+  // but keeping the explicit list here makes the exclusion contract
+  // grep-able and makes middleware-unit-testing straightforward.
+  for (const prefix of IGNORED_PREFIXES) {
+    if (pathname === prefix || pathname.startsWith(prefix)) return undefined;
   }
 
-  // ---- 1. Optional bearer token (covers every /api/* request) --------
+  // ---- 0. Unprotected probe / auth endpoints -------------------------
+  // Healthcheck must succeed even when APP_TOKEN is set, otherwise
+  // Docker marks the container unhealthy on boot and enters a restart
+  // loop. The login endpoint must be reachable so users can obtain a
+  // cookie in the first place; the status endpoint answers "is auth
+  // needed?" for the login page without leaking any secret.
+  if (UNPROTECTED_PATHS.has(pathname)) return undefined;
+  if (UNPROTECTED_PAGES.has(pathname)) return undefined;
+
+  // ---- 1. Optional bearer token (covers /api/* AND page routes) -----
+  // When APP_TOKEN is set, we require it on every non-whitelisted
+  // request. For API calls we still return JSON 401 (scripts / fetches
+  // want a machine-readable error). For page navigations we redirect
+  // to /login so the browser experience is "click link → type token →
+  // land on the intended page".
   if (APP_TOKEN) {
     const token = extractToken(req);
-    if (!token) return unauthorized("Missing token");
-    if (token !== APP_TOKEN) return unauthorized("Invalid token");
+    if (!token || token !== APP_TOKEN) {
+      if (isPageRequest(req)) return redirectToLogin(req);
+      return unauthorized(token ? "Invalid token" : "Missing token");
+    }
   }
+
+  // Below this point we only apply the CSRF + rate-limit guards to
+  // /api/* — those don't make sense for regular page GETs.
+  if (!pathname.startsWith("/api/")) return undefined;
 
   // ---- 2. Same-origin CSRF check on mutations ------------------------
   if (MUTATION_METHODS.has(method)) {
@@ -200,7 +263,13 @@ export function middleware(req: NextRequest): NextResponse | undefined {
 }
 
 export const config = {
-  // Only intercept API traffic — page loads, static assets, and the
-  // service-worker registration stay out of the middleware path.
-  matcher: ["/api/:path*"],
+  // Match everything except Next.js internals, static PWA assets, and
+  // media types that never need auth. The excluded set mirrors
+  // `IGNORED_PREFIXES` above (redundant on purpose — the matcher stops
+  // the middleware from ever booting for these paths, while the
+  // in-function check protects when the middleware IS invoked, e.g.
+  // via a rewrite target).
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|icons/|service-worker.js|manifest.webmanifest|robots.txt).*)",
+  ],
 };

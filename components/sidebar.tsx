@@ -13,6 +13,7 @@ import { LocaleToggle } from "./locale-toggle";
 import { ModeToggle } from "./mode-toggle";
 import { TickerPicker } from "./ticker-picker";
 import { PortfoliosRail } from "./portfolios-rail";
+import { AuthStatus } from "./auth-status";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -192,6 +193,9 @@ export function Sidebar() {
             <p className="metric-label">{t("sidebar.language")}</p>
             <LocaleToggle className="w-full" />
           </div>
+          {/* Renders only when APP_TOKEN mode is active AND the user
+              has a live session. Silent otherwise. */}
+          <AuthStatus />
         </div>
       </aside>
 
