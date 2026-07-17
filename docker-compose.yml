@@ -43,7 +43,16 @@ services:
     build: *default_build
     container_name: ${STACK_NAME:-key-stock}-ui
     restart: unless-stopped
-    init: true
+    # Run as PUID:PGID from the start. Combined with `cap_drop: [ALL]`
+    # this means the entrypoint never touches chown() or setgroups() —
+    # both of which require capabilities we've dropped. The host must
+    # have chowned the bind-mounted /app/data to this uid:gid up front
+    # (or leave the default named volume, which is created empty).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    # `init: true` would add docker-init as PID 1 in addition to the
+    # tini baked into ENTRYPOINT, producing a spurious "not running as
+    # PID 1" warning from tini. Rely on the image's tini alone.
+    init: false
     read_only: true
     tmpfs:
       - /tmp:size=64M,mode=1777
@@ -108,7 +117,8 @@ services:
     container_name: ${STACK_NAME:-key-stock}-worker
     command: ["node", "dist/worker.js"]
     restart: unless-stopped
-    init: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    init: false
     read_only: true
     tmpfs:
       - /tmp:size=64M,mode=1777

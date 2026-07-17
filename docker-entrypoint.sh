@@ -2,32 +2,51 @@
 # =============================================================================
 # Container entrypoint.
 #
-# Runs as root, then drops to an arbitrary PUID/PGID before exec-ing the
-# real CMD. This is the LinuxServer.io-style "match host uid/gid" pattern
-# — it lets bind-mounted host directories be owned by the deploying user
-# (e.g. `1000:1000` on Ubuntu, `501:20` on macOS) without a manual chown
-# dance on every fresh volume.
+# Two supported startup modes:
 #
-# Design notes:
+#   1) Container starts NON-ROOT (compose has `user: "${PUID}:${PGID}"`).
+#      We just export HOME and exec the CMD. This is the hardened mode —
+#      compatible with `cap_drop: [ALL]` and `no-new-privileges:true`
+#      because neither chown() nor setgroups() are ever called.
+#      Requires the host to have chowned the bind mount to PUID:PGID
+#      before start; on named volumes Docker creates it root-owned so
+#      an initial `docker exec ... chown` may be needed the first time.
 #
-#   * We accept numeric UID/GID directly (su-exec supports this), so there
-#     is NO usermod / groupmod step. That's important because our compose
-#     files set `read_only: true` — /etc/passwd cannot be written to
-#     anyway. Node.js does not need a matching passwd row to run.
+#   2) Container starts as ROOT (no `user:` in compose, or `--user 0:0`
+#      on `docker run`). We chown /app/data to PUID:PGID and su-exec
+#      down. This is the LinuxServer.io-style path and requires
+#      CAP_CHOWN + CAP_SETGID + CAP_SETUID to be present in the
+#      container — DO NOT combine it with `cap_drop: [ALL]`.
 #
-#   * We only chown /app/data. Everything else on the root filesystem is
-#     either read-only (baked into the image) or a tmpfs (`/tmp`), and
-#     the container's process only ever writes to /app/data.
-#
-#   * chown failures are downgraded to a warning. Some bind mounts (NFS
-#     with root_squash, ZFS with restricted xattrs) will reject chown
-#     from inside the container even when running as root; in that case
-#     the operator has to prepare the host directory themselves and the
-#     warning explains what to check.
+# The dual-mode design means the same image works both for the hardened
+# production compose stack (mode 1) and for a plain `docker run` on a
+# dev laptop (mode 2), without maintaining two images.
 # =============================================================================
 
 set -eu
 
+# Point HOME at a writable path in case a downstream library dereferences
+# it (npm, node's os.homedir(), etc.). /tmp is a tmpfs in our compose
+# files so writes are ephemeral by design.
+export HOME="${HOME:-/tmp}"
+
+CURRENT_UID="$(id -u)"
+
+if [ "${CURRENT_UID}" != "0" ]; then
+  # Mode 1 — already non-root. We can't chown anything (no CAP_CHOWN
+  # in the hardened profile), so trust that the operator has prepared
+  # /app/data with the correct ownership. Everything else on the root
+  # filesystem is read-only or a tmpfs, so no other writable paths
+  # need setup.
+  if [ -d /app/data ] && [ ! -w /app/data ]; then
+    echo "[entrypoint] warn: /app/data is not writable by uid ${CURRENT_UID}." \
+         "chown it on the host to match the container's runtime uid," \
+         "or drop the compose 'user:' override to use the root+su-exec path."
+  fi
+  exec "$@"
+fi
+
+# Mode 2 — we're root; do the LinuxServer.io dance.
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
@@ -39,12 +58,11 @@ if [ -d /app/data ]; then
   fi
 fi
 
-# Point HOME at a writable path in case a downstream library dereferences
-# it (npm, node's os.homedir(), etc.). /tmp is a tmpfs in our compose
-# files so writes are ephemeral by design.
-export HOME="${HOME:-/tmp}"
-
 # su-exec is a lightweight ~10 KB C replacement for gosu — it uses
-# setuid() + execve() so no privilege escalation happens (compatible
-# with `security_opt: no-new-privileges:true`).
+# setgroups() + setgid() + setuid() + execve(), which requires
+# CAP_SETGID + CAP_SETUID in the container's capability set. If those
+# were dropped (e.g. `cap_drop: [ALL]` without the corresponding
+# `cap_add`) the setgroups() call fails with EPERM. Fix: run the
+# container with `user: "PUID:PGID"` so we take the non-root path above
+# and never need those capabilities.
 exec su-exec "${PUID}:${PGID}" "$@"
