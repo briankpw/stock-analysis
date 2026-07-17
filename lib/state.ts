@@ -20,7 +20,11 @@ interface UiState {
   locale: Locale;
   period: string;
   interval: string;
+  /** SMA 20/50/200 chart overlay. Off by default; users can turn it on. */
   showSma: boolean;
+  /** EMA 24/52/200 chart overlay. On by default — this is now the primary MA family. */
+  showEma: boolean;
+  /** Bollinger Bands (20, 2σ) chart overlay. Off by default. */
   showBb: boolean;
 
   setTicker: (t: string) => void;
@@ -29,8 +33,14 @@ interface UiState {
   setPeriod: (p: string) => void;
   setInterval: (i: string) => void;
   toggleSma: () => void;
+  toggleEma: () => void;
   toggleBb: () => void;
 }
+
+// Persistence schema version. Bump whenever the *default* value of a
+// persisted field changes and existing users should be migrated to the new
+// default. Handled below in `persist({ version, migrate })`.
+const PERSIST_VERSION = 1;
 
 export const useUi = create<UiState>()(
   persist(
@@ -40,7 +50,8 @@ export const useUi = create<UiState>()(
       locale: "en",
       period: "1y",
       interval: "1d",
-      showSma: true,
+      showSma: false,
+      showEma: true,
       showBb: false,
 
       setTicker: (ticker) => set({ ticker: ticker.toUpperCase() }),
@@ -49,9 +60,25 @@ export const useUi = create<UiState>()(
       setPeriod: (period) => set({ period }),
       setInterval: (interval) => set({ interval }),
       toggleSma: () => set((s) => ({ showSma: !s.showSma })),
+      toggleEma: () => set((s) => ({ showEma: !s.showEma })),
       toggleBb: () => set((s) => ({ showBb: !s.showBb })),
     }),
-    { name: "key-stock-ui" },
+    {
+      name: "key-stock-ui",
+      version: PERSIST_VERSION,
+      // v0 -> v1: EMA 24/52/200 became the primary moving-average overlay and
+      // SMA switched to opt-in. Force these two defaults for users upgrading
+      // from a pre-v1 persisted store so they see the new chart out of the
+      // box; every other field (ticker, period, level, locale, showBb) is
+      // preserved as-is.
+      migrate: (persistedState, version) => {
+        const s = (persistedState ?? {}) as Partial<UiState>;
+        if (version < 1) {
+          return { ...s, showSma: false, showEma: true } as UiState;
+        }
+        return s as UiState;
+      },
+    },
   ),
 );
 

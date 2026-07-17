@@ -23,7 +23,12 @@ export const viewport: Viewport = {
   themeColor: "#0f1220",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 5,
+  // Lock the layout on mobile: no pinch-zoom, no user-driven scale so
+  // the app feels like a native shell instead of a scaled webpage.
+  maximumScale: 1,
+  userScalable: false,
+  // Extend the background into the iOS safe area (notch / home indicator).
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -31,9 +36,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen antialiased">
         <Providers>
-          <div className="lg:grid lg:grid-cols-[18rem_1fr] min-h-screen">
+          <div className="lg:grid lg:grid-cols-[18rem_1fr] min-h-screen w-full max-w-full">
             <Sidebar />
-            <main className="min-w-0 px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+            <main className="app-main min-w-0 max-w-full py-6 lg:py-8">
               {children}
             </main>
           </div>

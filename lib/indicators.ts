@@ -346,6 +346,77 @@ export function supportResistance(
   return { support, resistance };
 }
 
+// ---------------------------------------------------------------------------
+// KDJ — the stochastic-oscillator variant that dominates Chinese trading
+// platforms (Moomoo/Futu/同花顺). Complements RSI (gain/loss-based) and
+// MACD (trend-based) by asking a different question: *where inside the
+// recent high–low range does today's close sit?*
+//
+// Standard parameters (9, 3, 3):
+//   RSV_t = (close_t − min(low, N=9)) / (max(high, N=9) − min(low, N=9)) × 100
+//   K_t   = (2/3) · K_{t-1} + (1/3) · RSV_t     (equivalent to SMMA-3)
+//   D_t   = (2/3) · D_{t-1} + (1/3) · K_t       (SMMA-3 of K)
+//   J_t   = 3·K_t − 2·D_t                       (leading indicator, can go
+//                                                below 0 or above 100)
+//
+// Both K and D are seeded at 50 when RSV is first defined — the Chinese-
+// trading-terminal convention. This makes the series start at exactly the
+// same point every time, which matters for reproducibility.
+// ---------------------------------------------------------------------------
+
+export interface KdjResult {
+  k: NullableSeries;
+  d: NullableSeries;
+  j: NullableSeries;
+}
+
+export function kdj(
+  bars: Bar[],
+  period = 9,
+  smoothK = 3,
+  smoothD = 3,
+): KdjResult {
+  const n = bars.length;
+  const k: NullableSeries = new Array(n).fill(null);
+  const d: NullableSeries = new Array(n).fill(null);
+  const j: NullableSeries = new Array(n).fill(null);
+  if (n < period) return { k, d, j };
+
+  const alphaK = 1 / smoothK;
+  const alphaD = 1 / smoothD;
+
+  // Convention: start K and D at 50 on the first bar where RSV is defined.
+  let prevK = 50;
+  let prevD = 50;
+
+  for (let i = period - 1; i < n; i++) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let w = i - period + 1; w <= i; w++) {
+      const b = bars[w]!;
+      if (b.high > hi) hi = b.high;
+      if (b.low < lo) lo = b.low;
+    }
+    const c = bars[i]!.close;
+    const range = hi - lo;
+    // If the range is zero (flat bar sequence) RSV is undefined; carry
+    // over the previous K/D so the series stays continuous.
+    const rsv = range === 0 ? prevK : ((c - lo) / range) * 100;
+
+    const kNow = alphaK * rsv + (1 - alphaK) * prevK;
+    const dNow = alphaD * kNow + (1 - alphaD) * prevD;
+    const jNow = 3 * kNow - 2 * dNow;
+
+    k[i] = kNow;
+    d[i] = dNow;
+    j[i] = jNow;
+
+    prevK = kNow;
+    prevD = dNow;
+  }
+  return { k, d, j };
+}
+
 /** Daily percentage returns (leading `null` because the first bar has none). */
 export function returns(values: number[]): NullableSeries {
   const out: NullableSeries = new Array(values.length).fill(null);
@@ -378,12 +449,16 @@ export interface Enriched {
   sma50: NullableSeries;
   sma200: NullableSeries;
   ema20: NullableSeries;
+  ema24: NullableSeries;
+  ema52: NullableSeries;
+  ema200: NullableSeries;
   rsi14: NullableSeries;
   macd: MacdResult;
   bb20: BollingerBands;
   atr14: NullableSeries;
   returns: NullableSeries;
   levels: SupportResistance;
+  kdj: KdjResult;
 }
 
 export function enrich(bars: Bar[]): Enriched {
@@ -395,12 +470,16 @@ export function enrich(bars: Bar[]): Enriched {
     sma50: sma(closes, 50),
     sma200: sma(closes, 200),
     ema20: ema(closes, 20),
+    ema24: ema(closes, 24),
+    ema52: ema(closes, 52),
+    ema200: ema(closes, 200),
     rsi14: rsi(closes, 14),
     macd: macd(closes),
     bb20: bollinger(closes, 20, 2),
     atr14: atr(bars, 14),
     returns: returns(closes),
     levels: supportResistance(bars),
+    kdj: kdj(bars, 9, 3, 3),
   };
 }
 

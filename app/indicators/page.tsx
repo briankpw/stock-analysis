@@ -18,6 +18,10 @@ const MacdChart = dynamic(
   () => import("@/components/indicator-charts").then((m) => m.MacdChart),
   { ssr: false, loading: () => <LoadingPage label="…" /> },
 );
+const KdjChart = dynamic(
+  () => import("@/components/indicator-charts").then((m) => m.KdjChart),
+  { ssr: false, loading: () => <LoadingPage label="…" /> },
+);
 const ReturnsHistogram = dynamic(
   () => import("@/components/indicator-charts").then((m) => m.ReturnsHistogram),
   { ssr: false },
@@ -69,6 +73,17 @@ export default function IndicatorsPage() {
               </CardHeader>
               <CardContent><MacdChart bars={data.bars} macd={data.indicators.macd} /></CardContent>
             </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>
+                  <TermTip term="KDJ">KDJ</TermTip> (9, 3, 3)
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  {t("indicators.kdj.subtitle")}
+                </p>
+              </CardHeader>
+              <CardContent><KdjChart bars={data.bars} kdj={data.indicators.kdj} /></CardContent>
+            </Card>
             <Card className="lg:col-span-2">
               <CardHeader>
                 <CardTitle>
@@ -117,6 +132,8 @@ export default function IndicatorsPage() {
               "Histogram",
               "EMA",
               "Divergence",
+              "KDJ",
+              "Stochastic Oscillator",
               "Support",
               "Resistance",
               "Daily Returns Distribution",

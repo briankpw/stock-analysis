@@ -304,6 +304,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
 
   // -------- Charts page --------
   "charts.title":              { en: "Price & Volume", "zh-CN": "价格与成交量" },
+  "charts.overlay.ema":        { en: "EMA 24 / 52 / 200", "zh-CN": "EMA 24 / 52 / 200" },
   "charts.overlay.sma":        { en: "SMA 20 / 50 / 200", "zh-CN": "SMA 20 / 50 / 200" },
   "charts.overlay.bb":         { en: "Bollinger Bands (20, 2σ)", "zh-CN": "布林带 (20, 2σ)" },
   "charts.meta":               { en: "{count} bars · {period} @ {interval}", "zh-CN": "{count} 根 K 线 · {period} @ {interval}" },
@@ -355,11 +356,16 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ts.row.momentum.down":            { en: "Recent 5-day return is negative.", "zh-CN": "近 5 日回报为负。" },
   "ts.row.levels.nearSupport":       { en: "Price is trading near a strong support level.", "zh-CN": "价格已回落至强支撑位附近。" },
   "ts.row.levels.nearResistance":    { en: "Price is testing a strong resistance level.", "zh-CN": "价格正在测试强阻力位。" },
+  "ts.row.kdj.goldenCross":          { en: "KDJ golden cross — K just crossed above D.", "zh-CN": "KDJ 金叉——K 线刚上穿 D 线。" },
+  "ts.row.kdj.deathCross":           { en: "KDJ death cross — K just crossed below D.", "zh-CN": "KDJ 死叉——K 线刚下穿 D 线。" },
+  "ts.row.kdj.oversold":             { en: "KDJ oversold and turning up (K below 20, rising through D).", "zh-CN": "KDJ 超卖回升（K 低于 20 并向上穿 D）。" },
+  "ts.row.kdj.overbought":           { en: "KDJ overbought and turning down (K above 80, falling through D).", "zh-CN": "KDJ 超买回落（K 高于 80 并向下穿 D）。" },
 
   // -------- Indicators page --------
   "indicators.title":               { en: "Technical Indicators", "zh-CN": "技术指标" },
   "indicators.rsi.subtitle":        { en: "Momentum oscillator. Above 70 = overbought, below 30 = oversold.", "zh-CN": "动量摆动指标。高于 70 表示超买，低于 30 表示超卖。" },
   "indicators.macd.subtitle":       { en: "MACD line vs signal line; the histogram shows their spread.", "zh-CN": "MACD 线与信号线；柱状图显示两者差距。" },
+  "indicators.kdj.subtitle":        { en: "Stochastic oscillator. K/D above 80 = overbought, below 20 = oversold. K crossing above D is bullish.", "zh-CN": "随机指标。K/D 高于 80 为超买，低于 20 为超卖；K 上穿 D 为多头信号。" },
   "indicators.returns.title":       { en: "Daily returns distribution", "zh-CN": "日回报率分布" },
   "indicators.returns.subtitle":    { en: "Histogram of day-over-day percent returns. Wide bell = volatile; tight peak = calm.", "zh-CN": "每日涨跌幅的直方图。宽钟形 = 波动大；集中尖峰 = 平稳。" },
   "indicators.sr.title":            { en: "Support & Resistance", "zh-CN": "支撑位与阻力位" },

@@ -244,16 +244,16 @@ export function FearGreedCard() {
           </div>
         )}
         {data && (
-          <div className="grid gap-4 md:grid-cols-[minmax(0,280px)_minmax(0,1fr)] items-start">
-            <div className="flex flex-col items-center">
+          <div className="grid gap-4 md:grid-cols-[minmax(0,260px)_minmax(0,1fr)] items-start">
+            <div className="flex flex-col items-center w-full max-w-[260px] mx-auto md:mx-0">
               <Gauge score={data.score} />
               <p
-                className="mt-1 text-lg font-semibold uppercase tracking-wide"
+                className="mt-1 text-base sm:text-lg font-semibold uppercase tracking-wide text-center"
                 style={{ color: ratingColor }}
               >
                 {t(ratingLabelKey)}
               </p>
-              <p className="text-[0.7rem] text-muted-foreground mt-0.5">
+              <p className="text-[0.7rem] text-muted-foreground mt-0.5 text-center">
                 {t("fg.updated", { time: new Date(data.updatedAt).toLocaleDateString() })}
               </p>
             </div>

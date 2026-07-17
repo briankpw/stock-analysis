@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useUi } from "@/lib/state";
-import type { Bar, Enriched, LatestSignals, MacdResult, BollingerBands, NullableSeries, SupportResistance } from "@/lib/indicators";
+import type { Bar, Enriched, KdjResult, LatestSignals, MacdResult, BollingerBands, NullableSeries, SupportResistance } from "@/lib/indicators";
 import type { MetricGroup } from "@/lib/ratios";
 import type { Analysis } from "@/lib/insights";
 import type { Quote } from "@/lib/data";
@@ -13,11 +13,15 @@ export interface BundleIndicators {
   sma50: NullableSeries;
   sma200: NullableSeries;
   ema20: NullableSeries;
+  ema24: NullableSeries;
+  ema52: NullableSeries;
+  ema200: NullableSeries;
   rsi14: NullableSeries;
   macd: MacdResult;
   bb20: BollingerBands;
   returns: NullableSeries;
   levels: SupportResistance;
+  kdj: KdjResult;
 }
 
 export interface Bundle {

@@ -679,6 +679,28 @@ const TECHNICAL_TERMS: Readonly<Record<string, Localized<TermDef>>> = {
     en: { what: "When price makes a new high/low but the indicator (RSI/MACD) doesn't — often a warning that the trend is losing steam." },
     "zh-CN": { label: "背离", what: "价格创新高/新低但指标（RSI/MACD）没有——常是趋势动能减弱的警告。" },
   },
+  KDJ: {
+    en: {
+      what: "A momentum oscillator popular on Chinese trading platforms — three lines (K, D, J) that measure where today's close sits inside the recent trading range.",
+      deeper: "K is the fast line, D is a smoothed version of K, and J = 3K − 2D (a leading line that can exceed 0-100). Rules of thumb: K crossing above D = bullish (\"golden cross\"), K below D = bearish. Above 80 = overbought, below 20 = oversold. Standard parameters (9, 3, 3): 9-bar range with 3-period smoothing on K and D.",
+    },
+    "zh-CN": {
+      label: "KDJ 指标",
+      what: "中国交易软件常用的动量摆动指标——由 K、D、J 三条线组成，衡量当日收盘价在近期波动区间中的位置。",
+      deeper: "K 为快线，D 为 K 的平滑值，J = 3K − 2D（是可超出 0-100 的领先线）。经验法则：K 上穿 D 为多头（\"金叉\"），K 下穿 D 为空头。> 80 超买，< 20 超卖。标准参数 (9, 3, 3)：9 根 K 线的区间，K 与 D 各做 3 期平滑。",
+    },
+  },
+  "Stochastic Oscillator": {
+    en: {
+      what: "A momentum indicator that compares the current close to the high-low range over a lookback window, producing a 0-100 reading.",
+      deeper: "The formula is RSV = (close − lowest low) / (highest high − lowest low) × 100. KDJ is a Chinese-market variant that adds a smoothed 'D' line and a leading 'J' line on top of the raw stochastic.",
+    },
+    "zh-CN": {
+      label: "随机指标（KD/KDJ 的原型）",
+      what: "动量指标——将当前收盘价与近期最高价 / 最低价区间进行比较，产生 0-100 的读数。",
+      deeper: "计算公式 RSV =（收盘价 − 区间最低）÷（区间最高 − 区间最低）× 100。KDJ 是中国市场对该指标的变体，在原始随机值基础上加上平滑的 D 线与领先的 J 线。",
+    },
+  },
   "Daily Returns Distribution": {
     en: { what: "A histogram of each day's percent change. Wide bell = choppy stock; narrow spike = calm stock." },
     "zh-CN": { label: "日回报率分布", what: "每日百分比变动的直方图。宽钟形 = 波动大；集中尖峰 = 平稳。" },

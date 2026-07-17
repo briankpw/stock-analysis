@@ -24,11 +24,19 @@ const PriceChart = dynamic(
 function OverlayToggles() {
   // Individual selectors keep zustand's `useSyncExternalStore` snapshot stable.
   const showSma = useUi((s) => s.showSma);
+  const showEma = useUi((s) => s.showEma);
   const showBb = useUi((s) => s.showBb);
   const toggleSma = useUi((s) => s.toggleSma);
+  const toggleEma = useUi((s) => s.toggleEma);
   const toggleBb = useUi((s) => s.toggleBb);
   return (
     <div className="flex items-center gap-4 text-sm flex-wrap">
+      <label className="inline-flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" checked={showEma} onChange={toggleEma} className="h-4 w-4 rounded" />
+        <span>
+          <TermTip term="EMA">EMA</TermTip> 24 / 52 / 200
+        </span>
+      </label>
       <label className="inline-flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={showSma} onChange={toggleSma} className="h-4 w-4 rounded" />
         <span>
@@ -62,6 +70,7 @@ export default function ChartsPage() {
       macd: data.indicators.macd,
       bb20: data.indicators.bb20,
       levels: data.indicators.levels,
+      kdj: data.indicators.kdj,
     });
   }, [data]);
 
@@ -93,6 +102,9 @@ export default function ChartsPage() {
                 sma20={data.indicators.sma20}
                 sma50={data.indicators.sma50}
                 sma200={data.indicators.sma200}
+                ema24={data.indicators.ema24}
+                ema52={data.indicators.ema52}
+                ema200={data.indicators.ema200}
                 bb20={data.indicators.bb20}
               />
             )}
@@ -104,6 +116,7 @@ export default function ChartsPage() {
               "OHLC",
               "Wick",
               "Volume",
+              "EMA",
               "SMA",
               "Bollinger Bands",
               "Support",

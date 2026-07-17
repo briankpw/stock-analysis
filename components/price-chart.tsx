@@ -28,6 +28,9 @@ export function PriceChart({
   sma20,
   sma50,
   sma200,
+  ema24,
+  ema52,
+  ema200,
   bb20,
   height = 480,
 }: {
@@ -35,12 +38,16 @@ export function PriceChart({
   sma20: NullableSeries;
   sma50: NullableSeries;
   sma200: NullableSeries;
+  ema24: NullableSeries;
+  ema52: NullableSeries;
+  ema200: NullableSeries;
   bb20: BollingerBands;
   height?: number;
 }) {
   const { theme } = useTheme();
   const dark = (theme ?? "dark") === "dark";
   const showSma = useUi((s) => s.showSma);
+  const showEma = useUi((s) => s.showEma);
   const showBb = useUi((s) => s.showBb);
 
   const containerRef = React.useRef<HTMLDivElement | null>(null);
@@ -109,14 +116,29 @@ export function PriceChart({
         .filter((p): p is { time: Time; value: number } => p.value !== undefined);
 
     const overlays: Array<{ label: string; color: string; series: ISeriesApi<"Line"> }> = [];
+    if (showEma) {
+      // Slightly thicker (lineWidth 2) because EMA is the primary overlay now.
+      const e24 = chart.addLineSeries({ color: "#5b8def", lineWidth: 2, title: "EMA 24", lastValueVisible: false, priceLineVisible: false });
+      e24.setData(lineData(ema24));
+      overlays.push({ label: "EMA 24", color: "#5b8def", series: e24 });
+      const e52 = chart.addLineSeries({ color: "#e0b552", lineWidth: 2, title: "EMA 52", lastValueVisible: false, priceLineVisible: false });
+      e52.setData(lineData(ema52));
+      overlays.push({ label: "EMA 52", color: "#e0b552", series: e52 });
+      const e200 = chart.addLineSeries({ color: "#a45cd2", lineWidth: 2, title: "EMA 200", lastValueVisible: false, priceLineVisible: false });
+      e200.setData(lineData(ema200));
+      overlays.push({ label: "EMA 200", color: "#a45cd2", series: e200 });
+    }
+
     if (showSma) {
-      const s20 = chart.addLineSeries({ color: "#5b8def", lineWidth: 1, title: "SMA 20", lastValueVisible: false, priceLineVisible: false });
+      // When both families are on, the SMA lines render as dashed variants of
+      // the same colour scale so they read as "the slower cousin" of the EMA.
+      const s20 = chart.addLineSeries({ color: "#5b8def", lineWidth: 1, lineStyle: 2, title: "SMA 20", lastValueVisible: false, priceLineVisible: false });
       s20.setData(lineData(sma20));
       overlays.push({ label: "SMA 20", color: "#5b8def", series: s20 });
-      const s50 = chart.addLineSeries({ color: "#e0b552", lineWidth: 1, title: "SMA 50", lastValueVisible: false, priceLineVisible: false });
+      const s50 = chart.addLineSeries({ color: "#e0b552", lineWidth: 1, lineStyle: 2, title: "SMA 50", lastValueVisible: false, priceLineVisible: false });
       s50.setData(lineData(sma50));
       overlays.push({ label: "SMA 50", color: "#e0b552", series: s50 });
-      const s200 = chart.addLineSeries({ color: "#a45cd2", lineWidth: 1, title: "SMA 200", lastValueVisible: false, priceLineVisible: false });
+      const s200 = chart.addLineSeries({ color: "#a45cd2", lineWidth: 1, lineStyle: 2, title: "SMA 200", lastValueVisible: false, priceLineVisible: false });
       s200.setData(lineData(sma200));
       overlays.push({ label: "SMA 200", color: "#a45cd2", series: s200 });
     }
@@ -165,7 +187,7 @@ export function PriceChart({
       detachTooltip();
       chart.remove();
     };
-  }, [bars, sma20, sma50, sma200, bb20, height, dark, showSma, showBb]);
+  }, [bars, sma20, sma50, sma200, ema24, ema52, ema200, bb20, height, dark, showSma, showEma, showBb]);
 
   return <div ref={containerRef} style={{ width: "100%", height }} />;
 }

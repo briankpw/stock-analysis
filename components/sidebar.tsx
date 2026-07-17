@@ -48,12 +48,22 @@ export function Sidebar() {
   return (
     <>
       {/* Mobile top bar */}
-      <div className="lg:hidden sticky top-0 z-30 flex items-center justify-between h-14 px-4 border-b border-border bg-background/80 backdrop-blur-md">
-        <Link href="/overview" className="flex items-center gap-2 font-semibold">
-          <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary/20 text-primary">
+      <div
+        className="lg:hidden sticky top-0 z-30 flex items-center justify-between h-14 border-b border-border bg-background/80 backdrop-blur-md"
+        style={{
+          // Extend the bar into the iOS notch/status-bar area without
+          // pushing the logo/hamburger under it.
+          paddingTop: "env(safe-area-inset-top)",
+          paddingLeft: "max(1rem, env(safe-area-inset-left))",
+          paddingRight: "max(1rem, env(safe-area-inset-right))",
+          height: "calc(3.5rem + env(safe-area-inset-top))",
+        }}
+      >
+        <Link href="/overview" className="flex items-center gap-2 font-semibold min-w-0">
+          <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary/20 text-primary shrink-0">
             <BarChart3 className="h-4 w-4" />
           </span>
-          <span>{t("brand.name")}</span>
+          <span className="truncate">{t("brand.name")}</span>
         </Link>
         <Button variant="ghost" size="icon" onClick={() => setMobileOpen((v) => !v)} aria-label={t("sidebar.toggleMenu")}>
           {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
@@ -63,11 +73,18 @@ export function Sidebar() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed lg:sticky top-0 z-40 lg:z-10 h-screen lg:h-screen w-72",
+          "fixed lg:sticky top-0 z-40 lg:z-10 h-[100dvh] lg:h-screen w-72 max-w-[85vw] lg:max-w-none",
           "bg-background/95 lg:bg-background/60 backdrop-blur-xl border-r border-border",
           "flex flex-col transition-transform lg:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
         )}
+        style={{
+          // On mobile the drawer covers the whole viewport height incl.
+          // the status bar and home-indicator; pad content in from both
+          // ends so it stays legible.
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
         aria-label={t("sidebar.primaryNav")}
       >
         <div className="hidden lg:flex px-5 pt-6 pb-4 items-center gap-2">

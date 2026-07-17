@@ -20,7 +20,7 @@
  *   day-trading tool.
  */
 
-import type { Bar, MacdResult, NullableSeries, SupportResistance } from "./indicators";
+import type { Bar, KdjResult, MacdResult, NullableSeries, SupportResistance } from "./indicators";
 
 export type Verdict = "strong_buy" | "buy" | "hold" | "sell" | "strong_sell";
 
@@ -120,6 +120,7 @@ export interface TechnicalInputs {
   macd: MacdResult;
   bb20: { upper: NullableSeries; lower: NullableSeries; middle: NullableSeries };
   levels: SupportResistance;
+  kdj: KdjResult;
 }
 
 /**
@@ -132,9 +133,10 @@ export interface TechnicalInputs {
  *   4. RSI(14) zone (1)                — mean-reversion (oversold buy, overbought sell)
  *   5. Bollinger position (1)          — mean-reversion (below-lower buy)
  *   6. Short-term return + volume (1)  — 5-day return with participation
- *   7. Support / resistance proximity (1) — near-support = buy, near-resistance = sell
+ *   7. KDJ cross / zone (1)            — stochastic momentum (leading signal)
+ *   8. Support / resistance proximity (1) — near-support = buy, near-resistance = sell
  *
- * Max attainable weight: 9. The score is (bullish - bearish) / max, in [-1, +1].
+ * Max attainable weight: 10. The score is (bullish - bearish) / max, in [-1, +1].
  */
 export function computeTechnicalSignal(inp: TechnicalInputs): TechnicalSignal {
   const contribs: Contribution[] = [];
@@ -315,7 +317,76 @@ export function computeTechnicalSignal(inp: TechnicalInputs): TechnicalSignal {
     }
   }
 
-  // ---- 7) Support / resistance proximity (weight 1) --------------------
+  // ---- 7) KDJ signal (weight 1) ----------------------------------------
+  //
+  // Two-part signal — whichever fires first wins:
+  //   1. Fresh K/D crossover in the last 3 bars:
+  //        K crosses above D  →  bullish (buy)
+  //        K crosses below D  →  bearish (sell)
+  //   2. Otherwise, zone check:
+  //        K < 20 and K > D   →  oversold + turning up (buy)
+  //        K > 80 and K < D   →  overbought + turning down (sell)
+  //
+  // The cross gets priority because that's the classic KDJ trigger used
+  // on Chinese platforms and it's more actionable than "already in a
+  // zone".
+  {
+    const kEnd = lastIdx(inp.kdj.k);
+    const dEnd = lastIdx(inp.kdj.d);
+    const endK = Math.min(kEnd, dEnd);
+    if (endK >= 1) {
+      let fired: Direction = 0;
+      let key = "";
+      let detail = "";
+      // Look back up to 3 bars for a fresh cross.
+      const CROSS_WINDOW = 3;
+      const start = Math.max(1, endK - CROSS_WINDOW + 1);
+      for (let i = endK; i >= start; i--) {
+        const kNow = inp.kdj.k[i], kPrev = inp.kdj.k[i - 1];
+        const dNow = inp.kdj.d[i], dPrev = inp.kdj.d[i - 1];
+        if (kNow === null || dNow === null || kPrev === null || dPrev === null) continue;
+        if (kPrev <= dPrev && kNow > dNow) {
+          fired = 1;
+          key = "kdj.goldenCross";
+          detail = `KDJ golden cross ${endK - i} bar(s) ago (K crossed above D).`;
+          break;
+        }
+        if (kPrev >= dPrev && kNow < dNow) {
+          fired = -1;
+          key = "kdj.deathCross";
+          detail = `KDJ death cross ${endK - i} bar(s) ago (K crossed below D).`;
+          break;
+        }
+      }
+
+      if (fired === 0) {
+        // No fresh cross — fall back to zone-based signal.
+        const k = inp.kdj.k[endK]!;
+        const d = inp.kdj.d[endK]!;
+        if (k < 20 && k > d) {
+          fired = 1;
+          key = "kdj.oversold";
+          detail = `KDJ oversold: K=${k.toFixed(1)} turning up through D.`;
+        } else if (k > 80 && k < d) {
+          fired = -1;
+          key = "kdj.overbought";
+          detail = `KDJ overbought: K=${k.toFixed(1)} turning down through D.`;
+        }
+      }
+
+      if (fired !== 0) {
+        contribs.push({
+          key,
+          weight: 1,
+          direction: fired,
+          category: "momentum",
+          detailEn: detail,
+        });
+      }
+    }
+  }
+
+  // ---- 8) Support / resistance proximity (weight 1) --------------------
   //
   // "Near" = within 2% of the level's price. Nearest support close by is a
   // buy hint (price is bouncing at a known floor); nearest resistance is
@@ -361,7 +432,7 @@ export function computeTechnicalSignal(inp: TechnicalInputs): TechnicalSignal {
   }
 
   // ---- Aggregate --------------------------------------------------------
-  const MAX_WEIGHT = 9; // 2 + 2 + 1 + 1 + 1 + 1 + 1
+  const MAX_WEIGHT = 10; // 2 + 2 + 1 + 1 + 1 + 1 + 1 (KDJ) + 1 (S/R)
   let bullishWeight = 0;
   let bearishWeight = 0;
   const rows: SignalRow[] = [];

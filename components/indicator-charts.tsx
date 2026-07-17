@@ -6,9 +6,10 @@ import {
   createChart, ColorType, CrosshairMode, LineStyle,
   type Time, type LineData, type HistogramData,
 } from "lightweight-charts";
-import type { Bar, MacdResult, NullableSeries, SupportResistance } from "@/lib/indicators";
+import type { Bar, KdjResult, MacdResult, NullableSeries, SupportResistance } from "@/lib/indicators";
 import { attachChartTooltip, fmtChartDate, type TooltipRow } from "./chart-tooltip";
 import { fmtNumber } from "@/lib/format";
+import { useIsBeginner } from "@/lib/state";
 
 function useChart<T>(
   build: (container: HTMLDivElement, dark: boolean) => T | (() => void),
@@ -120,6 +121,94 @@ export function MacdChart({ bars, macd, height = 220 }: { bars: Bar[]; macd: Mac
 
     return () => { detach(); chart.remove(); };
   }, [bars, macd, height]);
+  return <div ref={ref} style={{ width: "100%", height }} />;
+}
+
+/**
+ * KDJ oscillator (stochastic variant popular on Chinese platforms).
+ *
+ * - K (fast) and D (slow) always oscillate in [0, 100].
+ * - J = 3K − 2D and can shoot beyond [0, 100]; it's a *leading* signal
+ *   but also the twitchiest — hidden by default in Beginner mode so
+ *   newcomers aren't fooled by whipsaws. Reference bands at 20/80.
+ */
+export function KdjChart({
+  bars,
+  kdj: kdjData,
+  height = 220,
+  showJ,
+}: {
+  bars: Bar[];
+  kdj: KdjResult;
+  height?: number;
+  /** Override auto-detection — falsy hides J even for advanced users. */
+  showJ?: boolean;
+}) {
+  const beginner = useIsBeginner();
+  const includeJ = showJ !== undefined ? showJ : !beginner;
+
+  const ref = useChart((el, dark) => {
+    const chart = createChart(el, baseOpts(dark, height));
+    const kLine = chart.addLineSeries({ color: "#5b8def", lineWidth: 2, title: "K", priceLineVisible: false });
+    const dLine = chart.addLineSeries({ color: "#e0b552", lineWidth: 2, title: "D", priceLineVisible: false });
+    const jLine = includeJ
+      ? chart.addLineSeries({ color: "#c266d9", lineWidth: 1, title: "J", priceLineVisible: false })
+      : null;
+
+    const filter = (s: NullableSeries) =>
+      bars.map((b, i) => ({ time: b.time as Time, value: s[i] ?? undefined }))
+        .filter((p): p is { time: Time; value: number } => p.value !== undefined);
+
+    kLine.setData(filter(kdjData.k));
+    dLine.setData(filter(kdjData.d));
+    if (jLine) jLine.setData(filter(kdjData.j));
+
+    // Overbought / oversold reference lines at 80 / 20 — the KDJ
+    // convention (RSI uses 70/30; the ranges differ because KDJ is
+    // more range-normalised).
+    kLine.createPriceLine({
+      price: 20, color: "#7bd88f", lineStyle: LineStyle.Dashed, lineWidth: 1,
+      axisLabelVisible: true, title: "OS",
+    });
+    kLine.createPriceLine({
+      price: 80, color: "#f0787a", lineStyle: LineStyle.Dashed, lineWidth: 1,
+      axisLabelVisible: true, title: "OB",
+    });
+
+    chart.timeScale().fitContent();
+
+    const detach = attachChartTooltip(chart, el, (param) => {
+      const kp = param.seriesData.get(kLine) as LineData | undefined;
+      const dp = param.seriesData.get(dLine) as LineData | undefined;
+      const jp = jLine ? (param.seriesData.get(jLine) as LineData | undefined) : undefined;
+      if (!kp && !dp && !jp) return null;
+
+      const rows: TooltipRow[] = [
+        { label: "Date", value: fmtChartDate(param.time!), bold: true },
+      ];
+      if (kp && Number.isFinite(kp.value)) {
+        const zone =
+          kp.value >= 80 ? "Overbought" :
+          kp.value <= 20 ? "Oversold" :
+                           "Neutral";
+        const zoneColor =
+          kp.value >= 80 ? "#f0787a" :
+          kp.value <= 20 ? "#7bd88f" :
+                           undefined;
+        rows.push({ label: "K", value: kp.value.toFixed(2), color: "#5b8def", bold: true });
+        rows.push({ label: "Zone", value: zone, color: zoneColor });
+      }
+      if (dp && Number.isFinite(dp.value)) {
+        rows.push({ label: "D", value: dp.value.toFixed(2), color: "#e0b552" });
+      }
+      if (jp && Number.isFinite(jp.value)) {
+        rows.push({ label: "J", value: jp.value.toFixed(2), color: "#c266d9" });
+      }
+      return rows;
+    });
+
+    return () => { detach(); chart.remove(); };
+  }, [bars, kdjData, height, includeJ]);
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
 
@@ -326,15 +415,17 @@ export function SupportResistanceTable({
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="w-full">
       <table className="w-full text-xs">
         <thead className="text-muted-foreground">
           <tr className="border-b border-border/60">
             <th className="text-left font-medium py-1.5 pr-2">Level</th>
             <th className="text-right font-medium py-1.5 px-2">Price</th>
             <th className="text-right font-medium py-1.5 px-2">Distance</th>
-            <th className="text-right font-medium py-1.5 px-2">Touches</th>
-            <th className="text-right font-medium py-1.5 pl-2">Last touch</th>
+            {/* Hide less-critical columns on the narrowest screens so the
+                table never needs a horizontal scrollbar. */}
+            <th className="text-right font-medium py-1.5 px-2 hidden sm:table-cell">Touches</th>
+            <th className="text-right font-medium py-1.5 pl-2 hidden md:table-cell">Last touch</th>
           </tr>
         </thead>
         <tbody className="font-mono tabular-nums">
@@ -358,8 +449,8 @@ export function SupportResistanceTable({
                 {r.distPct >= 0 ? "+" : ""}
                 {r.distPct.toFixed(2)}%
               </td>
-              <td className="text-right py-1.5 px-2">{r.touches}</td>
-              <td className="text-right py-1.5 pl-2 text-muted-foreground">
+              <td className="text-right py-1.5 px-2 hidden sm:table-cell">{r.touches}</td>
+              <td className="text-right py-1.5 pl-2 text-muted-foreground hidden md:table-cell">
                 {fmtChartDate(r.lastTouch as Time)}
               </td>
             </tr>

@@ -79,17 +79,105 @@
 
   * { border-color: hsl(var(--border)); }
 
-  html { -webkit-tap-highlight-color: transparent; }
-
+  /* --------------------------------------------------------------------
+   * Mobile hygiene
+   * --------------------------------------------------------------------
+   * The app is meant to feel like a native shell on phones — no accidental
+   * horizontal page scrolling, no pinch/double-tap zoom, no iOS-only text
+   * auto-inflation on rotate. Content that legitimately needs to scroll
+   * (wide tables, long JSON) sits inside its own `overflow-x-auto`
+   * container, which still works because we only pin the *page* — not
+   * individual elements.
+   * ------------------------------------------------------------------ */
+  html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    /* Kill the 300ms tap delay and iOS double-tap-to-zoom (the viewport
+       meta already disables pinch, but Safari still honours double-tap
+       unless `touch-action` says otherwise). */
+    touch-action: manipulation;
+    /* Belt-and-braces: prevent stray absolutely-positioned children from
+       widening the document past the viewport. */
+    overflow-x: hidden;
+  }
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     background-image:
       radial-gradient(1200px 600px at 10% -10%, hsl(var(--bg-stop-1) / 0.20) 0%, transparent 60%),
       radial-gradient(1000px 500px at 100% 10%, hsl(var(--bg-stop-2) / 0.16) 0%, transparent 55%),
-      radial-gradient(900px 500px at 50% 100%, hsl(var(--bg-stop-3) / 0.14) 0%, transparent 55%);
+      radial-gradient(900px 500px at 50% 100%, hsl(var(--bg-stop-3) / 0.16) 0%, transparent 55%);
     background-attachment: fixed;
     font-feature-settings: "cv02", "cv03", "cv04";
+    overflow-x: hidden;
+    /* Keep pull-to-refresh feeling snappy but stop rubber-banding from
+       cascading into parent scrollers. */
+    overscroll-behavior-y: contain;
+  }
+
+  /* Anything intrinsically-sized should never blow past its parent's
+     width. Charts, images, SVG gauges, embedded media all benefit. */
+  img, svg, video, canvas, iframe, embed, object {
+    max-width: 100%;
+  }
+
+  /* Long tokens (URLs, tickers with underscores, contract IDs, ISINs)
+     wrap instead of forcing horizontal page scroll. Doesn't affect
+     `<pre>` — it stays inside its own `overflow-x-auto` container. */
+  p, li, dd, dt, span, td, th, h1, h2, h3, h4 {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Native form controls: iOS Safari auto-zooms into <input>/<select>
+     when the font-size is < 16px. Setting a 16px floor is the
+     documented workaround and pairs perfectly with `user-scalable=no`
+     above (which alone doesn't prevent the auto-zoom on focus). */
+  input, select, textarea {
+    font-size: max(16px, 1rem);
+  }
+
+  /* Ensure a comfortable tap-target on interactive elements. Doesn't
+     override any width/height already set — Tailwind's `size-*` /
+     `h-*` classes still win — but gives untouched icons a floor. */
+  @media (pointer: coarse) {
+    button, [role="button"], a[href], label[for], summary, select {
+      min-height: 44px;
+    }
+    button.h-8, button.h-9, button[data-size="icon"], .h-8, .h-9 {
+      /* Escape hatch: components that opt into a smaller footprint
+         (icon-only chips, tight toolbar buttons) keep their explicit
+         Tailwind size. Without this the toolbar buttons in the page
+         header get inflated. */
+      min-height: unset;
+    }
+  }
+}
+
+/* ==========================================================================
+ * Safe-area-aware page padding.
+ * --------------------------------------------------------------------------
+ * `env(safe-area-inset-*)` resolves to 0 on devices without a notch, so
+ * the `max()` fallback (matching the old `px-4 / sm:px-6 / lg:px-8`)
+ * still fires everywhere. On iPhone landscape, the extra inset keeps
+ * content clear of the camera housing.
+ * ========================================================================== */
+.app-main {
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+@media (min-width: 640px) {
+  .app-main {
+    padding-left: max(1.5rem, env(safe-area-inset-left));
+    padding-right: max(1.5rem, env(safe-area-inset-right));
+  }
+}
+@media (min-width: 1024px) {
+  .app-main {
+    padding-left: max(2rem, env(safe-area-inset-left));
+    padding-right: max(2rem, env(safe-area-inset-right));
   }
 }
 

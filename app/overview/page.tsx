@@ -5,6 +5,7 @@ import { HelpCircle, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
 import { KeyTerms } from "@/components/key-terms";
+import { FearGreedCard } from "@/components/fear-greed-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBundle } from "@/hooks/use-bundle";
@@ -205,21 +206,27 @@ function VerdictCard({ analysis, t }: { analysis: Analysis; t: TFn }) {
   const conclusionHtml = conclusionText.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
   return (
-    <Card className={cn("overflow-hidden p-6 bg-gradient-to-br", tint)}>
+    <Card className={cn("overflow-hidden p-4 sm:p-6 bg-gradient-to-br", tint)}>
       <div className="flex flex-col md:flex-row md:items-center gap-4">
-        <div className="text-5xl leading-none select-none">{analysis.verdictEmoji}</div>
+        <div className="flex items-center gap-3 md:block md:gap-0">
+          <div className="text-4xl sm:text-5xl leading-none select-none shrink-0">{analysis.verdictEmoji}</div>
+          <div className="flex-1 min-w-0 md:hidden">
+            <p className="metric-label mb-0.5">{t("overview.verdict.label")}</p>
+            <h2 className="text-lg sm:text-xl font-bold leading-tight">{verdictLabel}</h2>
+          </div>
+        </div>
         <div className="flex-1 min-w-0">
-          <p className="metric-label mb-1">{t("overview.verdict.label")}</p>
-          <h2 className="text-2xl font-bold">{verdictLabel}</h2>
+          <p className="metric-label mb-1 hidden md:block">{t("overview.verdict.label")}</p>
+          <h2 className="text-2xl font-bold hidden md:block">{verdictLabel}</h2>
           <p
-            className="mt-2 text-sm text-muted-foreground leading-relaxed"
+            className="mt-1 md:mt-2 text-sm text-muted-foreground leading-relaxed"
             dangerouslySetInnerHTML={{ __html: conclusionHtml }}
           />
         </div>
-        <div className="md:w-64 shrink-0">
+        <div className="w-full md:w-64 shrink-0">
           <div className="flex items-baseline gap-2 justify-between">
             <span className="metric-label">{t("overview.score")}</span>
-            <span className="text-3xl font-bold tabular-nums">{score.toFixed(1)}</span>
+            <span className="text-2xl sm:text-3xl font-bold tabular-nums">{score.toFixed(1)}</span>
           </div>
           <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
             <div className={cn("h-full transition-all duration-500", bar)} style={{ width: `${percent}%` }} />
@@ -256,6 +263,16 @@ export default function OverviewPage() {
     <div className="mx-auto max-w-7xl">
       <PageHeader pageTitleKey="nav.overview" />
       <PageIntro pageKey="overview" />
+
+      {/*
+       * Market-wide Fear & Greed gauge. Rendered outside the ticker-data
+       * gate so the market mood shows up immediately even while the
+       * per-ticker bundle is still loading — this card manages its own
+       * loading / error state via `useFearGreed()`.
+       */}
+      <div className="mb-6">
+        <FearGreedCard />
+      </div>
 
       {data?.rateLimited && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}

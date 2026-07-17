@@ -10,9 +10,15 @@ export const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className, ...props }, ref) => (
+  // `flex` + `flex-wrap` on mobile lets 3-5 tabs sit on two rows instead
+  // of forcing the tab strip past the viewport. `sm:flex-nowrap` keeps
+  // the single-line look on tablets and up.
   <TabsPrimitive.List
     ref={ref}
-    className={cn("inline-flex gap-1 items-center rounded-lg glass p-1", className)}
+    className={cn(
+      "inline-flex flex-wrap sm:flex-nowrap gap-1 items-center rounded-lg glass p-1 max-w-full",
+      className,
+    )}
     {...props}
   />
 ));

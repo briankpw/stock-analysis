@@ -38,19 +38,21 @@ export function PageHeader({
   const dir = changePct === null ? 0 : Math.sign(changePct);
 
   return (
-    <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-border mb-6">
-      <div className="min-w-0">
+    <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-4 pb-5 lg:pb-6 border-b border-border mb-5 lg:mb-6">
+      <div className="min-w-0 w-full lg:w-auto">
         <p className="metric-label mb-1">{title}</p>
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">
-            {data?.ticker ?? "—"}{" "}
-            <span className="text-muted-foreground font-normal text-lg">
-              {data?.companyName && data.companyName !== data.ticker ? data.companyName : ""}
-            </span>
+        <div className="flex items-baseline gap-2 sm:gap-3 flex-wrap">
+          <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight min-w-0">
+            <span className="align-baseline">{data?.ticker ?? "—"}</span>
+            {data?.companyName && data.companyName !== data.ticker && (
+              <span className="text-muted-foreground font-normal text-sm sm:text-base lg:text-lg ml-2 align-baseline">
+                {data.companyName}
+              </span>
+            )}
           </h1>
           {price !== undefined && price !== null && (
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-semibold tabular-nums">{fmtCurrency(price)}</span>
+            <div className="flex items-baseline gap-2 shrink-0">
+              <span className="text-lg sm:text-xl lg:text-2xl font-semibold tabular-nums">{fmtCurrency(price)}</span>
               {changePct !== null && (
                 <span
                   className={cn(
@@ -65,18 +67,18 @@ export function PageHeader({
           )}
         </div>
         {data?.sector && (
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">
             {data.sector}
             {data.industry ? ` · ${data.industry}` : ""}
           </p>
         )}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap w-full lg:w-auto lg:justify-end">
         <select
           value={period}
           onChange={(e) => setPeriod(e.target.value)}
-          className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 sm:flex-none min-w-[4.5rem] rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           aria-label={t("ticker.periodLabel")}
         >
           {["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"].map((p) => (
@@ -86,7 +88,7 @@ export function PageHeader({
         <select
           value={interval}
           onChange={(e) => setInterval(e.target.value)}
-          className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 sm:flex-none min-w-[4.5rem] rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           aria-label={t("ticker.intervalLabel")}
         >
           {["1d", "1wk", "1mo"].map((p) => (

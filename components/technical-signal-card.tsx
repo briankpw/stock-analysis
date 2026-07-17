@@ -136,7 +136,7 @@ export function TechnicalSignalCard({ signal }: { signal: TechnicalSignal }) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-        <div>
+        <div className="min-w-0">
           <CardTitle className="flex items-center gap-2">
             <TermTip term="Technical Signal">{t("ts.title")}</TermTip>
           </CardTitle>
@@ -148,7 +148,7 @@ export function TechnicalSignalCard({ signal }: { signal: TechnicalSignal }) {
           <TooltipTrigger asChild>
             <button
               type="button"
-              className="text-muted-foreground hover:text-foreground transition-colors"
+              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
               aria-label={t("ts.disclaimer.label")}
             >
               <InfoIcon className="h-4 w-4" />
