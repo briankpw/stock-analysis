@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Bell, CheckCircle2, ExternalLink, Play, Trash2, XCircle, TrendingDown, TrendingUp, Minus, Send } from "lucide-react";
+import { Bell, BellOff, CheckCircle2, ExternalLink, Play, Smartphone, Trash2, XCircle, TrendingDown, TrendingUp, Minus, Send } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
 import { KeyTerms } from "@/components/key-terms";
@@ -27,6 +27,7 @@ import { useNewsSubscriptions } from "@/hooks/use-news-subscriptions";
 import type {
   StoredNewsNotification,
 } from "@/lib/news-watch/store";
+import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { cn } from "@/lib/utils";
 
 interface BotStatus {
@@ -274,6 +275,7 @@ export default function BotPage() {
         </div>
       )}
 
+      <PushAlertsPanel />
       <PortfolioAlertsPanel />
       <StockAlertsPanel />
       <NewsAlertsPanel />
@@ -364,7 +366,7 @@ function PortfolioAlertsPanel() {
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       setMessage(
         `Tick complete — ${body.report.watchCount} watches · ` +
-          `${body.report.eventsMatched} matched · ${body.report.notifiesSent} pushed to Telegram`,
+          `${body.report.eventsMatched} matched · ${body.report.notifiesSent} notification(s) delivered`,
       );
       reload();
     } catch (e) {
@@ -417,7 +419,7 @@ function PortfolioAlertsPanel() {
           <Bell className="h-4 w-4 text-primary" />
           <CardTitle>Portfolio alerts</CardTitle>
           <span className="text-xs text-muted-foreground">
-            Telegram-only · fires when a followed person trades or a watched ticker moves
+            Fires when a followed person trades or a watched ticker moves · delivered to Telegram + Push
           </span>
         </div>
         {state?.lastTickAt && (
@@ -550,16 +552,19 @@ function NotificationRow({ n }: { n: StoredNotification }) {
       </div>
       <div className="mt-1 flex items-center gap-2 text-[0.65rem] text-muted-foreground flex-wrap">
         {n.telegramOk === true ? (
-          <span className="text-primary inline-flex items-center gap-1">
-            <Send className="h-2.5 w-2.5" /> pushed to Telegram
+          <span
+            className="text-primary inline-flex items-center gap-1"
+            title={n.telegramDetail ?? undefined}
+          >
+            <Send className="h-2.5 w-2.5" /> delivered
           </span>
         ) : n.telegramOk === false ? (
           <span className="text-danger inline-flex items-center gap-1">
-            <XCircle className="h-2.5 w-2.5" /> Telegram push failed
+            <XCircle className="h-2.5 w-2.5" /> delivery failed
             {n.telegramDetail && <span>· {n.telegramDetail}</span>}
           </span>
         ) : (
-          <span>· not pushed</span>
+          <span>· not delivered</span>
         )}
         {n.sourceUrl && (
           <a
@@ -641,7 +646,7 @@ function StockAlertsPanel() {
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       setMessage(
         `Tick complete — ${body.report.watchCount} watches · ` +
-          `${body.report.transactionsMatched} matched · ${body.report.notifiesSent} pushed to Telegram`,
+          `${body.report.transactionsMatched} matched · ${body.report.notifiesSent} notification(s) delivered`,
       );
       reload();
     } catch (e) {
@@ -687,8 +692,8 @@ function StockAlertsPanel() {
           <Bell className="h-4 w-4 text-primary" />
           <CardTitle>Stock insider alerts</CardTitle>
           <span className="text-xs text-muted-foreground">
-            Telegram-only · fires when any officer / director / 10% owner at a watched
-            company files a Form 4
+            Fires when any officer / director / 10% owner at a watched company files a Form 4 ·
+            delivered to Telegram + Push
           </span>
         </div>
         {state?.lastTickAt && (
@@ -819,8 +824,11 @@ function StockNotificationRow({ n }: { n: StoredStockNotification }) {
         {shares && <span>{shares} shares{price ? ` @ ${price}` : ""}</span>}
         {n.tradeDate && <span>· on {n.tradeDate}</span>}
         {n.telegramOk === true ? (
-          <span className="text-primary inline-flex items-center gap-1 ml-auto">
-            <Send className="h-2.5 w-2.5" /> pushed to Telegram
+          <span
+            className="text-primary inline-flex items-center gap-1 ml-auto"
+            title={n.telegramDetail ?? undefined}
+          >
+            <Send className="h-2.5 w-2.5" /> delivered
           </span>
         ) : n.telegramOk === false ? (
           <span className="text-danger inline-flex items-center gap-1 ml-auto">
@@ -828,7 +836,7 @@ function StockNotificationRow({ n }: { n: StoredStockNotification }) {
             {n.telegramDetail && <span>· {n.telegramDetail}</span>}
           </span>
         ) : (
-          <span className="ml-auto">· not pushed</span>
+          <span className="ml-auto">· not delivered</span>
         )}
         {n.sourceUrl && (
           <a
@@ -910,7 +918,7 @@ function NewsAlertsPanel() {
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       setMessage(
         `Tick complete — ${body.report.subscriptionCount} subs · ` +
-          `${body.report.itemsNew} new headlines · ${body.report.notifiesSent} pushed to Telegram`,
+          `${body.report.itemsNew} new headlines · ${body.report.notifiesSent} notification(s) delivered`,
       );
       reload();
     } catch (e) {
@@ -956,7 +964,7 @@ function NewsAlertsPanel() {
           <Bell className="h-4 w-4 text-primary" />
           <CardTitle>News alerts</CardTitle>
           <span className="text-xs text-muted-foreground">
-            Telegram-only · fires when a new headline appears for a subscribed ticker
+            Fires when a new headline appears for a subscribed ticker · delivered to Telegram + Push
           </span>
         </div>
         {state?.lastTickAt && (
@@ -1078,8 +1086,11 @@ function NewsNotificationRow({ n }: { n: StoredNewsNotification }) {
       )}
       <div className="mt-1 flex items-center gap-2 text-[0.65rem] text-muted-foreground flex-wrap">
         {n.telegramOk === true ? (
-          <span className="text-primary inline-flex items-center gap-1">
-            <Send className="h-2.5 w-2.5" /> pushed to Telegram
+          <span
+            className="text-primary inline-flex items-center gap-1"
+            title={n.telegramDetail ?? undefined}
+          >
+            <Send className="h-2.5 w-2.5" /> delivered
           </span>
         ) : n.telegramOk === false ? (
           <span className="text-danger inline-flex items-center gap-1">
@@ -1087,7 +1098,7 @@ function NewsNotificationRow({ n }: { n: StoredNewsNotification }) {
             {n.telegramDetail && <span>· {n.telegramDetail}</span>}
           </span>
         ) : (
-          <span>· not pushed</span>
+          <span>· not delivered</span>
         )}
         {n.link && (
           <a
@@ -1101,5 +1112,176 @@ function NewsNotificationRow({ n }: { n: StoredNewsNotification }) {
         )}
       </div>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Web Push (PWA) subscription panel
+// ---------------------------------------------------------------------------
+
+function PushAlertsPanel() {
+  const { status, enable, disable, removeDevice, test } = usePushNotifications();
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const [message, setMessage] = React.useState<string | null>(null);
+
+  const showIosHint =
+    typeof window !== "undefined" &&
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) &&
+    !(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+
+  const run = async (action: string, fn: () => Promise<string | void>) => {
+    setBusy(action);
+    setMessage(null);
+    try {
+      const result = await fn();
+      if (typeof result === "string" && result) setMessage(result);
+      else setMessage("Done.");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Smartphone className="h-4 w-4 text-primary" />
+          <CardTitle>Push notifications (PWA)</CardTitle>
+          <span className="text-xs text-muted-foreground">
+            Receive alerts on Android, iOS, macOS, or Windows — without opening a Telegram chat
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {/* Support state */}
+        {!status.supported && !status.loading && (
+          <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs">
+            <p className="font-medium text-warning">
+              Push isn't supported in this browser.
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              You need a secure connection (HTTPS or localhost) and a browser that supports the
+              Push API. On iPhone / iPad, first tap <em>Share → Add to Home Screen</em>, then
+              open the app from your home screen and try again.
+            </p>
+          </div>
+        )}
+
+        {status.supported && showIosHint && !status.subscribed && (
+          <div className="rounded-md border border-primary/40 bg-primary/5 p-3 text-xs">
+            <p className="font-medium">iOS install required</p>
+            <p className="mt-1 text-muted-foreground">
+              iOS delivers push to PWAs only after you add the app to your Home Screen. Tap the{" "}
+              <em>Share</em> button in Safari, then <em>Add to Home Screen</em>, then open the app
+              from home to enable push.
+            </p>
+          </div>
+        )}
+
+        {status.permission === "denied" && (
+          <div className="rounded-md border border-danger/40 bg-danger/10 p-3 text-xs">
+            <p className="font-medium text-danger">Notification permission is blocked.</p>
+            <p className="mt-1 text-muted-foreground">
+              Open your browser settings for this site and re-allow notifications, then reload
+              this page.
+            </p>
+          </div>
+        )}
+
+        {/* This-device controls */}
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {status.subscribed ? (
+              <>
+                <span className="chip chip-bull">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Enabled on this device
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => run("disable", disable)}
+                  disabled={!!busy}
+                >
+                  <BellOff className="h-3.5 w-3.5" /> Disable on this device
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="success"
+                onClick={() => run("enable", enable)}
+                disabled={!status.supported || status.permission === "denied" || !!busy}
+              >
+                <Bell className="h-3.5 w-3.5" /> Enable push on this device
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => run("test", test)}
+              disabled={status.subscriberCount === 0 || !!busy}
+              title={
+                status.subscriberCount === 0
+                  ? "Enable push on at least one device first"
+                  : "Send a test push to every enabled device"
+              }
+            >
+              <Send className="h-3.5 w-3.5" /> Send test push
+            </Button>
+          </div>
+          {message && <p className="text-xs text-primary">{message}</p>}
+          {status.error && !message && (
+            <p className="text-xs text-danger">{status.error}</p>
+          )}
+        </div>
+
+        {/* Registered devices */}
+        <div>
+          <div className="metric-label mb-2">
+            Enabled devices ({status.devices.length})
+          </div>
+          {status.devices.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No devices enabled yet. Click <em>Enable push on this device</em> above — the
+              browser will ask you to allow notifications, and you're done. Repeat on every
+              phone / laptop you want alerts on.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {status.devices.map((d) => (
+                <li
+                  key={d.endpoint}
+                  className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs"
+                >
+                  <Smartphone className="h-3.5 w-3.5 text-primary" />
+                  <span className="font-medium flex-1 min-w-0 truncate">
+                    {d.label ?? "Unnamed device"}
+                  </span>
+                  <span className="text-muted-foreground text-[0.65rem]">
+                    since {relativeTime(d.createdAt)}
+                  </span>
+                  {d.lastUsedAt && (
+                    <span className="text-muted-foreground text-[0.65rem]">
+                      · last push {relativeTime(d.lastUsedAt)}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => run(`remove:${d.endpoint}`, () => removeDevice(d.endpoint))}
+                    className="h-6 w-6 inline-flex items-center justify-center rounded hover:bg-danger/15 hover:text-danger text-muted-foreground"
+                    title="Remove this device"
+                    aria-label="Remove this device"
+                    disabled={!!busy}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

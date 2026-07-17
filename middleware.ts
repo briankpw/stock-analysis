@@ -21,9 +21,10 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { getClientIp, rateLimit } from "@/lib/http";
+import { authRequired, validatePresentedSecret } from "@/lib/auth";
 
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const APP_TOKEN = process.env.APP_TOKEN?.trim() || "";
+const AUTH_ENABLED = authRequired();
 
 /**
  * When APP_URL is set, we accept it as an authoritative same-origin
@@ -187,17 +188,22 @@ export function middleware(req: NextRequest): NextResponse | undefined {
   if (UNPROTECTED_PATHS.has(pathname)) return undefined;
   if (UNPROTECTED_PAGES.has(pathname)) return undefined;
 
-  // ---- 1. Optional bearer token (covers /api/* AND page routes) -----
-  // When APP_TOKEN is set, we require it on every non-whitelisted
-  // request. For API calls we still return JSON 401 (scripts / fetches
-  // want a machine-readable error). For page navigations we redirect
-  // to /login so the browser experience is "click link → type token →
-  // land on the intended page".
-  if (APP_TOKEN) {
-    const token = extractToken(req);
-    if (!token || token !== APP_TOKEN) {
+  // ---- 1. Optional session check (covers /api/* AND page routes) ----
+  // When APP_TOKEN (or APP_USERNAME+APP_PASSWORD) is configured, we
+  // require every non-whitelisted request to present a matching cookie
+  // or Authorization: Bearer header. For API calls we still return
+  // JSON 401 (scripts / fetches want a machine-readable error). For
+  // page navigations we redirect to /login so the browser experience
+  // is "click link → sign in → land on the intended page".
+  //
+  // `validatePresentedSecret` is the same primitive used by the login
+  // endpoint to gate cookie issuance, so there is exactly one place in
+  // the codebase that decides what "signed in" means.
+  if (AUTH_ENABLED) {
+    const presented = extractToken(req);
+    if (!presented || !validatePresentedSecret(presented)) {
       if (isPageRequest(req)) return redirectToLogin(req);
-      return unauthorized(token ? "Invalid token" : "Missing token");
+      return unauthorized(presented ? "Invalid credentials" : "Missing credentials");
     }
   }
 
@@ -212,9 +218,9 @@ export function middleware(req: NextRequest): NextResponse | undefined {
     }
   }
 
-  // ---- 3. Rate limiting (anonymous only — bearer-token callers get
+  // ---- 3. Rate limiting (anonymous only — authenticated callers get
   // implicit trust because they proved knowledge of the shared secret) --
-  if (!APP_TOKEN) {
+  if (!AUTH_ENABLED) {
     const ip = getClientIp(req);
 
     // Broad mutation limit.

@@ -505,7 +505,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "bot.signalHistoryHint":  { en: "All signals recorded by the bot, most recent first. Only cross-events get sent to Telegram.", "zh-CN": "机器人记录的所有信号，最新在前。仅交叉事件会推送至 Telegram。" },
   "bot.noSignals":          { en: "No signals recorded yet. Run one tick to seed the feed.", "zh-CN": "暂无信号记录。运行一次以填充数据。" },
   "bot.tickComplete":       { en: "Tick complete: {signals} signals, {alerts} alerts sent.", "zh-CN": "运行完成：{signals} 个信号，已发送 {alerts} 条通知。" },
-  "bot.alertedViaTelegram": { en: "alerted via Telegram", "zh-CN": "已通过 Telegram 通知" },
+  "bot.alertedViaTelegram": { en: "delivered", "zh-CN": "已送达" },
   "bot.strategy.sma":       { en: "SMA 50/200 crossover", "zh-CN": "SMA 50/200 均线交叉" },
   "bot.strategy.rsi":       { en: "RSI reversion",        "zh-CN": "RSI 回归" },
   "bot.strategy.macd":      { en: "MACD cross",           "zh-CN": "MACD 交叉" },

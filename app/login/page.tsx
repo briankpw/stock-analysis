@@ -1,42 +1,47 @@
 /**
- * Bearer-token login screen.
+ * Sign-in screen.
  *
- * Shown when `APP_TOKEN` is set on the server and the browser doesn't
- * yet have a matching `app_token` cookie. The middleware redirects
- * unauthenticated page requests here with `?next=<original path>`; on
- * successful login we redirect back to that path (falling back to `/`
- * when it's missing/relative-unsafe).
+ * Shown when the server has auth configured (via APP_TOKEN or
+ * APP_USERNAME + APP_PASSWORD) and the browser doesn't yet have a
+ * matching `app_token` cookie. Renders one of two forms based on the
+ * server-reported mode:
  *
- * Also handles the "auth not configured" state gracefully — if the
- * operator hasn't set APP_TOKEN at all, `/api/auth/status` reports
- * `required=false` and we redirect home immediately.
+ *   * "credentials": username + password (APP_USERNAME/APP_PASSWORD)
+ *   * "token":       single-field token   (APP_TOKEN)
+ *
+ * Middleware redirects unauthenticated page requests here with
+ * `?next=<original path>`; on success we redirect back to that path
+ * (falling back to `/` when it's missing or unsafe).
+ *
+ * When no auth is configured (`required=false`) or the user's cookie
+ * is still valid (`authenticated=true`), we redirect home immediately
+ * so an operator turning off APP_TOKEN doesn't strand users on /login.
  */
 
 "use client";
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Loader2, Lock, ShieldCheck } from "lucide-react";
+import { Loader2, Lock, ShieldCheck, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-// The parent layout renders a persistent Sidebar next to <main>. On the
-// login screen we want a clean full-viewport backdrop, so we cover the
-// sidebar with a fixed overlay rather than restructuring the whole
-// layout tree with a route group.
+type AuthMode = "none" | "token" | "credentials";
+type StatusResponse = { required: boolean; authenticated: boolean; mode: AuthMode };
+
 const OVERLAY_CLASS =
   "fixed inset-0 z-[60] flex items-center justify-center px-4 bg-background";
 
-// Wrapper enforces a Suspense boundary around `useSearchParams()`, which
-// Next.js 15 requires for any client component that reads the URL query
-// during rendering. Without it, `next build` refuses to prerender the
-// page. The fallback matches the bootstrapping state of the inner form.
+const INPUT_CLASS = cn(
+  "w-full h-10 rounded-md border border-border bg-card/50 pl-9 pr-3 text-sm",
+  "placeholder:text-muted-foreground",
+  "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background",
+  "disabled:opacity-50",
+);
+
+// Suspense wrapper — `useSearchParams()` in Next.js 15 refuses to
+// prerender without one. Fallback matches the bootstrapping state.
 export default function LoginPage() {
   return (
     <React.Suspense
@@ -54,9 +59,9 @@ export default function LoginPage() {
 function safeNext(raw: string | null): string {
   if (!raw) return "/";
   // Only accept absolute-path, single-slash starts. Rejects
-  // `//evil.example.com` (protocol-relative), full URLs, and any
-  // "javascript:" nonsense. Also rejects the login page itself so we
-  // don't loop.
+  // `//evil.example.com` (protocol-relative), full URLs, and
+  // `javascript:`. Also rejects the login page itself so we don't
+  // create a redirect loop after successful sign-in.
   if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
   if (raw.startsWith("/login")) return "/";
   return raw;
@@ -70,28 +75,34 @@ function LoginPageInner() {
     [searchParams],
   );
 
+  const [mode, setMode] = React.useState<AuthMode | null>(null);
+  const [username, setUsername] = React.useState("");
+  const [password, setPassword] = React.useState("");
   const [token, setToken] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [bootstrapping, setBootstrapping] = React.useState(true);
 
-  // If auth isn't required (or we're already signed in), skip the form
-  // entirely. Cheap probe, and it fires before we render inputs so the
-  // page never flashes.
+  // Probe status once on mount: skip the form entirely when auth isn't
+  // required or the visitor is already signed in. Also determines which
+  // form (credentials vs token) to render.
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/auth/status", { credentials: "same-origin" });
         if (!res.ok) return;
-        const body = (await res.json()) as { required: boolean; authenticated: boolean };
+        const body = (await res.json()) as StatusResponse;
         if (cancelled) return;
         if (!body.required || body.authenticated) {
           router.replace(next);
           return;
         }
+        setMode(body.mode);
       } catch {
-        // Network error — fall through to showing the form.
+        // Network error — fall through to the form with a permissive
+        // default (credentials) so the user has something to try.
+        if (!cancelled) setMode("credentials");
       } finally {
         if (!cancelled) setBootstrapping(false);
       }
@@ -101,22 +112,33 @@ function LoginPageInner() {
     };
   }, [next, router]);
 
+  const canSubmit =
+    mode === "credentials"
+      ? username.trim().length > 0 && password.length > 0
+      : mode === "token"
+        ? token.trim().length > 0
+        : false;
+
   const onSubmit = React.useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
-      if (!token.trim()) return;
+      if (!canSubmit || !mode) return;
       setSubmitting(true);
       setError(null);
       try {
+        const payload =
+          mode === "credentials"
+            ? { username: username.trim(), password }
+            : { token: token.trim() };
         const res = await fetch("/api/auth/login", {
           method: "POST",
           headers: { "content-type": "application/json" },
           credentials: "same-origin",
-          body: JSON.stringify({ token: token.trim() }),
+          body: JSON.stringify(payload),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: string };
-          setError(body.error || `Login failed (${res.status})`);
+          setError(body.error || `Sign-in failed (${res.status})`);
           setSubmitting(false);
           return;
         }
@@ -128,10 +150,10 @@ function LoginPageInner() {
         setSubmitting(false);
       }
     },
-    [next, token],
+    [canSubmit, mode, next, password, token, username],
   );
 
-  if (bootstrapping) {
+  if (bootstrapping || !mode) {
     return (
       <div className={OVERLAY_CLASS}>
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden />
@@ -150,61 +172,131 @@ function LoginPageInner() {
             Sign in
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            This dashboard is token-protected. Enter the access token to continue.
+            {mode === "credentials"
+              ? "Enter your username and password to continue."
+              : "This dashboard is token-protected. Enter the access token to continue."}
           </p>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label
-                htmlFor="app-token"
-                className="text-xs font-medium text-muted-foreground uppercase tracking-wider"
-              >
-                Access token
-              </label>
-              <div className="relative">
-                <Lock
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden
+            {mode === "credentials" ? (
+              <>
+                <FieldWithIcon
+                  id="app-username"
+                  label="Username"
+                  icon={<User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />}
+                  input={
+                    <input
+                      id="app-username"
+                      type="text"
+                      autoComplete="username"
+                      autoFocus
+                      required
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      disabled={submitting}
+                      aria-invalid={error ? "true" : undefined}
+                      className={cn(INPUT_CLASS, error && "border-danger/60 focus:ring-danger")}
+                    />
+                  }
                 />
-                <input
-                  id="app-token"
-                  type="password"
-                  autoComplete="current-password"
-                  autoFocus
-                  required
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  disabled={submitting}
-                  aria-invalid={error ? "true" : undefined}
-                  aria-describedby={error ? "app-token-error" : undefined}
-                  className={cn(
-                    "w-full h-10 rounded-md border border-border bg-card/50 pl-9 pr-3 text-sm",
-                    "placeholder:text-muted-foreground",
-                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background",
-                    "disabled:opacity-50",
-                    error && "border-danger/60 focus:ring-danger",
-                  )}
-                  placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                <FieldWithIcon
+                  id="app-password"
+                  label="Password"
+                  icon={<Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />}
+                  input={
+                    <input
+                      id="app-password"
+                      type="password"
+                      autoComplete="current-password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      disabled={submitting}
+                      aria-invalid={error ? "true" : undefined}
+                      aria-describedby={error ? "app-auth-error" : undefined}
+                      className={cn(INPUT_CLASS, error && "border-danger/60 focus:ring-danger")}
+                      placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                    />
+                  }
                 />
-              </div>
-              {error && (
-                <p id="app-token-error" role="alert" className="text-xs text-danger">
-                  {error}
-                </p>
-              )}
-            </div>
-            <Button type="submit" className="w-full" disabled={submitting || !token.trim()}>
+              </>
+            ) : (
+              <FieldWithIcon
+                id="app-token"
+                label="Access token"
+                icon={<Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />}
+                input={
+                  <input
+                    id="app-token"
+                    type="password"
+                    autoComplete="current-password"
+                    autoFocus
+                    required
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    disabled={submitting}
+                    aria-invalid={error ? "true" : undefined}
+                    aria-describedby={error ? "app-auth-error" : undefined}
+                    className={cn(INPUT_CLASS, error && "border-danger/60 focus:ring-danger")}
+                    placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                  />
+                }
+              />
+            )}
+            {error && (
+              <p id="app-auth-error" role="alert" className="text-xs text-danger">
+                {error}
+              </p>
+            )}
+            <Button type="submit" className="w-full" disabled={submitting || !canSubmit}>
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
               {submitting ? "Signing in\u2026" : "Sign in"}
             </Button>
             <p className="text-[0.7rem] text-muted-foreground text-center leading-relaxed">
-              The token comes from the <code className="font-mono">APP_TOKEN</code> env var set
-              on the server. Ask your operator if you don&apos;t have it.
+              {mode === "credentials" ? (
+                <>
+                  Credentials come from the{" "}
+                  <code className="font-mono">APP_USERNAME</code> /{" "}
+                  <code className="font-mono">APP_PASSWORD</code> env vars on the server.
+                </>
+              ) : (
+                <>
+                  The token comes from the <code className="font-mono">APP_TOKEN</code>{" "}
+                  env var on the server.
+                </>
+              )}
             </p>
           </form>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function FieldWithIcon({
+  id,
+  label,
+  icon,
+  input,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  input: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div className="space-y-1.5">
+      <label
+        htmlFor={id}
+        className="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+      >
+        {label}
+      </label>
+      <div className="relative">
+        {icon}
+        {input}
+      </div>
     </div>
   );
 }

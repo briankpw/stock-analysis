@@ -1,26 +1,32 @@
 /**
  * GET /api/auth/status
  *
- * Cheap "is auth configured, am I authenticated" probe. The UI uses it
- * to decide whether to show a logout button in the sidebar and — more
- * importantly — the login page uses it to detect whether a returning
- * user with a still-valid cookie can be redirected straight to `/` on
- * page-open instead of retyping the token.
+ * Cheap "is auth configured, am I authenticated, which form should I
+ * show" probe. Used by:
+ *
+ *   * The login page — to decide between the credentials form and the
+ *     legacy token form, and to auto-redirect an already-signed-in
+ *     visitor away from /login.
+ *   * The sidebar's <AuthStatus /> widget — to decide whether to render
+ *     the "Sign out" button.
  *
  * Middleware treats this as unprotected (like /api/health) so it
- * always answers — otherwise the UI can't tell "no token needed" from
- * "wrong token".
+ * always answers — otherwise the UI can't tell "no auth needed" from
+ * "wrong credentials".
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import { authMode, authRequired, validatePresentedSecret } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const expected = process.env.APP_TOKEN?.trim() || "";
-  const required = Boolean(expected);
+  const required = authRequired();
+  const mode = authMode();
   const presented = req.cookies.get("app_token")?.value?.trim() || "";
-  const authenticated = required ? presented === expected : true;
-  return NextResponse.json({ required, authenticated });
+  const authenticated = required
+    ? Boolean(presented) && validatePresentedSecret(presented)
+    : true;
+  return NextResponse.json({ required, authenticated, mode });
 }

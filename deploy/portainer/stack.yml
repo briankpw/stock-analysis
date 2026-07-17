@@ -107,12 +107,15 @@ services:
       # Leave blank for local / same-host deployments.
       APP_URL: ${APP_URL:-}
 
-      # ---- Optional bearer-token auth --------------------------------------
-      # When set, every /api/* call (except /api/health) must present
-      # Authorization: Bearer <APP_TOKEN> or an app_token cookie. Leave
-      # empty for a fully-open local install. Prefer a long random string
-      # (e.g. `openssl rand -hex 32`) when exposing to the internet.
-      APP_TOKEN: ${APP_TOKEN:-}
+      # ---- Access control --------------------------------------------------
+      # Two mutually-exclusive modes (credentials wins if both are set):
+      #   * Username + password  — shows a two-field login form.
+      #   * Single bearer token  — shows a one-field login form.
+      # Leave all blank for a fully-open install. See stack.env.example
+      # for detailed guidance.
+      APP_USERNAME: ${APP_USERNAME:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      APP_TOKEN:    ${APP_TOKEN:-}
 
       # ---- Ticker / defaults -----------------------------------------------
       STOCK_TICKER:     ${STOCK_TICKER:-KEYS}
@@ -138,6 +141,15 @@ services:
       TELEGRAM_BOT_TOKEN:      ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
       TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
+
+      # ---- Web Push (PWA notifications) -----------------------------------
+      # VAPID keys are auto-generated + persisted to the SQLite database on
+      # first boot, so leaving these blank is fine for single-instance
+      # deploys. Set explicit values when horizontally scaling (all
+      # containers MUST share the same keys) or to pin them across rebuilds.
+      VAPID_PUBLIC_KEY:  ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT:     ${VAPID_SUBJECT:-mailto:you@example.com}
     volumes:
       # ── Data mount ────────────────────────────────────────────────────
       # DATA_MOUNT accepts either a Docker named volume name (default) or
@@ -214,6 +226,13 @@ services:
       TELEGRAM_BOT_TOKEN:      ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
       TELEGRAM_CHAT_ID:        ${TELEGRAM_CHAT_ID:-}
+
+      # Worker also fans out to Web Push. Same VAPID keys as the UI —
+      # both processes share the same SQLite database, so blank values
+      # will resolve to whatever the UI generated on first boot.
+      VAPID_PUBLIC_KEY:  ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT:     ${VAPID_SUBJECT:-mailto:you@example.com}
     volumes:
       # Must match the UI's DATA_MOUNT — both services share the same
       # SQLite file on this path.

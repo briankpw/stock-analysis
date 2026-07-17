@@ -1,68 +1,76 @@
 /**
  * POST /api/auth/login
  *
- * Exchanges a caller-supplied `APP_TOKEN` value for an httpOnly session
- * cookie. The cookie is what the middleware then checks on every
- * subsequent request — so the UI page loads work seamlessly after
- * one login.
+ * Exchanges caller-supplied credentials for an httpOnly `app_token`
+ * session cookie. Two flavours of body payload are accepted, keyed by
+ * the server's `authMode()`:
+ *
+ *   * credentials mode: `{ username, password }` — validated against
+ *                       APP_USERNAME / APP_PASSWORD.
+ *   * token mode:       `{ token }` — validated against APP_TOKEN.
+ *
+ * The cookie always carries `expectedSecret()`, which is the same
+ * string the middleware compares presented tokens against. So the
+ * decision of "what counts as a valid session" lives in exactly one
+ * module (`lib/auth.ts`).
  *
  * Whitelisted by middleware.ts so callers can hit it without already
  * being authenticated (otherwise we'd have a chicken-and-egg problem).
- *
- * Security posture:
- *   * Rate-limited by the middleware's `mutation` bucket. A missing
- *     APP_TOKEN env means there's nothing to authenticate against;
- *     the route returns 400 (not 401) so operators can tell "no auth
- *     configured" from "wrong password".
- *   * The response is a deliberate constant-time-ish comparison to
- *     avoid trivial timing side-channels — we compare full string
- *     equality with an early length check.
- *   * Cookie is `HttpOnly` (unreadable from JS), `SameSite=Lax`
- *     (survives top-level navigation but not cross-site fetches),
- *     `Path=/`, and `Secure` when the incoming URL is https so a
- *     downgrade attack can't leak it.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { redactError } from "@/lib/http";
+import {
+  authMode,
+  expectedSecret,
+  validateCredentials,
+  validateToken,
+} from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const LOGIN_SCHEMA = z.object({
+const CREDENTIALS_SCHEMA = z.object({
+  username: z.string().min(1).max(120),
+  password: z.string().min(1).max(512),
+});
+
+const TOKEN_SCHEMA = z.object({
   token: z.string().min(1).max(512),
 });
 
 // Two weeks of validity — long enough that the operator isn't retyping
-// the token every day, short enough that a stolen cookie has a natural
-// expiry. Operators wanting anything else can override in a reverse
-// proxy (Traefik forward-auth, nginx `proxy_cookie_flags`, etc.).
+// credentials every day, short enough that a stolen cookie has a
+// natural expiry. Operators wanting anything else can override in a
+// reverse proxy (Traefik forward-auth, nginx `proxy_cookie_flags`, …).
 const COOKIE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
-
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}
 
 export async function POST(req: Request) {
   try {
-    const expected = process.env.APP_TOKEN?.trim() || "";
-    if (!expected) {
+    const mode = authMode();
+    if (mode === "none") {
       return NextResponse.json(
-        { ok: false, error: "APP_TOKEN is not configured on this server" },
+        { ok: false, error: "Authentication is not configured on this server" },
         { status: 400 },
       );
     }
 
-    const body = LOGIN_SCHEMA.parse(await req.json());
-    if (!safeEqual(body.token.trim(), expected)) {
+    const body = (await req.json()) as unknown;
+    let ok = false;
+
+    if (mode === "credentials") {
+      const parsed = CREDENTIALS_SCHEMA.parse(body);
+      ok = validateCredentials(parsed.username.trim(), parsed.password);
+    } else {
+      // mode === "token"
+      const parsed = TOKEN_SCHEMA.parse(body);
+      ok = validateToken(parsed.token.trim());
+    }
+
+    if (!ok) {
       return NextResponse.json(
-        { ok: false, error: "Invalid token" },
+        { ok: false, error: "Invalid credentials" },
         { status: 401 },
       );
     }
@@ -71,7 +79,7 @@ export async function POST(req: Request) {
     const res = NextResponse.json({ ok: true });
     res.cookies.set({
       name: "app_token",
-      value: expected,
+      value: expectedSecret(),
       httpOnly: true,
       sameSite: "lax",
       secure: isHttps,

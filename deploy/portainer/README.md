@@ -86,7 +86,8 @@ All variables are optional — `stack.yml` provides safe defaults. See `stack.en
 | `DOCKER_NETWORK`          | `bridge`                                | Name of an **external** Docker network the stack attaches to. Must already exist. |
 | `PUID` / `PGID`           | `1000` / `1000`                         | UID/GID the container process drops to. Set to match the host owner of `DATA_MOUNT` when using a bind path. |
 | `APP_URL`                 | *(empty)*                               | Absolute public URL (e.g. `https://stocks.example.com`). CSRF middleware trusts it as a same-origin baseline behind reverse proxies. |
-| `APP_TOKEN`               | *(empty)*                               | Enables bearer-token auth for `/api/*`. **Set this before any public exposure.**  |
+| `APP_USERNAME` / `APP_PASSWORD` | *(empty)*                         | Username + password auth (browser-friendly). Renders a two-field sign-in page. **Takes precedence over `APP_TOKEN`.** |
+| `APP_TOKEN`               | *(empty)*                               | Single-secret bearer auth (CLI-friendly). Renders a one-field sign-in page. Used when `APP_USERNAME`/`APP_PASSWORD` are unset. |
 | `STOCK_TICKER`            | `KEYS`                                  | Default active ticker on first load.                                              |
 | `SEC_USER_AGENT`          | `Key Stock Dashboard research@example.com` | **Must be a real contact email.** The app refuses to start if this contains `example.com`. |
 | `TELEGRAM_BOT_TOKEN`      | *(empty)*                               | Bot token from [@BotFather](https://t.me/BotFather). See below for the secret-file alternative. |
@@ -95,23 +96,19 @@ All variables are optional — `stack.yml` provides safe defaults. See `stack.en
 
 Leaving `TELEGRAM_*` blank disables outbound alerts — the worker still records signals to SQLite, they just aren't pushed anywhere.
 
-### Bearer-token auth (`APP_TOKEN`)
+### Access control
 
-When you set `APP_TOKEN=<something-long-and-random>`, every request to `/api/*` must present it as either:
+Two mutually exclusive modes; **credentials win if both are set**:
 
-```
-Authorization: Bearer <APP_TOKEN>
-```
+1. **Username + password** — set `APP_USERNAME=admin` and `APP_PASSWORD=<random>`. Any browser hitting a protected page is redirected to `/login` and gets a two-field form. Once submitted, a `HttpOnly` session cookie is issued (14-day lifetime, `SameSite=Lax`, `Secure` when served over HTTPS). CLI callers can either POST to `/api/auth/login` to obtain the cookie, or send `Authorization: Bearer <user>:<pass>` directly.
 
-or a browser cookie:
+2. **Single bearer token** — set `APP_TOKEN=<random>`. Single-field login form. CLI callers can send `Authorization: Bearer <APP_TOKEN>` and skip the cookie flow entirely.
 
-```
-Cookie: app_token=<APP_TOKEN>
-```
+Leave all three blank for a fully-open install. Generate strong secrets with `openssl rand -hex 32`.
 
-The one exception is `GET /api/health`, which is always public so Docker's healthcheck keeps working.
+Regardless of mode, `GET /api/health` and the auth endpoints (`/api/auth/login`, `/api/auth/status`) stay public so Docker's healthcheck and the login page keep working.
 
-Generate a token with `openssl rand -hex 32`. Store it in the stack env, then set the same cookie in your browser (DevTools -> Application -> Cookies) or put your reverse proxy in charge of appending the header. Leave `APP_TOKEN` empty for a wide-open local install.
+The sidebar shows a **Sign out** button under **Session** whenever auth is active and you're signed in. Sessions can also be invalidated server-side by restarting the container with a new secret — every existing cookie becomes invalid on the next request.
 
 ### Telegram token as a Docker secret
 

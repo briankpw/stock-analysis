@@ -39,6 +39,36 @@ export function setState<T>(key: string, value: T): void {
   ).run(key, JSON.stringify(value), now);
 }
 
+/**
+ * Write `value` under `key` ONLY if no row exists yet. Returns the value
+ * that ended up in the DB — either the one we just wrote, or whatever was
+ * there already if another caller beat us to it.
+ *
+ * Semantically equivalent to a compare-and-swap for the "initialize-once"
+ * case. Used for VAPID keys and any other secret that must survive a
+ * cold-start race between the UI process and the worker process without
+ * ending up with two callers holding divergent values.
+ */
+export function setStateIfAbsent<T>(key: string, value: T): T {
+  const now = new Date().toISOString();
+  // `INSERT OR IGNORE` skips the row when the PRIMARY KEY already exists —
+  // that's what makes this atomic under concurrent writers.
+  getDb()
+    .prepare(
+      "INSERT OR IGNORE INTO bot_state (key, value, updated_at) VALUES (?, ?, ?)",
+    )
+    .run(key, JSON.stringify(value), now);
+  const row = getDb()
+    .prepare("SELECT value FROM bot_state WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  if (!row) return value; // Shouldn't happen — we just inserted or it was there.
+  try {
+    return JSON.parse(row.value) as T;
+  } catch {
+    return value;
+  }
+}
+
 export const STATE_KEYS = {
   ENABLED: "bot.enabled",
   ACTIVE_STRATEGIES: "bot.active_strategies",

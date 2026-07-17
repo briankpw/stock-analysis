@@ -85,8 +85,12 @@ services:
       # Absolute URL the UI is served from (e.g. https://stocks.example.com).
       # Optional — used by the CSRF middleware as an authoritative same-origin
       # baseline behind a reverse proxy. Leave blank for local deployments.
-      APP_URL:   ${APP_URL:-}
-      APP_TOKEN: ${APP_TOKEN:-}
+      APP_URL:      ${APP_URL:-}
+      # Access control — pick either credentials OR a single token
+      # (credentials win when both are set). See .env.example.
+      APP_USERNAME: ${APP_USERNAME:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      APP_TOKEN:    ${APP_TOKEN:-}
 
       STOCK_TICKER:     ${STOCK_TICKER:-KEYS}
       COMPANY_NAME:     ${COMPANY_NAME:-Keysight Technologies}

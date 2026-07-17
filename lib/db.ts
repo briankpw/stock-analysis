@@ -307,6 +307,27 @@ export function getDb(): Database.Database {
 const MIGRATIONS: Array<(db: Database.Database) => void> = [
   // v1: no-op sentinel so newly-created databases still record a version.
   () => {},
+  // v2: web-push subscriptions. One row per (endpoint) — a browser +
+  // installed PWA + device combination. p256dh / auth are the two
+  // encryption params required by the Web Push API; user_agent + label
+  // are display-only. last_used_at is refreshed every successful send
+  // so the /bot page can show "quiet since …" for stale devices.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        endpoint TEXT PRIMARY KEY,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        label TEXT,
+        user_agent TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_push_subs_created
+        ON push_subscriptions(created_at DESC);
+    `);
+  },
 ];
 
 /** Testing / cleanup helper. */
