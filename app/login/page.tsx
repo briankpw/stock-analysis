@@ -216,7 +216,6 @@ function LoginPageInner() {
                       aria-invalid={error ? "true" : undefined}
                       aria-describedby={error ? "app-auth-error" : undefined}
                       className={cn(INPUT_CLASS, error && "border-danger/60 focus:ring-danger")}
-                      placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                     />
                   }
                 />
@@ -239,7 +238,6 @@ function LoginPageInner() {
                     aria-invalid={error ? "true" : undefined}
                     aria-describedby={error ? "app-auth-error" : undefined}
                     className={cn(INPUT_CLASS, error && "border-danger/60 focus:ring-danger")}
-                    placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                   />
                 }
               />
