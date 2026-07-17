@@ -25,6 +25,28 @@ import { getClientIp, rateLimit } from "@/lib/http";
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const APP_TOKEN = process.env.APP_TOKEN?.trim() || "";
 
+/**
+ * When APP_URL is set, we accept it as an authoritative same-origin
+ * baseline in addition to the request's Host header. This matters behind
+ * a reverse proxy that terminates TLS and forwards to the container over
+ * an internal hostname — the browser sends `Origin: https://public.tld`
+ * but the container's `Host` header shows the internal name. Without
+ * APP_URL, our CSRF check rejects a legitimate same-origin POST from
+ * the UI. With it, we accept both.
+ *
+ * Parsed at module load and cached so the URL parser doesn't run per
+ * request. Empty string means "no override; use Host header only".
+ */
+const APP_URL_HOST = (() => {
+  const raw = process.env.APP_URL?.trim();
+  if (!raw) return "";
+  try {
+    return new URL(raw).host; // strips scheme, port kept if non-default
+  } catch {
+    return "";
+  }
+})();
+
 // Anonymous rate-limit budgets. Generous for a single-tenant dashboard
 // while still catching runaway browser bugs or drive-by abuse.
 const MUTATION_RATE = { capacity: 30, refillPerSec: 1 }; // ~1 rps sustained, 30 burst
@@ -34,30 +56,34 @@ const RATE_LIMITED_MUTATION_PATHS = /^\/api\/(?!auth)/;
 
 /**
  * True if the request's Origin (or Referer when Origin is missing) matches
- * the server's `Host` header. Missing Origin AND Referer is treated as
- * suspicious for mutations — browsers include one of them for cross-origin
- * fetches; server-to-server callers can present the bearer token instead.
+ * one of the trusted hosts:
+ *
+ *   * The container's own `Host` header — normal same-origin case.
+ *   * The host portion of `APP_URL` — needed when a reverse proxy rewrites
+ *     `Host` to an internal name but the browser still sends `Origin:
+ *     https://<public>` (which is what CSRF actually cares about anyway).
+ *
+ * Missing Origin AND Referer is treated as suspicious for mutations —
+ * browsers include one of them for cross-origin fetches; server-to-server
+ * callers can present the bearer token instead.
  */
 function isSameOrigin(req: NextRequest): boolean {
-  const host = req.headers.get("host");
-  if (!host) return false;
-  const origin = req.headers.get("origin");
-  if (origin) {
+  const hostHeader = req.headers.get("host");
+  const trusted = new Set<string>();
+  if (hostHeader) trusted.add(hostHeader);
+  if (APP_URL_HOST) trusted.add(APP_URL_HOST);
+  if (trusted.size === 0) return false;
+
+  const check = (raw: string | null): boolean => {
+    if (!raw) return false;
     try {
-      return new URL(origin).host === host;
+      return trusted.has(new URL(raw).host);
     } catch {
       return false;
     }
-  }
-  const referer = req.headers.get("referer");
-  if (referer) {
-    try {
-      return new URL(referer).host === host;
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  };
+
+  return check(req.headers.get("origin")) || check(req.headers.get("referer"));
 }
 
 function unauthorized(reason: string): NextResponse {

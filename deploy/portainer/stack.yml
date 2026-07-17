@@ -51,6 +51,15 @@ services:
   ui:
     image: ${IMAGE:-key-stock:latest}
     build: *default_build
+    # Force-build every time instead of trying to pull. Without this,
+    # Portainer's "Re-pull and redeploy" (and any `docker compose pull`)
+    # attempts to fetch `key-stock:latest` from Docker Hub — which
+    # doesn't exist and returns "access denied". `pull_policy: build`
+    # makes Compose skip the pull step and rebuild from the Dockerfile.
+    # Override IMAGE to a real registry ref (e.g. ghcr.io/…) if you
+    # actually want to pull a prebuilt image; the policy is honoured
+    # per-service so a build-mode image can't be pulled by accident.
+    pull_policy: build
     container_name: ${STACK_NAME:-key-stock}-ui
     restart: unless-stopped
     # Run as PUID:PGID from the start. Combined with `cap_drop: [ALL]`
@@ -90,6 +99,13 @@ services:
       # Cap the V8 old-space so a bad JSON.parse can't OOM the host. Sized
       # ~75% of the memory limit below to leave room for native buffers.
       NODE_OPTIONS: "--max-old-space-size=384"
+
+      # ---- Public URL ------------------------------------------------------
+      # Absolute URL the UI is served from, e.g. `https://stocks.example.com`.
+      # Optional — when set, the CSRF middleware trusts it as an origin
+      # baseline (important when a reverse proxy rewrites the Host header).
+      # Leave blank for local / same-host deployments.
+      APP_URL: ${APP_URL:-}
 
       # ---- Optional bearer-token auth --------------------------------------
       # When set, every /api/* call (except /api/health) must present
@@ -151,7 +167,13 @@ services:
 
   worker:
     image: ${IMAGE:-key-stock:latest}
-    # Worker uses the same image as ui — no separate build block needed.
+    # Same image as `ui` (already built above). Give worker its own
+    # build block + `pull_policy: build` so Portainer's re-pull step
+    # doesn't try to fetch `key-stock:latest` from Docker Hub for this
+    # service either. The second build is a cache hit — the layers are
+    # already present from ui's build.
+    build: *default_build
+    pull_policy: build
     container_name: ${STACK_NAME:-key-stock}-worker
     command: ["node", "dist/worker.js"]
     restart: unless-stopped

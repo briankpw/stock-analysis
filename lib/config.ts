@@ -42,6 +42,44 @@ const _secUserAgent = _env(
   "Key Stock Dashboard research@example.com",
 );
 
+/**
+ * Public URL the app is served from, e.g. `https://stocks.example.com` or
+ * `http://192.168.1.5:5001`. Optional — leave unset for local development
+ * or when the app is only ever hit at the container's own host:port.
+ *
+ * Currently consumed by:
+ *   * middleware.ts — accepted as an authoritative same-origin baseline
+ *     for the CSRF check, so requests still pass when a reverse proxy
+ *     rewrites the `Host` header.
+ *
+ * Reserved for future use by:
+ *   * Deep-link footers in Telegram notifications ("Open in dashboard").
+ *   * Absolute OG / canonical tags in <head>.
+ *   * Redirect URIs during any future auth flow.
+ *
+ * Parsing rules:
+ *   * Trailing slashes are stripped so `appUrl + "/foo"` never doubles up.
+ *   * Invalid URLs log a warning and fall back to empty (no fail-fast —
+ *     it's an optional config).
+ */
+function _parseAppUrl(): string {
+  const raw = process.env.APP_URL?.trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    // strip trailing slash on the path portion (keeps query / hash intact)
+    u.pathname = u.pathname.replace(/\/+$/, "");
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[config] APP_URL is not a valid URL (${raw}); ignoring — CSRF fallback will use the request's Host header only.`,
+    );
+    return "";
+  }
+}
+const _appUrl = _parseAppUrl();
+
 // SEC's Fair Access policy explicitly requires a real contact so they can
 // reach out before throttling. Shipping the placeholder to production means
 // SEC will happily 403 every EDGAR request — that manifests as broken
@@ -74,6 +112,9 @@ export const settings = {
   defaultInterval: _env("DEFAULT_INTERVAL", "1d"),
   cacheTtlSeconds: Number(_env("CACHE_TTL_SECONDS", "900")),
   timezone: _env("TZ", "UTC"),
+  // Empty string when unset; consumers should check truthiness before use.
+  // Normalised (trailing slashes stripped, invalid values downgraded to "").
+  appUrl: _appUrl,
   paper: {
     startingCash: Number(_env("PAPER_STARTING_CASH", "100000")),
     commission: Number(_env("PAPER_COMMISSION", "0")),

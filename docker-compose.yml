@@ -41,6 +41,15 @@ services:
   ui:
     image: ${IMAGE:-key-stock:latest}
     build: *default_build
+    # Force-build every time instead of trying to pull. Without this,
+    # Portainer's "Re-pull and redeploy" (and any `docker compose pull`)
+    # attempts to fetch `key-stock:latest` from Docker Hub — which
+    # doesn't exist and returns "access denied". `pull_policy: build`
+    # makes Compose skip the pull step and rebuild from the Dockerfile.
+    # Override IMAGE to a real registry ref (e.g. ghcr.io/…) if you
+    # actually want to pull a prebuilt image; the policy is honoured
+    # per-service so a build-mode image can't be pulled by accident.
+    pull_policy: build
     container_name: ${STACK_NAME:-key-stock}-ui
     restart: unless-stopped
     # Run as PUID:PGID from the start. Combined with `cap_drop: [ALL]`
@@ -73,6 +82,10 @@ services:
       PGID: ${PGID:-1000}
       NODE_OPTIONS: "--max-old-space-size=384"
 
+      # Absolute URL the UI is served from (e.g. https://stocks.example.com).
+      # Optional — used by the CSRF middleware as an authoritative same-origin
+      # baseline behind a reverse proxy. Leave blank for local deployments.
+      APP_URL:   ${APP_URL:-}
       APP_TOKEN: ${APP_TOKEN:-}
 
       STOCK_TICKER:     ${STOCK_TICKER:-KEYS}
@@ -114,6 +127,13 @@ services:
 
   worker:
     image: ${IMAGE:-key-stock:latest}
+    # Same image as `ui` (already built above). Give worker its own
+    # build block + `pull_policy: build` so Portainer's re-pull step
+    # doesn't try to fetch `key-stock:latest` from Docker Hub for this
+    # service either. The second build is a cache hit — the layers are
+    # already present from ui's build.
+    build: *default_build
+    pull_policy: build
     container_name: ${STACK_NAME:-key-stock}-worker
     command: ["node", "dist/worker.js"]
     restart: unless-stopped

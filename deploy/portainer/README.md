@@ -85,6 +85,7 @@ All variables are optional — `stack.yml` provides safe defaults. See `stack.en
 | `DATA_MOUNT`              | `key_stock_data`                        | Docker volume name **or** absolute host path — see [Data persistence](#data-persistence). |
 | `DOCKER_NETWORK`          | `bridge`                                | Name of an **external** Docker network the stack attaches to. Must already exist. |
 | `PUID` / `PGID`           | `1000` / `1000`                         | UID/GID the container process drops to. Set to match the host owner of `DATA_MOUNT` when using a bind path. |
+| `APP_URL`                 | *(empty)*                               | Absolute public URL (e.g. `https://stocks.example.com`). CSRF middleware trusts it as a same-origin baseline behind reverse proxies. |
 | `APP_TOKEN`               | *(empty)*                               | Enables bearer-token auth for `/api/*`. **Set this before any public exposure.**  |
 | `STOCK_TICKER`            | `KEYS`                                  | Default active ticker on first load.                                              |
 | `SEC_USER_AGENT`          | `Key Stock Dashboard research@example.com` | **Must be a real contact email.** The app refuses to start if this contains `example.com`. |
