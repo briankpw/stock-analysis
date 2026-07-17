@@ -9,9 +9,14 @@ import {
   type IChartApi,
   type ISeriesApi,
   type Time,
+  type CandlestickData,
+  type HistogramData,
+  type LineData,
 } from "lightweight-charts";
 import type { Bar, BollingerBands, NullableSeries } from "@/lib/indicators";
 import { useUi } from "@/lib/state";
+import { fmtNumber, fmtVolume } from "@/lib/format";
+import { attachChartTooltip, fmtChartDate, type TooltipRow } from "./chart-tooltip";
 
 /**
  * Candlestick + volume + optional overlays. Uses TradingView's
@@ -103,27 +108,63 @@ export function PriceChart({
       bars.map((b, i) => ({ time: b.time as Time, value: series[i] ?? undefined }))
         .filter((p): p is { time: Time; value: number } => p.value !== undefined);
 
+    const overlays: Array<{ label: string; color: string; series: ISeriesApi<"Line"> }> = [];
     if (showSma) {
       const s20 = chart.addLineSeries({ color: "#5b8def", lineWidth: 1, title: "SMA 20", lastValueVisible: false, priceLineVisible: false });
       s20.setData(lineData(sma20));
+      overlays.push({ label: "SMA 20", color: "#5b8def", series: s20 });
       const s50 = chart.addLineSeries({ color: "#e0b552", lineWidth: 1, title: "SMA 50", lastValueVisible: false, priceLineVisible: false });
       s50.setData(lineData(sma50));
+      overlays.push({ label: "SMA 50", color: "#e0b552", series: s50 });
       const s200 = chart.addLineSeries({ color: "#a45cd2", lineWidth: 1, title: "SMA 200", lastValueVisible: false, priceLineVisible: false });
       s200.setData(lineData(sma200));
+      overlays.push({ label: "SMA 200", color: "#a45cd2", series: s200 });
     }
 
     if (showBb) {
       const up = chart.addLineSeries({ color: "#7bd88f", lineWidth: 1, title: "BB upper", lastValueVisible: false, priceLineVisible: false });
       up.setData(lineData(bb20.upper));
+      overlays.push({ label: "BB upper", color: "#7bd88f", series: up });
       const mid = chart.addLineSeries({ color: "#6ea8fe", lineWidth: 1, title: "BB middle", lastValueVisible: false, priceLineVisible: false });
       mid.setData(lineData(bb20.middle));
+      overlays.push({ label: "BB middle", color: "#6ea8fe", series: mid });
       const lo = chart.addLineSeries({ color: "#f0787a", lineWidth: 1, title: "BB lower", lastValueVisible: false, priceLineVisible: false });
       lo.setData(lineData(bb20.lower));
+      overlays.push({ label: "BB lower", color: "#f0787a", series: lo });
     }
 
     chart.timeScale().fitContent();
 
-    return () => chart.remove();
+    // ---- Floating tooltip ------------------------------------------------
+    const detachTooltip = attachChartTooltip(chart, el, (param) => {
+      const c = param.seriesData.get(candles) as CandlestickData | undefined;
+      if (!c) return null;
+      const v = param.seriesData.get(volume) as HistogramData | undefined;
+      const change = c.close - c.open;
+      const changePct = c.open ? (change / c.open) * 100 : 0;
+      const changeStr = `${change >= 0 ? "+" : ""}${fmtNumber(change)} (${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%)`;
+      const rows: TooltipRow[] = [
+        { label: "Date", value: fmtChartDate(param.time!), bold: true },
+        { label: "Open", value: fmtNumber(c.open) },
+        { label: "High", value: fmtNumber(c.high) },
+        { label: "Low", value: fmtNumber(c.low) },
+        { label: "Close", value: fmtNumber(c.close), bold: true },
+        { label: "Change", value: changeStr, color: change >= 0 ? upColor : downColor },
+      ];
+      if (v) rows.push({ label: "Volume", value: fmtVolume(v.value) });
+      for (const o of overlays) {
+        const p = param.seriesData.get(o.series) as LineData | undefined;
+        if (p && Number.isFinite(p.value)) {
+          rows.push({ label: o.label, value: fmtNumber(p.value), color: o.color });
+        }
+      }
+      return rows;
+    });
+
+    return () => {
+      detachTooltip();
+      chart.remove();
+    };
   }, [bars, sma20, sma50, sma200, bb20, height, dark, showSma, showBb]);
 
   return <div ref={containerRef} style={{ width: "100%", height }} />;

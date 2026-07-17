@@ -1,40 +1,56 @@
 "use client";
 
 import * as React from "react";
-import { ExternalLink, TrendingDown, TrendingUp, Minus } from "lucide-react";
+import { ExternalLink, TrendingDown, TrendingUp, Minus, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
+import { KeyTerms } from "@/components/key-terms";
+import { TermTip } from "@/components/term-tip";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorBanner, LoadingPage, RateLimitBanner } from "@/components/loading";
 import { useNews, type NewsItem } from "@/hooks/use-news";
+import { useNewsSubscriptions } from "@/hooks/use-news-subscriptions";
+import { SubscribeNewsButton } from "@/components/subscribe-news-button";
+import { useT } from "@/lib/i18n";
 import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Aggregate } from "@/lib/sentiment";
 
-const LABEL_META: Record<
-  "bullish" | "bearish" | "neutral",
-  { chip: string; icon: React.ReactNode; text: string }
-> = {
-  bullish: { chip: "chip-bull", icon: <TrendingUp className="h-3.5 w-3.5" />, text: "Bullish" },
-  bearish: { chip: "chip-bear", icon: <TrendingDown className="h-3.5 w-3.5" />, text: "Bearish" },
-  neutral: { chip: "chip-neu",  icon: <Minus className="h-3.5 w-3.5" />, text: "Neutral" },
+const LABEL_ICON: Record<"bullish" | "bearish" | "neutral", React.ReactNode> = {
+  bullish: <TrendingUp className="h-3.5 w-3.5" />,
+  bearish: <TrendingDown className="h-3.5 w-3.5" />,
+  neutral: <Minus className="h-3.5 w-3.5" />,
 };
 
-const IMPACT_META: Record<"high" | "medium" | "low", string> = {
-  high: "High impact",
-  medium: "Medium impact",
-  low: "Low impact",
+const LABEL_CHIP: Record<"bullish" | "bearish" | "neutral", string> = {
+  bullish: "chip-bull",
+  bearish: "chip-bear",
+  neutral: "chip-neu",
 };
 
-const OVERALL_HEADLINE: Record<"bullish" | "bearish" | "neutral", string> = {
-  bullish: "Overall tone is bullish",
-  bearish: "Overall tone is bearish",
-  neutral: "Overall tone is neutral",
-};
+/**
+ * Small inline dot used as a separator between adjacent labels — replaces
+ * the raw `·` (U+00B7 middle-dot) character so the divider renders
+ * consistently across fonts and OSes (some system fonts drop the middle
+ * dot low, others centre it).
+ */
+function DotSep({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-block h-1 w-1 rounded-full bg-current align-middle opacity-40",
+        className,
+      )}
+    />
+  );
+}
 
 function VerdictBanner({ agg }: { agg: Aggregate }) {
-  const meta = LABEL_META[agg.label];
+  const t = useT();
+  const overallKey = `news.overall.${agg.label}`;
+  const labelKey = `news.label.${agg.label}`;
   const percent = Math.round(Math.abs(agg.score) * 100);
   const bar =
     agg.label === "bullish" ? "bg-success" :
@@ -45,21 +61,28 @@ function VerdictBanner({ agg }: { agg: Aggregate }) {
       <div className="flex flex-col md:flex-row md:items-center gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className={cn("chip", meta.chip)}>{meta.icon} {meta.text}</span>
-            <span className="text-xs text-muted-foreground">
-              {agg.counts.bullish} bullish · {agg.counts.bearish} bearish · {agg.counts.neutral} neutral
+            <span className={cn("chip", LABEL_CHIP[agg.label])}>
+              {LABEL_ICON[agg.label]} {t(labelKey)}
+            </span>
+            <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{t("news.countBullish", { n: agg.counts.bullish })}</span>
+              <DotSep />
+              <span>{t("news.countBearish", { n: agg.counts.bearish })}</span>
+              <DotSep />
+              <span>{t("news.countNeutral", { n: agg.counts.neutral })}</span>
             </span>
           </div>
-          <h2 className="text-xl font-semibold">{OVERALL_HEADLINE[agg.label]}</h2>
+          <h2 className="text-xl font-semibold">{t(overallKey)}</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Weighted sentiment score: <strong className="tabular-nums">{agg.score.toFixed(3)}</strong>
+            <TermTip term="Sentiment Score">{t("news.weightedScore")}</TermTip>:{" "}
+            <strong className="tabular-nums">{agg.score.toFixed(3)}</strong>
           </p>
         </div>
         <div className="md:w-64 shrink-0">
           <div className="flex justify-between text-[0.65rem] uppercase tracking-wider text-muted-foreground mb-1">
-            <span>Bearish</span>
-            <span>Neutral</span>
-            <span>Bullish</span>
+            <span>{t("news.axis.bearish")}</span>
+            <span>{t("news.axis.neutral")}</span>
+            <span>{t("news.axis.bullish")}</span>
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden relative">
             <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
@@ -78,7 +101,7 @@ function VerdictBanner({ agg }: { agg: Aggregate }) {
 }
 
 function NewsCard({ item }: { item: NewsItem }) {
-  const meta = LABEL_META[item.label];
+  const t = useT();
   return (
     <article className="glass rounded-xl border-l-4 px-4 py-3 space-y-2 hover:-translate-y-0.5 transition-transform"
       style={{
@@ -91,11 +114,14 @@ function NewsCard({ item }: { item: NewsItem }) {
       }}
     >
       <div className="flex items-center gap-2 flex-wrap">
-        <span className={cn("chip", meta.chip)}>
-          {meta.icon} {meta.text} · {item.score >= 0 ? "+" : ""}{item.score.toFixed(2)}
+        <span className={cn("chip inline-flex items-center gap-1.5", LABEL_CHIP[item.label])}>
+          {LABEL_ICON[item.label]}
+          <span>{t(`news.label.${item.label}`)}</span>
+          <DotSep />
+          <span className="tabular-nums">{item.score >= 0 ? "+" : ""}{item.score.toFixed(2)}</span>
         </span>
         <span className="text-[0.7rem] uppercase tracking-wider text-muted-foreground">
-          {IMPACT_META[item.impact]}
+          {t(`news.impact.${item.impact}`)}
         </span>
         <span className="text-xs text-muted-foreground ml-auto">
           {relativeTime(item.publishedAt)}
@@ -122,8 +148,9 @@ function NewsCard({ item }: { item: NewsItem }) {
 }
 
 function NewsList({ items }: { items: NewsItem[] }) {
+  const t = useT();
   if (items.length === 0) {
-    return <p className="text-sm text-muted-foreground py-8 text-center">No stories in this category.</p>;
+    return <p className="text-sm text-muted-foreground py-8 text-center">{t("news.empty")}</p>;
   }
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -134,18 +161,64 @@ function NewsList({ items }: { items: NewsItem[] }) {
 
 export default function NewsPage() {
   const { data, loading, error, rateLimited, reload } = useNews();
+  const { findSubscription } = useNewsSubscriptions();
+  const t = useT();
+
+  const ticker = data?.ticker ?? "";
+  const subscription = ticker ? findSubscription(ticker) : undefined;
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader pageTitle="News" />
+      <PageHeader pageTitleKey="nav.news" />
       <PageIntro pageKey="news" />
 
-      {rateLimited && <RateLimitBanner />}
+      {ticker && (
+        <Card className="p-4 mb-4">
+          <div className="flex flex-col md:flex-row md:items-center gap-3 justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="chip chip-neu">{ticker}</span>
+                {typeof data?.totalStored === "number" && (
+                  <span className="text-xs text-muted-foreground">
+                    {data.totalStored} accumulated headline{data.totalStored === 1 ? "" : "s"}
+                  </span>
+                )}
+                {typeof data?.newlyInserted === "number" && data.newlyInserted > 0 && (
+                  <span
+                    className="chip chip-bull inline-flex items-center gap-1"
+                    title="Number of new headlines added on this refresh"
+                  >
+                    <Sparkles className="h-3 w-3" /> +{data.newlyInserted} new
+                  </span>
+                )}
+                {rateLimited && (
+                  <span className="chip chip-neu" title="Yahoo throttled us — showing cached history">
+                    Yahoo rate-limited
+                  </span>
+                )}
+                {subscription && (
+                  <span
+                    className="text-[0.7rem] text-muted-foreground"
+                    title={new Date(subscription.createdAt).toLocaleString()}
+                  >
+                    subscribed {relativeTime(subscription.createdAt)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <SubscribeNewsButton ticker={ticker} />
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {rateLimited && !data && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}
-      {!data && !error && !rateLimited && loading && <LoadingPage label="Fetching headlines…" />}
+      {!data && !error && !rateLimited && loading && <LoadingPage label={t("loading.headlines")} />}
       {data && data.items.length === 0 && (
         <p className="text-sm text-muted-foreground py-8 text-center">
-          No recent news returned for <strong>{data.ticker}</strong>.
+          {t("news.emptyForTicker", { ticker: data.ticker })}
         </p>
       )}
 
@@ -155,16 +228,10 @@ export default function NewsPage() {
 
           <Tabs defaultValue="all">
             <TabsList>
-              <TabsTrigger value="all">All ({data.items.length})</TabsTrigger>
-              <TabsTrigger value="bullish">
-                Bullish ({data.aggregate.counts.bullish})
-              </TabsTrigger>
-              <TabsTrigger value="bearish">
-                Bearish ({data.aggregate.counts.bearish})
-              </TabsTrigger>
-              <TabsTrigger value="neutral">
-                Neutral ({data.aggregate.counts.neutral})
-              </TabsTrigger>
+              <TabsTrigger value="all">{t("news.tab.all", { n: data.items.length })}</TabsTrigger>
+              <TabsTrigger value="bullish">{t("news.tab.bullish", { n: data.aggregate.counts.bullish })}</TabsTrigger>
+              <TabsTrigger value="bearish">{t("news.tab.bearish", { n: data.aggregate.counts.bearish })}</TabsTrigger>
+              <TabsTrigger value="neutral">{t("news.tab.neutral", { n: data.aggregate.counts.neutral })}</TabsTrigger>
             </TabsList>
             <TabsContent value="all"><NewsList items={data.items} /></TabsContent>
             <TabsContent value="bullish"><NewsList items={data.items.filter((i) => i.label === "bullish")} /></TabsContent>
@@ -173,9 +240,18 @@ export default function NewsPage() {
           </Tabs>
 
           <p className="text-xs text-muted-foreground text-center mt-8">
-            Sentiment gauged by a finance-tuned VADER lexicon. Score ≥ +0.15 is bullish, ≤ −0.15 is bearish.
-            Overall score is time-weighted (newer stories count more). This is a rough gauge of market chatter, not a trading signal.
+            {t("news.disclaimer")}
           </p>
+
+          <KeyTerms
+            terms={[
+              "Bullish",
+              "Bearish",
+              "Sentiment Score",
+              "VADER",
+              "Impact",
+            ]}
+          />
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
 import { Button } from "./ui/button";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /**
@@ -14,6 +15,7 @@ export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
+  const t = useT();
 
   // Guard against SSR-time reads: `theme` may be undefined until mount.
   const active = mounted ? theme ?? "dark" : "dark";
@@ -25,25 +27,25 @@ export function ThemeToggle({ className }: { className?: string }) {
         className,
       )}
       role="group"
-      aria-label="Theme"
+      aria-label={t("theme.ariaLabel")}
     >
       <Button
         variant={active === "dark" ? "default" : "ghost"}
         size="sm"
         onClick={() => setTheme("dark")}
-        className="gap-1.5"
+        className="gap-1.5 flex-1"
         aria-pressed={active === "dark"}
       >
-        <Moon className="h-3.5 w-3.5" /> Dark
+        <Moon className="h-3.5 w-3.5" /> {t("theme.dark")}
       </Button>
       <Button
         variant={active === "light" ? "default" : "ghost"}
         size="sm"
         onClick={() => setTheme("light")}
-        className="gap-1.5"
+        className="gap-1.5 flex-1"
         aria-pressed={active === "light"}
       >
-        <Sun className="h-3.5 w-3.5" /> Light
+        <Sun className="h-3.5 w-3.5" /> {t("theme.light")}
       </Button>
     </div>
   );

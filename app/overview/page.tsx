@@ -4,25 +4,32 @@ import * as React from "react";
 import { HelpCircle, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
+import { KeyTerms } from "@/components/key-terms";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useBundle } from "@/hooks/use-bundle";
 import { ErrorBanner, LoadingPage, RateLimitBanner } from "@/components/loading";
-import { fmtCurrency, fmtNumber, fmtPercent, fmtSigned, fmtSignedPercent } from "@/lib/format";
+import { fmtCurrency, fmtNumber, fmtSigned, fmtSignedPercent } from "@/lib/format";
 import { signalHint } from "@/lib/knowledge";
-import { useIsBeginner } from "@/lib/state";
+import { useIsBeginner, useLocale, type Locale } from "@/lib/state";
+import { useT, translateSignalValue } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { LatestSignals } from "@/lib/indicators";
+import type { Analysis, ConclusionParts, Insight, Category } from "@/lib/insights";
+
+type TFn = (key: string, params?: Record<string, string | number>) => string;
 
 // --------------------------------------------------------------------------
 
-function SignalTile({ label, value, mood }: {
+function SignalTile({ hintKey, label, value, mood }: {
+  hintKey: string;
   label: string;
   value: string;
   mood: "bull" | "bear" | "neu";
 }) {
   const beginner = useIsBeginner();
-  const hint = signalHint(label);
+  const locale = useLocale();
+  const hint = signalHint(hintKey, locale);
   const icon = mood === "bull" ? <TrendingUp className="h-4 w-4" />
              : mood === "bear" ? <TrendingDown className="h-4 w-4" />
              :                    <Minus className="h-4 w-4" />;
@@ -57,6 +64,9 @@ function SignalTile({ label, value, mood }: {
   );
 }
 
+// ---- Mood classifiers key off the raw English server string; we intentionally
+// keep them locale-blind so the mood is stable no matter what the display value
+// reads.
 function moodOfTrend(v: string): "bull" | "bear" | "neu" {
   if (v.includes("Bullish")) return "bull";
   if (v.includes("Bearish")) return "bear";
@@ -78,20 +88,105 @@ function moodOfBb(v: string): "bull" | "bear" | "neu" {
   return "neu";
 }
 
-function SignalRow({ signals }: { signals: LatestSignals }) {
+function SignalRow({ signals, locale, t }: { signals: LatestSignals; locale: Locale; t: TFn }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <SignalTile label="Trend" value={signals.trend} mood={moodOfTrend(signals.trend)} />
-      <SignalTile label="RSI(14)" value={signals.rsi} mood={moodOfRsi(signals.rsi)} />
-      <SignalTile label="MACD" value={signals.macd} mood={moodOfMacd(signals.macd)} />
-      <SignalTile label="Bollinger" value={signals.bollinger} mood={moodOfBb(signals.bollinger)} />
+      <SignalTile
+        hintKey="Trend"
+        label={t("overview.signal.trend")}
+        value={translateSignalValue("trend", signals.trend, locale)}
+        mood={moodOfTrend(signals.trend)}
+      />
+      <SignalTile
+        hintKey="RSI(14)"
+        label={t("overview.signal.rsi14")}
+        value={translateSignalValue("rsi", signals.rsi, locale)}
+        mood={moodOfRsi(signals.rsi)}
+      />
+      <SignalTile
+        hintKey="MACD"
+        label={t("overview.signal.macd")}
+        value={translateSignalValue("macd", signals.macd, locale)}
+        mood={moodOfMacd(signals.macd)}
+      />
+      <SignalTile
+        hintKey="Bollinger"
+        label={t("overview.signal.bollinger")}
+        value={translateSignalValue("bollinger", signals.bollinger, locale)}
+        mood={moodOfBb(signals.bollinger)}
+      />
     </div>
   );
 }
 
 // --------------------------------------------------------------------------
+// Insight rendering — every insight carries labelKey + detailKey so we can
+// render in the user's locale. Fall back to the English `label` / `detail`
+// if the translation is missing (which itself is safe — `translate()` returns
+// the English fallback when a key is absent).
 
-function VerdictCard({ analysis }: { analysis: NonNullable<ReturnType<typeof useBundle>["data"]>["analysis"] }) {
+function insightLabel(insight: Insight, t: TFn): string {
+  return t(insight.labelKey, insight.labelParams) || insight.label;
+}
+function insightDetail(insight: Insight, t: TFn): string {
+  return t(insight.detailKey, insight.detailParams) || insight.detail;
+}
+
+// --------------------------------------------------------------------------
+// Client-side conclusion composer — mirrors `composeEnglishConclusion` in
+// `lib/insights.ts` but emits the sentence in the active locale.
+
+function composeConclusion(parts: ConclusionParts, t: TFn): string {
+  const pos = parts.positivesCount;
+  const neg = parts.negativesCount;
+  const joiner = t("conclusion.categoryJoiner");
+  const sep = t("conclusion.listSeparator");
+  const stop = t("conclusion.stop");
+
+  const catLabel = (c: Category) => t(`insight.cat.${c}`);
+  const strongList = parts.strongCategories.map(catLabel).join(joiner);
+  const weakList = parts.weakCategories.map(catLabel).join(joiner);
+
+  let opener: string;
+  if (pos && !neg) {
+    opener = t("conclusion.allPositive", { ticker: parts.ticker });
+  } else if (neg && !pos) {
+    opener = t("conclusion.allNegative", { ticker: parts.ticker });
+  } else if (pos > neg * 1.5) {
+    opener = t("conclusion.mostlyPositive", { ticker: parts.ticker, pos, neg });
+  } else if (neg > pos * 1.5) {
+    opener = t("conclusion.mostlyNegative", { ticker: parts.ticker, pos, neg });
+  } else {
+    opener = t("conclusion.mixed", { ticker: parts.ticker, pos, neg });
+  }
+
+  const clauses: string[] = [opener];
+  if (strongList && weakList) {
+    clauses.push(t("conclusion.strengthsAndWeaknesses", { strong: strongList, weak: weakList }));
+  } else if (strongList) {
+    clauses.push(t("conclusion.strengthsOnly", { list: strongList }));
+  } else if (weakList) {
+    clauses.push(t("conclusion.weaknessesOnly", { list: weakList }));
+  }
+  clauses.push(stop);
+
+  const stripTrailingStop = (s: string) => s.replace(/[.。]+\s*$/u, "");
+
+  if (parts.topPositives.length) {
+    const list = parts.topPositives.map((p) => stripTrailingStop(insightDetail(p, t))).join(sep);
+    clauses.push(t("conclusion.notablePositives", { list }));
+  }
+  if (parts.topNegatives.length) {
+    const list = parts.topNegatives.map((n) => stripTrailingStop(insightDetail(n, t))).join(sep);
+    clauses.push(t("conclusion.keyConcerns", { list }));
+  }
+
+  return clauses.join("");
+}
+
+// --------------------------------------------------------------------------
+
+function VerdictCard({ analysis, t }: { analysis: Analysis; t: TFn }) {
   const score = analysis.overallScore;
   const percent = Math.max(0, Math.min(100, score));
   const tint =
@@ -105,15 +200,17 @@ function VerdictCard({ analysis }: { analysis: NonNullable<ReturnType<typeof use
     score >= 30 ? "bg-warning" :
                   "bg-danger";
 
-  const conclusionHtml = analysis.conclusion.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const verdictLabel = t(`verdict.${analysis.verdictKey}`);
+  const conclusionText = composeConclusion(analysis.conclusionParts, t);
+  const conclusionHtml = conclusionText.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
   return (
     <Card className={cn("overflow-hidden p-6 bg-gradient-to-br", tint)}>
       <div className="flex flex-col md:flex-row md:items-center gap-4">
         <div className="text-5xl leading-none select-none">{analysis.verdictEmoji}</div>
         <div className="flex-1 min-w-0">
-          <p className="metric-label mb-1">Overall verdict</p>
-          <h2 className="text-2xl font-bold">{analysis.verdictLabel}</h2>
+          <p className="metric-label mb-1">{t("overview.verdict.label")}</p>
+          <h2 className="text-2xl font-bold">{verdictLabel}</h2>
           <p
             className="mt-2 text-sm text-muted-foreground leading-relaxed"
             dangerouslySetInnerHTML={{ __html: conclusionHtml }}
@@ -121,7 +218,7 @@ function VerdictCard({ analysis }: { analysis: NonNullable<ReturnType<typeof use
         </div>
         <div className="md:w-64 shrink-0">
           <div className="flex items-baseline gap-2 justify-between">
-            <span className="metric-label">Score</span>
+            <span className="metric-label">{t("overview.score")}</span>
             <span className="text-3xl font-bold tabular-nums">{score.toFixed(1)}</span>
           </div>
           <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
@@ -152,39 +249,43 @@ function KpiTile({ label, value, sub }: { label: string; value: string; sub?: Re
 
 export default function OverviewPage() {
   const { data, loading, error, reload } = useBundle();
+  const t = useT();
+  const locale = useLocale();
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader pageTitle="Overview" />
+      <PageHeader pageTitleKey="nav.overview" />
       <PageIntro pageKey="overview" />
 
       {data?.rateLimited && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}
-      {!data && !error && loading && <LoadingPage label="Loading market data…" />}
+      {!data && !error && loading && <LoadingPage label={t("loading.marketData")} />}
 
       {data && (
         <div className="space-y-6 animate-fade-in">
-          <VerdictCard analysis={data.analysis} />
+          <VerdictCard analysis={data.analysis} t={t} />
 
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                Latest signals
+                {t("overview.latestSignals")}
               </h3>
               <span className="text-xs text-muted-foreground">
-                as of {new Date(data.fetchedAt).toLocaleString()}
+                {t("overview.asOf", { time: new Date(data.fetchedAt).toLocaleString() })}
               </span>
             </div>
-            {data.signals ? <SignalRow signals={data.signals} /> : <p className="text-sm text-muted-foreground">No price history yet.</p>}
+            {data.signals
+              ? <SignalRow signals={data.signals} locale={locale} t={t} />
+              : <p className="text-sm text-muted-foreground">{t("common.noData")}</p>}
           </section>
 
           <section>
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-              Snapshot
+              {t("overview.snapshot")}
             </h3>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <KpiTile
-                label="Last Close"
+                label={t("overview.kpi.lastClose")}
                 value={fmtCurrency(data.quote.price)}
                 sub={data.quote.change !== null && data.quote.changePercent !== null && (
                   <span className={cn(
@@ -196,37 +297,37 @@ export default function OverviewPage() {
                 )}
               />
               <KpiTile
-                label="Bars"
+                label={t("overview.kpi.bars")}
                 value={fmtNumber(data.bars.length, 0)}
                 sub={<span className="text-muted-foreground">{data.period} · {data.interval}</span>}
               />
               <KpiTile
-                label="Positive signals"
+                label={t("overview.kpi.positive")}
                 value={String(data.analysis.positives.length)}
-                sub={<span className="text-success">healthy indicators</span>}
+                sub={<span className="text-success">{t("overview.kpi.positiveSub")}</span>}
               />
               <KpiTile
-                label="Concerns"
+                label={t("overview.kpi.concerns")}
                 value={String(data.analysis.negatives.length)}
-                sub={<span className="text-danger">warning indicators</span>}
+                sub={<span className="text-danger">{t("overview.kpi.concernsSub")}</span>}
               />
             </div>
           </section>
 
           <section className="grid gap-4 md:grid-cols-2">
             <Card>
-              <CardHeader><CardTitle>Positives ({data.analysis.positives.length})</CardTitle></CardHeader>
+              <CardHeader><CardTitle>{t("overview.positivesTitle", { n: data.analysis.positives.length })}</CardTitle></CardHeader>
               <CardContent>
                 {data.analysis.positives.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nothing stood out as positive.</p>
+                  <p className="text-sm text-muted-foreground">{t("overview.positivesEmpty")}</p>
                 ) : (
                   <ul className="space-y-2 text-sm">
                     {data.analysis.positives.map((p, i) => (
                       <li key={i} className="flex items-start gap-2">
                         <span className="text-success mt-0.5">✓</span>
                         <span>
-                          <strong className="mr-1">{p.label}.</strong>
-                          <span className="text-muted-foreground">{p.detail}</span>
+                          <strong className="mr-1">{insightLabel(p, t)}.</strong>
+                          <span className="text-muted-foreground">{insightDetail(p, t)}</span>
                         </span>
                       </li>
                     ))}
@@ -236,18 +337,18 @@ export default function OverviewPage() {
             </Card>
 
             <Card>
-              <CardHeader><CardTitle>Concerns ({data.analysis.negatives.length})</CardTitle></CardHeader>
+              <CardHeader><CardTitle>{t("overview.concernsTitle", { n: data.analysis.negatives.length })}</CardTitle></CardHeader>
               <CardContent>
                 {data.analysis.negatives.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No red flags flagged.</p>
+                  <p className="text-sm text-muted-foreground">{t("overview.concernsEmpty")}</p>
                 ) : (
                   <ul className="space-y-2 text-sm">
                     {data.analysis.negatives.map((p, i) => (
                       <li key={i} className="flex items-start gap-2">
                         <span className="text-danger mt-0.5">✗</span>
                         <span>
-                          <strong className="mr-1">{p.label}.</strong>
-                          <span className="text-muted-foreground">{p.detail}</span>
+                          <strong className="mr-1">{insightLabel(p, t)}.</strong>
+                          <span className="text-muted-foreground">{insightDetail(p, t)}</span>
                         </span>
                       </li>
                     ))}
@@ -257,12 +358,27 @@ export default function OverviewPage() {
             </Card>
           </section>
 
-          <p className="text-xs text-muted-foreground text-center pt-4 pb-8">
-            Overall score is a rule-based aggregate over valuation, profitability, health, growth, dividends,
-            and technicals — not a trading recommendation. Weights: profitability 25%, valuation 20%,
-            health 20%, growth 15%, technicals 10%, momentum 5%, dividend 5%. Yield above 2% is a positive
-            weight; yield above 6% is treated as a warning. Assumes only the fundamentals surfaced by Yahoo Finance.
+          <p className="text-xs text-muted-foreground text-center pt-4">
+            {t("overview.disclaimer")}
           </p>
+
+          <KeyTerms
+            terms={[
+              "SMA",
+              "RSI",
+              "MACD",
+              "Bollinger Bands",
+              "Overbought",
+              "Oversold",
+              "Bullish",
+              "Bearish",
+              "Volatility",
+              "Volume",
+              "Market Cap",
+              "P/E Ratio",
+              "Dividend Yield",
+            ]}
+          />
         </div>
       )}
     </div>

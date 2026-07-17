@@ -20,6 +20,9 @@ import {
   getState,
 } from "./store";
 import { notifySignal } from "./notifier";
+import { runPortfolioTick } from "../portfolio-watch/engine";
+import { runStockTick } from "../stock-watch/engine";
+import { runNewsTick } from "../news-watch/engine";
 
 export interface TickReport {
   ok: boolean;
@@ -128,6 +131,51 @@ export async function runForever(ticker: string): Promise<void> {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[worker] tick threw:", err);
+      }
+      // Portfolio-watch tick runs on the same cadence as the strategy
+      // tick. Underlying report fetches are cached (portfolios TTL ~6h),
+      // so this is cheap when nothing has changed.
+      try {
+        const pt = await runPortfolioTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] portfolio-tick ${pt.ranAt} — ` +
+            `watches=${pt.watchCount} probed=${pt.presetsProbed} events=${pt.eventsSeen} ` +
+            `matched=${pt.eventsMatched} notified=${pt.notifiesSent} errors=${pt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] portfolio-tick threw:", err);
+      }
+      // Stock-watch tick — per-ticker insider transaction alerts.
+      // Independent from the portfolio one so a bad watch on either
+      // side can't stall the other.
+      try {
+        const st = await runStockTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] stock-tick ${st.ranAt} — ` +
+            `watches=${st.watchCount} probed=${st.tickersProbed} tx=${st.transactionsSeen} ` +
+            `matched=${st.transactionsMatched} notified=${st.notifiesSent} errors=${st.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] stock-tick threw:", err);
+      }
+      // News-watch tick — subscribed tickers get Telegram on any new
+      // headline. Also silently accumulates the DB history that the
+      // News page reads back to the user.
+      try {
+        const nt = await runNewsTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] news-tick ${nt.ranAt} — ` +
+            `subs=${nt.subscriptionCount} probed=${nt.tickersProbed} items=${nt.itemsSeen} ` +
+            `new=${nt.itemsNew} notified=${nt.notifiesSent} errors=${nt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] news-tick threw:", err);
       }
     } else {
       // eslint-disable-next-line no-console

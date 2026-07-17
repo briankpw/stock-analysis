@@ -3,9 +3,12 @@
 import * as React from "react";
 import { useTheme } from "next-themes";
 import {
-  createChart, ColorType, CrosshairMode, LineStyle, type Time,
+  createChart, ColorType, CrosshairMode, LineStyle,
+  type Time, type LineData, type HistogramData,
 } from "lightweight-charts";
-import type { Bar, MacdResult, NullableSeries } from "@/lib/indicators";
+import type { Bar, MacdResult, NullableSeries, SupportResistance } from "@/lib/indicators";
+import { attachChartTooltip, fmtChartDate, type TooltipRow } from "./chart-tooltip";
+import { fmtNumber } from "@/lib/format";
 
 function useChart<T>(
   build: (container: HTMLDivElement, dark: boolean) => T | (() => void),
@@ -50,7 +53,26 @@ export function RsiChart({ bars, rsi14, height = 220 }: { bars: Bar[]; rsi14: Nu
     line.createPriceLine({ price: 30, color: "#7bd88f", lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "OS" });
     line.createPriceLine({ price: 70, color: "#f0787a", lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: "OB" });
     chart.timeScale().fitContent();
-    return () => chart.remove();
+
+    const detach = attachChartTooltip(chart, el, (param) => {
+      const p = param.seriesData.get(line) as LineData | undefined;
+      if (!p || !Number.isFinite(p.value)) return null;
+      const zone =
+        p.value >= 70 ? "Overbought" :
+        p.value <= 30 ? "Oversold" :
+                        "Neutral";
+      const zoneColor =
+        p.value >= 70 ? "#f0787a" :
+        p.value <= 30 ? "#7bd88f" :
+                        undefined;
+      return [
+        { label: "Date", value: fmtChartDate(param.time!), bold: true },
+        { label: "RSI(14)", value: p.value.toFixed(2), color: "#8a5cff", bold: true },
+        { label: "Zone", value: zone, color: zoneColor },
+      ] satisfies TooltipRow[];
+    });
+
+    return () => { detach(); chart.remove(); };
   }, [bars, rsi14, height]);
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
@@ -75,7 +97,28 @@ export function MacdChart({ bars, macd, height = 220 }: { bars: Bar[]; macd: Mac
         : { time: b.time as Time, value: v, color: v >= 0 ? "#22c89666" : "#e0526366" };
     }));
     chart.timeScale().fitContent();
-    return () => chart.remove();
+
+    const detach = attachChartTooltip(chart, el, (param) => {
+      const m = param.seriesData.get(macdLine) as LineData | undefined;
+      const s = param.seriesData.get(signal) as LineData | undefined;
+      const h = param.seriesData.get(hist) as HistogramData | undefined;
+      if (!m && !s && !h) return null;
+      const rows: TooltipRow[] = [
+        { label: "Date", value: fmtChartDate(param.time!), bold: true },
+      ];
+      if (m && Number.isFinite(m.value)) rows.push({ label: "MACD", value: fmtNumber(m.value, 3), color: "#5b8def" });
+      if (s && Number.isFinite(s.value)) rows.push({ label: "Signal", value: fmtNumber(s.value, 3), color: "#e0b552" });
+      if (h && Number.isFinite(h.value)) {
+        rows.push({
+          label: "Histogram",
+          value: `${h.value >= 0 ? "+" : ""}${fmtNumber(h.value, 3)}`,
+          color: h.value >= 0 ? "#22c896" : "#e05263",
+        });
+      }
+      return rows;
+    });
+
+    return () => { detach(); chart.remove(); };
   }, [bars, macd, height]);
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
@@ -124,7 +167,12 @@ export function ReturnsHistogram({
         const y = height - padding / 2 - h;
         const binMid = min + step * (i + 0.5);
         const fill = binMid >= 0 ? "hsl(var(--success))" : "hsl(var(--danger))";
-        return <rect key={i} x={x} y={y} width={w} height={h} fill={fill} opacity={0.75} />;
+        return (
+          <g key={i}>
+            <title>{`${(binMid * 100).toFixed(2)}%\n${c} day${c === 1 ? "" : "s"}`}</title>
+            <rect x={x} y={y} width={w} height={h} fill={fill} opacity={0.75} />
+          </g>
+        );
       })}
       <text x={padding} y={padding - 6} fontSize="10" fill="currentColor" opacity="0.6">
         min: {(min * 100).toFixed(2)}%
@@ -133,5 +181,191 @@ export function ReturnsHistogram({
         max: {(max * 100).toFixed(2)}%
       </text>
     </svg>
+  );
+}
+
+/**
+ * Support / Resistance chart: a compact close-price line with the
+ * detected support and resistance levels overlaid as horizontal price
+ * lines. Levels are labelled S1/S2/... (nearest support first) and
+ * R1/R2/... (nearest resistance first) so the legend below can key off
+ * the same labels.
+ */
+const SUPPORT_COLOR = "#22c896";
+const RESISTANCE_COLOR = "#e05263";
+
+export function SupportResistanceChart({
+  bars,
+  levels,
+  height = 300,
+}: {
+  bars: Bar[];
+  levels: SupportResistance;
+  height?: number;
+}) {
+  const ref = useChart((el, dark) => {
+    const chart = createChart(el, baseOpts(dark, height));
+    const price = chart.addLineSeries({
+      color: dark ? "#c8cde0" : "#233047",
+      lineWidth: 2,
+      priceLineVisible: true,
+      title: "Close",
+    });
+    price.setData(bars.map((b) => ({ time: b.time as Time, value: b.close })));
+
+    // Support: closest to current price first (S1, S2, …).
+    levels.support.forEach((lvl, i) => {
+      price.createPriceLine({
+        price: lvl.price,
+        color: SUPPORT_COLOR,
+        lineStyle: LineStyle.Dashed,
+        lineWidth: 1,
+        axisLabelVisible: true,
+        title: `S${i + 1}`,
+      });
+    });
+    // Resistance: closest to current price first (R1, R2, …).
+    levels.resistance.forEach((lvl, i) => {
+      price.createPriceLine({
+        price: lvl.price,
+        color: RESISTANCE_COLOR,
+        lineStyle: LineStyle.Dashed,
+        lineWidth: 1,
+        axisLabelVisible: true,
+        title: `R${i + 1}`,
+      });
+    });
+
+    chart.timeScale().fitContent();
+
+    const detach = attachChartTooltip(chart, el, (param) => {
+      const p = param.seriesData.get(price) as LineData | undefined;
+      if (!p || !Number.isFinite(p.value)) return null;
+      const rows: TooltipRow[] = [
+        { label: "Date", value: fmtChartDate(param.time!), bold: true },
+        { label: "Close", value: fmtNumber(p.value), bold: true },
+      ];
+      // Show the nearest support / resistance relative to this bar's close.
+      const nextRes = [...levels.resistance].sort((a, b) => a.price - b.price).find((l) => l.price > p.value);
+      const nextSup = [...levels.support].sort((a, b) => b.price - a.price).find((l) => l.price < p.value);
+      if (nextRes) {
+        const dist = ((nextRes.price - p.value) / p.value) * 100;
+        rows.push({
+          label: "Next resistance",
+          value: `${fmtNumber(nextRes.price)}  (+${dist.toFixed(2)}%)`,
+          color: RESISTANCE_COLOR,
+        });
+      }
+      if (nextSup) {
+        const dist = ((p.value - nextSup.price) / p.value) * 100;
+        rows.push({
+          label: "Next support",
+          value: `${fmtNumber(nextSup.price)}  (−${dist.toFixed(2)}%)`,
+          color: SUPPORT_COLOR,
+        });
+      }
+      return rows;
+    });
+
+    return () => { detach(); chart.remove(); };
+  }, [bars, levels, height]);
+  return <div ref={ref} style={{ width: "100%", height }} />;
+}
+
+/**
+ * Compact table showing each detected level, its distance from the
+ * current close, and how many pivots contributed to it. Complements
+ * `SupportResistanceChart` — the chart shows *where*, the table shows
+ * *how strong* and *how far*.
+ */
+export function SupportResistanceTable({
+  bars,
+  levels,
+}: {
+  bars: Bar[];
+  levels: SupportResistance;
+}) {
+  if (bars.length === 0) return null;
+  const lastClose = bars[bars.length - 1]!.close;
+
+  const rows: Array<{
+    label: string;
+    color: string;
+    price: number;
+    distPct: number;
+    touches: number;
+    lastTouch: number;
+  }> = [];
+  levels.resistance.forEach((lvl, i) =>
+    rows.push({
+      label: `R${i + 1}`,
+      color: RESISTANCE_COLOR,
+      price: lvl.price,
+      distPct: ((lvl.price - lastClose) / lastClose) * 100,
+      touches: lvl.touches,
+      lastTouch: lvl.lastTouch,
+    }),
+  );
+  levels.support.forEach((lvl, i) =>
+    rows.push({
+      label: `S${i + 1}`,
+      color: SUPPORT_COLOR,
+      price: lvl.price,
+      distPct: ((lvl.price - lastClose) / lastClose) * 100,
+      touches: lvl.touches,
+      lastTouch: lvl.lastTouch,
+    }),
+  );
+
+  if (rows.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground p-2">
+        Not enough price history to detect swing pivots yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead className="text-muted-foreground">
+          <tr className="border-b border-border/60">
+            <th className="text-left font-medium py-1.5 pr-2">Level</th>
+            <th className="text-right font-medium py-1.5 px-2">Price</th>
+            <th className="text-right font-medium py-1.5 px-2">Distance</th>
+            <th className="text-right font-medium py-1.5 px-2">Touches</th>
+            <th className="text-right font-medium py-1.5 pl-2">Last touch</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono tabular-nums">
+          {rows.map((r) => (
+            <tr key={r.label} className="border-b border-border/30 last:border-0">
+              <td className="py-1.5 pr-2">
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    aria-hidden
+                    style={{ background: r.color }}
+                    className="inline-block h-2 w-2 rounded-sm"
+                  />
+                  {r.label}
+                </span>
+              </td>
+              <td className="text-right py-1.5 px-2">{fmtNumber(r.price)}</td>
+              <td
+                className="text-right py-1.5 px-2"
+                style={{ color: r.distPct >= 0 ? RESISTANCE_COLOR : SUPPORT_COLOR }}
+              >
+                {r.distPct >= 0 ? "+" : ""}
+                {r.distPct.toFixed(2)}%
+              </td>
+              <td className="text-right py-1.5 px-2">{r.touches}</td>
+              <td className="text-right py-1.5 pl-2 text-muted-foreground">
+                {fmtChartDate(r.lastTouch as Time)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

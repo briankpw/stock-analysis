@@ -1,0 +1,104 @@
+# =============================================================================
+# Key Stock — Portainer stack (Compose v3.x)
+#
+# Two supported deploy flows:
+#
+#   1) Portainer -> Stacks -> Add stack -> Repository
+#      Repository URL : <this repo>
+#      Compose path   : deploy/portainer/stack.yml
+#      => Portainer builds the image from the repo root Dockerfile.
+#         The `build:` block below (context: ../..) is what makes this work.
+#
+#   2) Portainer -> Stacks -> Add stack -> Web editor
+#      Paste this file, then set env var `IMAGE` to a prebuilt image such as
+#      `ghcr.io/<you>/key-stock:latest`. Comment out the two `build:` blocks
+#      or leave them — when `image:` is set, Compose skips build.
+#
+# Persistent state (paper trading, watchlist, bot signals, portfolio presets)
+# lives in the `key_stock_data` named volume mounted at /app/data. Do NOT
+# delete this volume unless you want to wipe everything.
+# =============================================================================
+
+services:
+  ui:
+    image: ${IMAGE:-key-stock:latest}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ${STACK_NAME:-key-stock}-ui
+    restart: unless-stopped
+    ports:
+      - "${UI_PORT:-5001}:5001"
+    environment:
+      NODE_ENV: production
+      PORT: "5001"
+      TZ: ${TZ:-UTC}
+
+      # ---- Ticker / defaults ------------------------------------------------
+      STOCK_TICKER:     ${STOCK_TICKER:-KEYS}
+      COMPANY_NAME:     ${COMPANY_NAME:-Keysight Technologies}
+      DEFAULT_PERIOD:   ${DEFAULT_PERIOD:-1y}
+      DEFAULT_INTERVAL: ${DEFAULT_INTERVAL:-1d}
+
+      # ---- Caching ----------------------------------------------------------
+      CACHE_TTL_SECONDS:           ${CACHE_TTL_SECONDS:-900}
+      PORTFOLIO_CACHE_TTL_SECONDS: ${PORTFOLIO_CACHE_TTL_SECONDS:-21600}
+      SEC_USER_AGENT:              ${SEC_USER_AGENT:-Key Stock Dashboard research@example.com}
+
+      # ---- Paper trading ----------------------------------------------------
+      PAPER_STARTING_CASH: ${PAPER_STARTING_CASH:-100000}
+      PAPER_COMMISSION:    ${PAPER_COMMISSION:-0}
+
+      # ---- Bot / persistence -----------------------------------------------
+      BOT_DB_PATH: /app/data/bot.db
+
+      # ---- Telegram (optional) ---------------------------------------------
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - key_stock_data:/app/data
+    networks:
+      - key_stock
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5001/api/watchlist"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: ${IMAGE:-key-stock:latest}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ${STACK_NAME:-key-stock}-worker
+    command: ["npm", "run", "worker"]
+    restart: unless-stopped
+    depends_on:
+      ui:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ:-UTC}
+
+      STOCK_TICKER:              ${STOCK_TICKER:-KEYS}
+      BOT_LOOKBACK_PERIOD:       ${BOT_LOOKBACK_PERIOD:-1y}
+      BOT_LOOKBACK_INTERVAL:     ${BOT_LOOKBACK_INTERVAL:-1d}
+      BOT_POLL_INTERVAL_SECONDS: ${BOT_POLL_INTERVAL_SECONDS:-900}
+      BOT_DB_PATH:               /app/data/bot.db
+
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - key_stock_data:/app/data
+    networks:
+      - key_stock
+
+volumes:
+  key_stock_data:
+    name: ${STACK_NAME:-key-stock}_data
+
+networks:
+  key_stock:
+    name: ${STACK_NAME:-key-stock}_net
+    driver: bridge

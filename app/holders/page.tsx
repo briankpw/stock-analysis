@@ -4,10 +4,13 @@ import * as React from "react";
 import { ExternalLink, Users, Building2, ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
+import { KeyTerms } from "@/components/key-terms";
+import { TermTip } from "@/components/term-tip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorBanner, LoadingPage, RateLimitBanner } from "@/components/loading";
 import { useHolders } from "@/hooks/use-holders";
+import { useT } from "@/lib/i18n";
 import {
   fmtCompactCurrency,
   fmtInteger,
@@ -61,6 +64,7 @@ function SummaryStrip({
   summary: MajorHoldersSummary;
   netActivity: NetInsiderActivity | null;
 }) {
+  const t = useT();
   const netShares = netActivity?.netInfoShares ?? null;
   const netTone: "bull" | "bear" | "neu" =
     netShares === null || netShares === 0 ? "neu" :
@@ -73,36 +77,36 @@ function SummaryStrip({
   return (
     <section>
       <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-        Ownership breakdown
+        {t("holders.breakdown")}
       </h3>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <KpiTile
-          label="Held by insiders (internal)"
+          label={t("holders.kpi.insidersHeld")}
           value={fmtPercent(summary.insidersPercentHeld)}
-          sub={<span>CEOs, directors, officers &amp; other reporting insiders</span>}
+          sub={<span>{t("holders.kpi.insidersHeldSub")}</span>}
           tone="neu"
         />
         <KpiTile
-          label="Held by institutions (external)"
+          label={t("holders.kpi.institutionsHeld")}
           value={fmtPercent(summary.institutionsPercentHeld)}
           sub={
             <span>
               {summary.institutionsFloatPercentHeld !== null &&
                 summary.institutionsFloatPercentHeld !== undefined
-                ? `${fmtPercent(summary.institutionsFloatPercentHeld)} of float`
-                : "Mutual funds, hedge funds, pensions"}
+                ? t("holders.kpi.institutionsHeldSubOfFloat", { pct: fmtPercent(summary.institutionsFloatPercentHeld) })
+                : t("holders.kpi.institutionsHeldSubGeneric")}
             </span>
           }
           tone="neu"
         />
         <KpiTile
-          label="# of institutions"
+          label={t("holders.kpi.institutionsCount")}
           value={fmtInteger(summary.institutionsCount)}
-          sub={<span>Distinct 13F filers</span>}
+          sub={<span>{t("holders.kpi.institutionsCountSub")}</span>}
           tone="neu"
         />
         <KpiTile
-          label="Net insider activity"
+          label={t("holders.kpi.netInsider")}
           value={
             netShares === null
               ? DASH
@@ -111,12 +115,15 @@ function SummaryStrip({
           sub={
             netActivity ? (
               <span>
-                Last {netActivity.period || "6mo"} · {fmtInteger(netActivity.buyInfoCount)} buys /{" "}
-                {fmtInteger(netActivity.sellInfoCount)} sells
+                {t("holders.kpi.netInsiderSub", {
+                  period: netActivity.period || "6mo",
+                  buys: fmtInteger(netActivity.buyInfoCount),
+                  sells: fmtInteger(netActivity.sellInfoCount),
+                })}
                 {netInstShares !== null && (
                   <>
                     <br />
-                    Institutions net{" "}
+                    {t("holders.kpi.institutionsNet")}{" "}
                     <span className={netInstTone === "bull" ? "text-success" : netInstTone === "bear" ? "text-danger" : ""}>
                       {netInstShares >= 0 ? "+" : ""}
                       {fmtVolume(netInstShares)} sh
@@ -125,7 +132,7 @@ function SummaryStrip({
                 )}
               </span>
             ) : (
-              <span>No filings in window</span>
+              <span>{t("holders.kpi.noWindow")}</span>
             )
           }
           tone={netTone}
@@ -142,10 +149,11 @@ function totalInsiderPosition(h: InsiderHolder): number {
 }
 
 function InsiderTable({ rows }: { rows: InsiderHolder[] }) {
+  const t = useT();
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
-        Yahoo Finance didn't return an insider roster for this ticker.
+        {t("holders.empty.insiders")}
       </p>
     );
   }
@@ -160,12 +168,12 @@ function InsiderTable({ rows }: { rows: InsiderHolder[] }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
-              <th className="px-4 py-3 font-semibold">Name</th>
-              <th className="px-4 py-3 font-semibold">Role</th>
-              <th className="px-4 py-3 font-semibold text-right">Direct</th>
-              <th className="px-4 py-3 font-semibold text-right">Indirect</th>
-              <th className="px-4 py-3 font-semibold text-right">Total shares</th>
-              <th className="px-4 py-3 font-semibold">Last activity</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.name")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.role")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.direct")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.indirect")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.totalShares")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.lastActivity")}</th>
             </tr>
           </thead>
           <tbody>
@@ -216,8 +224,8 @@ function InsiderTable({ rows }: { rows: InsiderHolder[] }) {
 
 // --------------------------------------------------------------------------
 
-function txnDirection(t: InsiderTransaction): "buy" | "sell" | "neutral" {
-  const text = `${t.transactionText} ${t.moneyText}`.toLowerCase();
+function txnDirection(tx: InsiderTransaction): "buy" | "sell" | "neutral" {
+  const text = `${tx.transactionText} ${tx.moneyText}`.toLowerCase();
   if (text.includes("purchase") || text.includes("buy") || text.includes("acquisition")) {
     return "buy";
   }
@@ -228,10 +236,11 @@ function txnDirection(t: InsiderTransaction): "buy" | "sell" | "neutral" {
 }
 
 function InsiderTxnTable({ rows }: { rows: InsiderTransaction[] }) {
+  const t = useT();
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
-        No insider transactions reported in the recent Yahoo window.
+        {t("holders.empty.transactions")}
       </p>
     );
   }
@@ -248,17 +257,17 @@ function InsiderTxnTable({ rows }: { rows: InsiderTransaction[] }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
-              <th className="px-4 py-3 font-semibold">Filer</th>
-              <th className="px-4 py-3 font-semibold">Role</th>
-              <th className="px-4 py-3 font-semibold">Action</th>
-              <th className="px-4 py-3 font-semibold text-right">Shares</th>
-              <th className="px-4 py-3 font-semibold text-right">Value</th>
-              <th className="px-4 py-3 font-semibold">Date</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.filer")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.role")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.action")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.shares")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.value")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.date")}</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((t, i) => {
-              const dir = txnDirection(t);
+            {sorted.map((tx, i) => {
+              const dir = txnDirection(tx);
               const chip =
                 dir === "buy" ? "chip-bull" :
                 dir === "sell" ? "chip-bear" :
@@ -267,42 +276,46 @@ function InsiderTxnTable({ rows }: { rows: InsiderTransaction[] }) {
                 dir === "buy" ? <ArrowUpRight className="h-3 w-3" /> :
                 dir === "sell" ? <ArrowDownRight className="h-3 w-3" /> :
                 <Minus className="h-3 w-3" />;
+              const fallbackAction =
+                dir === "buy" ? t("holders.action.buy") :
+                dir === "sell" ? t("holders.action.sell") :
+                t("holders.action.other");
               return (
                 <tr
-                  key={`${t.filerName}-${t.startDate}-${i}`}
+                  key={`${tx.filerName}-${tx.startDate}-${i}`}
                   className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
                 >
                   <td className="px-4 py-3 font-medium">
-                    {t.filerUrl ? (
+                    {tx.filerUrl ? (
                       <a
-                        href={t.filerUrl}
+                        href={tx.filerUrl}
                         target="_blank"
                         rel="noreferrer"
                         className="hover:text-primary inline-flex items-center gap-1"
                       >
-                        {t.filerName}
+                        {tx.filerName}
                         <ExternalLink className="h-3 w-3 opacity-60" />
                       </a>
                     ) : (
-                      t.filerName
+                      tx.filerName
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">{t.filerRelation || DASH}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{tx.filerRelation || DASH}</td>
                   <td className="px-4 py-3">
                     <span className={cn("chip", chip)}>
                       {icon}
-                      {t.transactionText || (dir === "buy" ? "Buy" : dir === "sell" ? "Sell" : "Other")}
+                      {tx.transactionText || fallbackAction}
                     </span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {t.ownership === "D" ? "Direct" : t.ownership === "I" ? "Indirect" : ""}
+                      {tx.ownership === "D" ? t("holders.col.direct") : tx.ownership === "I" ? t("holders.col.indirect") : ""}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums">{fmtVolume(t.shares)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{fmtVolume(tx.shares)}</td>
                   <td className="px-4 py-3 text-right tabular-nums">
-                    {t.moneyText || fmtCompactCurrency(t.value)}
+                    {tx.moneyText || fmtCompactCurrency(tx.value)}
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
-                    {t.startDate ? relativeTime(t.startDate) : DASH}
+                    {tx.startDate ? relativeTime(tx.startDate) : DASH}
                   </td>
                 </tr>
               );
@@ -323,10 +336,11 @@ function InstitutionTable({
   rows: InstitutionalHolder[];
   kind: "institution" | "fund";
 }) {
+  const t = useT();
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
-        Yahoo Finance didn't return a {kind === "fund" ? "mutual-fund" : "institutional"} holder list for this ticker.
+        {kind === "fund" ? t("holders.empty.fund") : t("holders.empty.institution")}
       </p>
     );
   }
@@ -340,13 +354,13 @@ function InstitutionTable({
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="px-4 py-3 font-semibold">
-                {kind === "fund" ? "Fund" : "Institution"}
+                {kind === "fund" ? t("holders.col.fund") : t("holders.col.institution")}
               </th>
-              <th className="px-4 py-3 font-semibold text-right">Shares held</th>
-              <th className="px-4 py-3 font-semibold text-right">Market value</th>
-              <th className="px-4 py-3 font-semibold text-right">% of shares out</th>
-              <th className="px-4 py-3 font-semibold text-right">Δ vs prior</th>
-              <th className="px-4 py-3 font-semibold">Report date</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.sharesHeld")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.marketValue")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.pctSharesOut")}</th>
+              <th className="px-4 py-3 font-semibold text-right">{t("holders.col.deltaPrior")}</th>
+              <th className="px-4 py-3 font-semibold">{t("holders.col.reportDate")}</th>
             </tr>
           </thead>
           <tbody>
@@ -388,6 +402,7 @@ function InstitutionTable({
 
 export default function HoldersPage() {
   const { data, loading, error, rateLimited, reload } = useHolders();
+  const t = useT();
 
   const totalHolders = data
     ? data.insiders.length +
@@ -398,12 +413,12 @@ export default function HoldersPage() {
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader pageTitle="Holders" />
+      <PageHeader pageTitleKey="nav.holders" />
       <PageIntro pageKey="holders" />
 
       {rateLimited && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}
-      {!data && !error && !rateLimited && loading && <LoadingPage label="Loading ownership data…" />}
+      {!data && !error && !rateLimited && loading && <LoadingPage label={t("loading.ownership")} />}
 
       {data && (
         <div className="space-y-6 animate-fade-in">
@@ -412,13 +427,11 @@ export default function HoldersPage() {
           {totalHolders === 0 ? (
             <Card>
               <CardHeader>
-                <CardTitle>No holder data</CardTitle>
+                <CardTitle>{t("holders.empty.noHolders.title")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">
-                  Yahoo Finance didn't return ownership details for{" "}
-                  <strong>{data.ticker}</strong>. This is common for very small caps,
-                  ADRs, or newly listed tickers.
+                  {t("holders.empty.noHolders.body", { ticker: data.ticker })}
                 </p>
               </CardContent>
             </Card>
@@ -427,60 +440,70 @@ export default function HoldersPage() {
               <TabsList>
                 <TabsTrigger value="insiders">
                   <Users className="h-3.5 w-3.5 mr-1.5" />
-                  Insiders ({data.insiders.length})
+                  {t("holders.tab.insiders", { n: data.insiders.length })}
                 </TabsTrigger>
                 <TabsTrigger value="transactions">
-                  Insider transactions ({data.insiderTransactions.length})
+                  {t("holders.tab.transactions", { n: data.insiderTransactions.length })}
                 </TabsTrigger>
                 <TabsTrigger value="institutions">
                   <Building2 className="h-3.5 w-3.5 mr-1.5" />
-                  Institutions ({data.institutions.length})
+                  {t("holders.tab.institutions", { n: data.institutions.length })}
                 </TabsTrigger>
                 <TabsTrigger value="funds">
-                  Mutual funds ({data.funds.length})
+                  {t("holders.tab.funds", { n: data.funds.length })}
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="insiders">
                 <div className="mb-2 text-xs text-muted-foreground">
-                  <strong>Internal.</strong> Executives &amp; directors that must report their
-                  personal holdings on SEC Form 4. &ldquo;Direct&rdquo; = personally titled,
-                  &ldquo;Indirect&rdquo; = through trusts, family members, or entities they control.
+                  {t("holders.insiders.intro")}
                 </div>
                 <InsiderTable rows={data.insiders} />
               </TabsContent>
               <TabsContent value="transactions">
                 <div className="mb-2 text-xs text-muted-foreground">
-                  Recent buys, sells, option exercises and gifts reported by insiders.
-                  Sustained insider selling is often neutral (diversification, tax); clustered
-                  buying by multiple insiders is a stronger positive signal.
+                  {t("holders.transactions.intro")}
                 </div>
                 <InsiderTxnTable rows={data.insiderTransactions} />
               </TabsContent>
               <TabsContent value="institutions">
                 <div className="mb-2 text-xs text-muted-foreground">
-                  <strong>External.</strong> Big-money holders required to disclose positions
-                  quarterly on Form 13F: hedge funds, pension plans, asset managers, sovereign
-                  wealth. Sorted by size of position.
+                  {t("holders.institutions.intro")}
                 </div>
                 <InstitutionTable rows={data.institutions} kind="institution" />
               </TabsContent>
               <TabsContent value="funds">
                 <div className="mb-2 text-xs text-muted-foreground">
-                  Top mutual funds &amp; ETFs holding this stock. Reported at fund-level
-                  (rather than firm-level) — one asset manager can appear multiple times
-                  through different funds.
+                  {t("holders.funds.intro")}
                 </div>
                 <InstitutionTable rows={data.funds} kind="fund" />
               </TabsContent>
             </Tabs>
           )}
 
-          <p className="text-xs text-muted-foreground text-center pt-4 pb-8">
-            Source: Yahoo Finance quoteSummary (13F, Form 4, Form 144 filings via SEC EDGAR).
-            Position sizes and %held are as-of each holder's most recent filing —
-            institutions file quarterly, insiders file within 2 business days of a trade.
-            Fetched {new Date(data.fetchedAt).toLocaleString()}.
+          <p className="text-xs text-muted-foreground text-center pt-4">
+            {t("holders.footer", { time: new Date(data.fetchedAt).toLocaleString() })}
           </p>
+
+          <KeyTerms
+            terms={[
+              "Insider",
+              "Institutional Holder",
+              "Mutual Fund",
+              "ETF",
+              "Direct",
+              "Indirect",
+              "% Held",
+              "% of Float",
+              "Float",
+              "Form 3",
+              "Form 4",
+              "Form 5",
+              "Form 13F",
+              "Section 16",
+              "Non-Derivative",
+              "Reporting Owner",
+            ]}
+          />
         </div>
       )}
     </div>

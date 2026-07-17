@@ -6,16 +6,32 @@ import { Button } from "./ui/button";
 import { fmtCurrency, fmtSignedPercent } from "@/lib/format";
 import { useBundle } from "@/hooks/use-bundle";
 import { useUi } from "@/lib/state";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { WatchStockButton } from "./watch-stock-button";
 
 /** Shared price header shown across most pages. */
-export function PageHeader({ pageTitle }: { pageTitle: string }) {
+/**
+ * Shared header. Callers may pass either a raw `pageTitle` (already
+ * localized by the page) or a `pageTitleKey` that we resolve through the
+ * i18n dict — both are supported so the migration to i18n keys can be
+ * incremental.
+ */
+export function PageHeader({
+  pageTitle,
+  pageTitleKey,
+}: {
+  pageTitle?: string;
+  pageTitleKey?: string;
+}) {
   const { data, loading, reload } = useBundle();
   // Individual selectors keep zustand's `useSyncExternalStore` snapshot stable.
   const period = useUi((s) => s.period);
   const setPeriod = useUi((s) => s.setPeriod);
   const interval = useUi((s) => s.interval);
   const setInterval = useUi((s) => s.setInterval);
+  const t = useT();
+  const title = pageTitleKey ? t(pageTitleKey) : pageTitle ?? "";
 
   const price = data?.quote.price;
   const changePct = data?.quote.changePercent ?? null;
@@ -24,7 +40,7 @@ export function PageHeader({ pageTitle }: { pageTitle: string }) {
   return (
     <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-border mb-6">
       <div className="min-w-0">
-        <p className="metric-label mb-1">{pageTitle}</p>
+        <p className="metric-label mb-1">{title}</p>
         <div className="flex items-baseline gap-3 flex-wrap">
           <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">
             {data?.ticker ?? "—"}{" "}
@@ -61,7 +77,7 @@ export function PageHeader({ pageTitle }: { pageTitle: string }) {
           value={period}
           onChange={(e) => setPeriod(e.target.value)}
           className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          aria-label="Period"
+          aria-label={t("ticker.periodLabel")}
         >
           {["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"].map((p) => (
             <option key={p} value={p}>{p}</option>
@@ -71,13 +87,14 @@ export function PageHeader({ pageTitle }: { pageTitle: string }) {
           value={interval}
           onChange={(e) => setInterval(e.target.value)}
           className="h-9 rounded-md border border-border bg-card px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          aria-label="Interval"
+          aria-label={t("ticker.intervalLabel")}
         >
           {["1d", "1wk", "1mo"].map((p) => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
-        <Button variant="outline" size="icon" onClick={reload} disabled={loading} aria-label="Refresh">
+        {data?.ticker && <WatchStockButton ticker={data.ticker} />}
+        <Button variant="outline" size="icon" onClick={reload} disabled={loading} aria-label={t("common.retry")}>
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </Button>
       </div>

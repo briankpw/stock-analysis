@@ -17,6 +17,7 @@
 import * as React from "react";
 import { Check, Plus, Loader2 } from "lucide-react";
 import { useWatchlist } from "@/hooks/use-watchlist";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -36,6 +37,7 @@ export function AddToWatchlistButton({
   const { symbols, add } = useWatchlist();
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const t = useT();
 
   const sym = symbol.trim().toUpperCase();
   const inList = symbols.has(sym);
@@ -58,8 +60,10 @@ export function AddToWatchlistButton({
   };
 
   const Icon = busy ? Loader2 : inList ? Check : Plus;
-  const label = inList ? "In watchlist" : "Add to watchlist";
-  const tooltip = error ?? (inList ? `${sym} is in your watchlist` : `Add ${sym} to your watchlist`);
+  const label = inList ? t("watchlist.inList") : t("watchlist.add", { symbol: sym });
+  const tooltip = error ?? (inList
+    ? t("watchlist.inListTitle", { symbol: sym })
+    : t("watchlist.add", { symbol: sym }));
 
   const toneClasses = inList
     ? "border-success/40 bg-success/10 text-success cursor-default"

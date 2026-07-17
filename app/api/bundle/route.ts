@@ -44,6 +44,7 @@ export async function GET(req: Request) {
         macd: enriched.macd,
         bb20: enriched.bb20,
         returns: enriched.returns,
+        levels: enriched.levels,
       },
       signals,
       groups,

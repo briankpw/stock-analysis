@@ -124,6 +124,33 @@ function m(label: string, raw: unknown, formatted: string): MetricEntry {
   return [label, formatted, judgeMetric(label, raw)];
 }
 
+/**
+ * Sentinel string emitted in place of a formatted number when the metric
+ * is missing *because the company is losing money*. The Ratios page
+ * detects this token and swaps it for the localized "Loss" label. Keep
+ * it in ASCII so JSON transport and locale lookups behave predictably.
+ */
+export const LOSS_TOKEN = "__LOSS__";
+
+/**
+ * P/E-style ratios (`Trailing P/E`, `Forward P/E`) are only defined when
+ * earnings per share are positive — yfinance nulls them out otherwise.
+ * Moomoo takes the sensible next step and labels those rows "Loss".
+ *
+ * This helper reproduces that behaviour: when the ratio is missing but
+ * EPS is negative, we surface the `LOSS_TOKEN` with a `bad` tone (the
+ * UI turns it red and translates the word). When EPS is unknown too
+ * (e.g. ETFs), we keep the neutral `—` placeholder — "no data" is not
+ * the same signal as "loss".
+ */
+function peEntry(label: string, pe: unknown, eps: unknown): MetricEntry {
+  const peNum = toNum(pe);
+  if (peNum !== null) return m(label, peNum, fmtNumber(peNum));
+  const epsNum = toNum(eps);
+  if (epsNum !== null && epsNum < 0) return [label, LOSS_TOKEN, "bad"];
+  return [label, DASH, "neutral"];
+}
+
 // ---- Group builders --------------------------------------------------------
 
 export function buildValuationGroup(info: Info): MetricGroup {
@@ -134,8 +161,8 @@ export function buildValuationGroup(info: Info): MetricGroup {
     metrics: [
       m("Market Cap", info.marketCap, fmtCompactCurrency(info.marketCap, c)),
       m("Enterprise Value", info.enterpriseValue, fmtCompactCurrency(info.enterpriseValue, c)),
-      m("Trailing P/E", info.trailingPE, fmtNumber(info.trailingPE)),
-      m("Forward P/E", info.forwardPE, fmtNumber(info.forwardPE)),
+      peEntry("Trailing P/E", info.trailingPE, info.trailingEps),
+      peEntry("Forward P/E", info.forwardPE, info.forwardEps),
       m("PEG Ratio", peg, fmtNumber(peg)),
       m("Price / Book", info.priceToBook, fmtNumber(info.priceToBook)),
       m("Price / Sales (TTM)", info.priceToSalesTrailing12Months, fmtNumber(info.priceToSalesTrailing12Months)),

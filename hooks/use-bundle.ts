@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useUi } from "@/lib/state";
-import type { Bar, Enriched, LatestSignals, MacdResult, BollingerBands, NullableSeries } from "@/lib/indicators";
+import type { Bar, Enriched, LatestSignals, MacdResult, BollingerBands, NullableSeries, SupportResistance } from "@/lib/indicators";
 import type { MetricGroup } from "@/lib/ratios";
 import type { Analysis } from "@/lib/insights";
 import type { Quote } from "@/lib/data";
@@ -17,6 +17,7 @@ export interface BundleIndicators {
   macd: MacdResult;
   bb20: BollingerBands;
   returns: NullableSeries;
+  levels: SupportResistance;
 }
 
 export interface Bundle {

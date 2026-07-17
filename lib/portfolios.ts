@@ -11,7 +11,13 @@
  */
 
 import { unzipSync, strFromU8 } from "fflate";
+import { extractText as _pdfExtractText } from "unpdf";
 import { settings } from "./config";
+import {
+  listCustomFunds,
+  listCustomPeople,
+  listCustomPoliticians,
+} from "./portfolio-presets";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,9 +59,9 @@ export interface PersonPreset {
 
 /**
  * A single PTR filing announcement from the House Clerk. Each filing is a
- * separate PDF that itself lists 1+ underlying trades — we can't extract
- * those trade rows without parsing the PDF (out of scope for the MVP), so
- * we surface the filing metadata and link users straight to the PDF.
+ * separate PDF that itself lists 1+ underlying trades — we parse the PDFs
+ * to surface those rows (see `PoliticianTrade`), but keep the filing-level
+ * metadata here so the UI can group / link back to the source.
  */
 export interface PoliticianFiling {
   docId: string;
@@ -66,10 +72,62 @@ export interface PoliticianFiling {
   pdfUrl: string;
 }
 
+/**
+ * A single trade row parsed out of a PTR PDF. House Clerk PTRs use a
+ * standardised layout (see https://ethics.house.gov/financial-disclosure
+ * for the form itself); the parser in `parsePtrText` is a best-effort
+ * regex extractor that handles the common typed-form layout. Handwritten
+ * or image-scanned PDFs will fail to parse and be silently skipped.
+ */
+export interface PoliticianTrade {
+  /** Owner code: `SP` (spouse), `JT` (joint), `DC` (dependent child), `null` = filer themselves. */
+  ownerCode: "SP" | "JT" | "DC" | null;
+  assetName: string;
+  ticker: string | null;
+  /** SEC/House asset class code, e.g. `ST` (stock), `GS` (govt security), `OP` (option). */
+  assetClass: string | null;
+  /** `P` (Purchase), `S` (Sale), `S_PARTIAL` (partial sale), `E` (Exchange). */
+  action: "P" | "S" | "S_PARTIAL" | "E" | null;
+  transactionDate: string | null;   // ISO
+  notificationDate: string | null;  // ISO
+  amountLow: number;                // low end of the range in USD
+  amountHigh: number;               // high end of the range in USD
+  amountLabel: string;              // "$1,001 - $15,000"
+  filingDocId: string;
+  filingDate: string | null;
+  filingYear: number;
+  pdfUrl: string;
+}
+
+/**
+ * Aggregate view of one ticker across every PTR trade we've parsed. The
+ * `netEstimateLow` / `netEstimateHigh` bracket a very-conservative net
+ * position — the House PTR form only reports dollar ranges, so we can
+ * only bound the true P&L, never pin it down.
+ */
+export interface PoliticianHolding {
+  ticker: string;
+  assetName: string;
+  buyCount: number;
+  sellCount: number;
+  totalBuyLow: number;    // sum of amountLow across P transactions
+  totalBuyHigh: number;   // sum of amountHigh across P transactions
+  totalSellLow: number;
+  totalSellHigh: number;
+  netEstimateLow: number;   // totalBuyLow - totalSellHigh (worst-case for the buyer)
+  netEstimateHigh: number;  // totalBuyHigh - totalSellLow (best-case)
+  lastTradeDate: string | null;
+  trades: PoliticianTrade[];
+}
+
 export interface PoliticianReport {
   preset: PoliticianPreset;
   filings: PoliticianFiling[];
   totalCount: number;
+  parsedTrades: PoliticianTrade[];    // flat, most recent first
+  holdings: PoliticianHolding[];      // aggregated per ticker, largest activity first
+  filingsParsed: number;              // number of PDFs successfully parsed
+  filingsSkipped: number;             // fetch error, empty text, or no rows found
   fetchedAt: string;
   source: string;
   /**
@@ -258,16 +316,32 @@ export const PERSON_PRESETS: readonly PersonPreset[] = [
   { id: "bezos",   name: "Jeff Bezos",      role: "Amazon Founder",           cik: "0001043298" },
   { id: "cook",    name: "Tim Cook",        role: "Apple CEO",                cik: "0001214156" },
   { id: "nadella", name: "Satya Nadella",   role: "Microsoft CEO & Chairman", cik: "0001513142" },
+  {
+    id:   "trump",
+    name: "Donald J. Trump",
+    role: "Chairman & founder, Trump Media (DJT) — reporting owner",
+    cik:  "0000947033",
+    note: "SEC insider filings for DJT holdings. Not the White House OGE 278 disclosure.",
+  },
 ] as const;
 
 export function findPoliticianPreset(id: string): PoliticianPreset | undefined {
-  return POLITICIAN_PRESETS.find((p) => p.id === id);
+  return (
+    POLITICIAN_PRESETS.find((p) => p.id === id) ??
+    listCustomPoliticians().find((p) => p.id === id)
+  );
 }
 export function findFundPreset(id: string): FundPreset | undefined {
-  return FUND_PRESETS.find((f) => f.id === id);
+  return (
+    FUND_PRESETS.find((f) => f.id === id) ??
+    listCustomFunds().find((f) => f.id === id)
+  );
 }
 export function findPersonPreset(id: string): PersonPreset | undefined {
-  return PERSON_PRESETS.find((p) => p.id === id);
+  return (
+    PERSON_PRESETS.find((p) => p.id === id) ??
+    listCustomPeople().find((p) => p.id === id)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -425,11 +499,17 @@ async function fetchRecentHouseFilings(): Promise<HouseFilingRaw[]> {
 export async function fetchPoliticianTrades(
   id: string,
   limit = 200,
+  /**
+   * How many of the most-recent filings to actually download + parse for
+   * per-trade rows. Each parse is one PDF fetch + one pdfjs text
+   * extraction, so this is the primary cost knob. `0` disables parsing.
+   */
+  parseLimit = 20,
 ): Promise<PoliticianReport> {
   const preset = findPoliticianPreset(id);
   if (!preset) throw new Error(`Unknown politician preset: ${id}`);
 
-  const key = `portfolios:politician:${preset.id}:${limit}`;
+  const key = `portfolios:politician:${preset.id}:${limit}:${parseLimit}`;
   const cached = cacheGet<PoliticianReport>(key);
   if (cached) return cached;
 
@@ -442,6 +522,10 @@ export async function fetchPoliticianTrades(
       preset,
       filings: [],
       totalCount: 0,
+      parsedTrades: [],
+      holdings: [],
+      filingsParsed: 0,
+      filingsSkipped: 0,
       fetchedAt: new Date().toISOString(),
       source: "https://efdsearch.senate.gov/search/",
       chamberUnsupported: true,
@@ -476,10 +560,38 @@ export async function fetchPoliticianTrades(
     }))
     .sort((a, b) => (b.filingDate ?? "").localeCompare(a.filingDate ?? ""));
 
+  // Parse the top-N PDFs into per-trade rows. Concurrency capped so we
+  // don't hammer the House Clerk site.
+  const toParse = filings.slice(0, Math.max(0, parseLimit));
+  const parseResults = await mapConcurrent(toParse, 4, async (f) => {
+    try {
+      const trades = await parsePoliticianPtr(f);
+      return { trades, ok: trades.length > 0 };
+    } catch {
+      return { trades: [] as PoliticianTrade[], ok: false };
+    }
+  });
+
+  const parsedTrades = parseResults
+    .flatMap((r) => r.trades)
+    .sort((a, b) => {
+      const bd = b.transactionDate ?? b.filingDate ?? "";
+      const ad = a.transactionDate ?? a.filingDate ?? "";
+      return bd.localeCompare(ad);
+    });
+
+  const filingsParsed = parseResults.filter((r) => r.ok).length;
+  const filingsSkipped = parseResults.length - filingsParsed;
+  const holdings = summarisePoliticianTrades(parsedTrades);
+
   const report: PoliticianReport = {
     preset,
     filings: filings.slice(0, limit),
     totalCount: filings.length,
+    parsedTrades,
+    holdings,
+    filingsParsed,
+    filingsSkipped,
     fetchedAt: new Date().toISOString(),
     source: `${HOUSE_CLERK_BASE}/FinancialDisclosure`,
   };
@@ -488,13 +600,250 @@ export async function fetchPoliticianTrades(
 }
 
 // ---------------------------------------------------------------------------
+// PTR PDF parsing — extract per-trade rows from a House Clerk PDF
+// ---------------------------------------------------------------------------
+
+/** Cache of extracted PDF text keyed by pdfUrl, so hot-reload doesn't repeat pdfjs work. */
+const _ptrTextCache = new Map<string, string>();
+
+async function fetchPtrPdfText(pdfUrl: string): Promise<string | null> {
+  const cached = _ptrTextCache.get(pdfUrl);
+  if (cached !== undefined) return cached || null;
+
+  const res = await fetch(pdfUrl, {
+    cache: "no-store",
+    headers: { "User-Agent": settings.portfolios.secUserAgent },
+  });
+  if (!res.ok) return null;
+  const bytes = new Uint8Array(await res.arrayBuffer());
+
+  try {
+    const { text } = await _pdfExtractText(bytes, { mergePages: true });
+    _ptrTextCache.set(pdfUrl, text);
+    return text;
+  } catch {
+    _ptrTextCache.set(pdfUrl, "");
+    return null;
+  }
+}
+
+/**
+ * Regex-based extractor for the House Clerk PTR PDF text layout. The
+ * form standard is documented at
+ *   https://ethics.house.gov/financial-disclosure
+ * — rows follow the pattern:
+ *
+ *   [Owner: SP/JT/DC/-]  <Company Name> (TICKER) [ASSET_CLASS]
+ *   P|S|S(partial)|E   MM/DD/YYYY  MM/DD/YYYY  $LOW - $HIGH
+ *
+ * This is a best-effort parse; typed forms extract cleanly, scanned
+ * / handwritten forms will return empty (they contain no text stream).
+ */
+/**
+ * Fragments the PDF layout injects between rows: page headers, section
+ * dividers, and boilerplate. We strip these from the "preTicker" region
+ * to keep asset-name extraction from picking up the neighbouring row's
+ * description.
+ */
+const PTR_BOILERPLATE_RE =
+  /(?:Filing ID\s*#?\s*\d+|ID\s+Owner\s+Asset\s+Transaction\s+Type\s+Date\s+Notification\s+Date\s+Amount\s+Cap\.?\s*Gains\s*>\s*\$\d+\?|\b(?:F\s*[:\.]?\s*S\s*[:\.]?|D\s*:\s*[A-Z][a-z]+\s+[^.]*?\.))/g;
+
+function parsePtrText(
+  text: string,
+  filing: Pick<PoliticianFiling, "docId" | "filingDate" | "year" | "pdfUrl">,
+): PoliticianTrade[] {
+  // Strip null bytes (pdfjs inserts them between label glyphs on House
+  // Clerk forms) and collapse whitespace so we can regex over one linear
+  // string.
+  const normalized = text.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  // Ticker in parens: 1-5 uppercase alnums, optional `.X` suffix (BRK.A).
+  // Skip capture groups that look like transaction codes or amount labels.
+  const NOT_A_TICKER = new Set([
+    "SP", "JT", "DC", "D", "I", "A", "P", "S", "E", "II", "III", "IV",
+    "AM", "PM", "US", "USA", "UK", "EU", "TBD", "OTC", "IPO", "NA",
+  ]);
+  const tickerRe = /\(([A-Z][A-Z0-9]{0,4}(?:\.[A-Z])?)\)/g;
+
+  interface TickerMatch { ticker: string; index: number; endIndex: number; }
+  const tickers: TickerMatch[] = [];
+  let tm: RegExpExecArray | null;
+  while ((tm = tickerRe.exec(normalized)) !== null) {
+    if (NOT_A_TICKER.has(tm[1]!)) continue;
+    tickers.push({ ticker: tm[1]!, index: tm.index, endIndex: tm.index + tm[0].length });
+  }
+
+  const trades: PoliticianTrade[] = [];
+  for (let i = 0; i < tickers.length; i++) {
+    const cur = tickers[i]!;
+    const next = tickers[i + 1];
+    const blockStart = i === 0 ? Math.max(0, cur.index - 200) : tickers[i - 1]!.endIndex;
+    const blockEnd = next ? next.index : Math.min(normalized.length, cur.endIndex + 500);
+
+    const post = normalized.slice(cur.endIndex, blockEnd);
+    const preTicker = normalized.slice(blockStart, cur.index);
+
+    // Amount range — the strongest signal a transaction actually occurred.
+    // Format is always "$X,XXX - $Y,YYY" (with or without spaces around dash).
+    const amtMatch = /\$([0-9][0-9,]*)\s*[-–]\s*\$?([0-9][0-9,]*)/.exec(post);
+    if (!amtMatch) continue;
+    const amountLow = Number(amtMatch[1]!.replace(/,/g, ""));
+    const amountHigh = Number(amtMatch[2]!.replace(/,/g, ""));
+    if (!Number.isFinite(amountLow) || !Number.isFinite(amountHigh)) continue;
+    if (amountLow < 1000) continue;      // smallest PTR bucket is $1,001
+    if (amountHigh < amountLow) continue;
+
+    // Type + partial marker — appears just before the dates. Search only
+    // within the pre-dates zone so descriptions like "Purchased 20 call
+    // options" (in the D: line of the PREVIOUS row) can't leak in.
+    const beforeAmt = post.slice(0, amtMatch.index);
+    const firstDateIdx = beforeAmt.search(/\d{1,2}\/\d{1,2}\/\d{4}/);
+    const typeZone = firstDateIdx > 0 ? beforeAmt.slice(0, firstDateIdx) : beforeAmt;
+    let action: PoliticianTrade["action"] = null;
+    const isPartial = /\(partial\)/i.test(typeZone);
+    // Match a standalone P/S/E — preceded by space/pipe/`]`, followed by
+    // space or `(partial)`.
+    const typeMatch = /(?:^|[\s|\]])(P|S|E)(?=\s|\(|$)/.exec(typeZone);
+    if (typeMatch) {
+      const t = typeMatch[1]!.toUpperCase();
+      action = t === "S" && isPartial ? "S_PARTIAL" : (t as "P" | "S" | "E");
+    }
+
+    // Asset class in square brackets: [ST], [GS], [OP], ...
+    const classMatch = /\[([A-Z]{2})\]/.exec(post.slice(0, Math.min(post.length, 80)));
+
+    // Two MM/DD/YYYY dates: first = transaction, second = notification
+    const dateRe = /(\d{1,2})\/(\d{1,2})\/(\d{4})/g;
+    const dates: string[] = [];
+    let dm: RegExpExecArray | null;
+    while ((dm = dateRe.exec(beforeAmt)) !== null) {
+      const iso = `${dm[3]!}-${dm[1]!.padStart(2, "0")}-${dm[2]!.padStart(2, "0")}`;
+      dates.push(iso);
+      if (dates.length >= 2) break;
+    }
+
+    // Owner code — look in the ~60 chars before the ticker
+    const ownerMatch = /(?:^|[\s|])(SP|JT|DC)\s*(?=[\s|])/.exec(preTicker.slice(-60));
+    const ownerCode = ownerMatch?.[1] as PoliticianTrade["ownerCode"] ?? null;
+
+    // Asset name — extract the "Something Inc." right before the ticker.
+    // Strip boilerplate first (page headers, "D: Sold 20,000 shares." from
+    // the previous row's description leaking in, etc.), then re-anchor on
+    // the owner code so the name starts cleanly after it.
+    const cleaned = preTicker
+      .replace(PTR_BOILERPLATE_RE, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    // If we have an owner code, take everything after the LAST occurrence.
+    const ownerAnchorRe = /\b(?:SP|JT|DC)\b/g;
+    let anchorEnd = 0;
+    let am: RegExpExecArray | null;
+    while ((am = ownerAnchorRe.exec(cleaned)) !== null) anchorEnd = am.index + am[0].length;
+    const nameCandidate = (anchorEnd > 0 ? cleaned.slice(anchorEnd) : cleaned).trim();
+    const assetName = (nameCandidate || cleaned.split(/\s+/).slice(-6).join(" ")).trim();
+
+    trades.push({
+      ownerCode,
+      assetName: assetName || "Unknown",
+      ticker: cur.ticker,
+      assetClass: classMatch?.[1] ?? null,
+      action,
+      transactionDate: dates[0] ?? null,
+      notificationDate: dates[1] ?? null,
+      amountLow,
+      amountHigh,
+      amountLabel: `$${amtMatch[1]!.trim()} - $${amtMatch[2]!.trim()}`,
+      filingDocId: filing.docId,
+      filingDate: filing.filingDate,
+      filingYear: filing.year,
+      pdfUrl: filing.pdfUrl,
+    });
+  }
+
+  return trades;
+}
+
+async function parsePoliticianPtr(filing: PoliticianFiling): Promise<PoliticianTrade[]> {
+  const text = await fetchPtrPdfText(filing.pdfUrl);
+  if (!text) return [];
+  return parsePtrText(text, filing);
+}
+
+/**
+ * Roll up a stream of parsed trades into per-ticker aggregates. Since the
+ * PTR form only reports amount RANGES (never exact dollar figures), the
+ * "net position" is a bracket — `netEstimateLow` is the worst-case
+ * outcome for someone who bought (bought the min, sold the max) and
+ * `netEstimateHigh` is the best case. Both can be negative if the
+ * politician net-sold that ticker.
+ */
+function summarisePoliticianTrades(trades: PoliticianTrade[]): PoliticianHolding[] {
+  const byTicker = new Map<string, PoliticianTrade[]>();
+  for (const t of trades) {
+    if (!t.ticker) continue;
+    const arr = byTicker.get(t.ticker) ?? [];
+    arr.push(t);
+    byTicker.set(t.ticker, arr);
+  }
+
+  const holdings: PoliticianHolding[] = [];
+  for (const [ticker, group] of byTicker) {
+    let buyCount = 0, sellCount = 0;
+    let totalBuyLow = 0, totalBuyHigh = 0, totalSellLow = 0, totalSellHigh = 0;
+    let lastDate: string | null = null;
+    let name = "";
+    for (const t of group) {
+      if (t.action === "P") {
+        buyCount++;
+        totalBuyLow += t.amountLow;
+        totalBuyHigh += t.amountHigh;
+      } else if (t.action === "S" || t.action === "S_PARTIAL") {
+        sellCount++;
+        totalSellLow += t.amountLow;
+        totalSellHigh += t.amountHigh;
+      }
+      const d = t.transactionDate ?? t.filingDate;
+      if (d && (!lastDate || d > lastDate)) lastDate = d;
+      if (!name && t.assetName) name = t.assetName;
+    }
+    holdings.push({
+      ticker,
+      assetName: name || ticker,
+      buyCount,
+      sellCount,
+      totalBuyLow,
+      totalBuyHigh,
+      totalSellLow,
+      totalSellHigh,
+      netEstimateLow: totalBuyLow - totalSellHigh,
+      netEstimateHigh: totalBuyHigh - totalSellLow,
+      lastTradeDate: lastDate,
+      trades: [...group].sort((a, b) =>
+        (b.transactionDate ?? b.filingDate ?? "").localeCompare(
+          a.transactionDate ?? a.filingDate ?? "",
+        ),
+      ),
+    });
+  }
+
+  // Order by total activity (buys+sells), then by most recent trade.
+  return holdings.sort((a, b) => {
+    const ac = a.buyCount + a.sellCount;
+    const bc = b.buyCount + b.sellCount;
+    if (bc !== ac) return bc - ac;
+    return (b.lastTradeDate ?? "").localeCompare(a.lastTradeDate ?? "");
+  });
+}
+
+// ---------------------------------------------------------------------------
 // SEC 13F — fund holdings
 // ---------------------------------------------------------------------------
 
-const SEC_BASE = "https://data.sec.gov";
-const SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data";
+export const SEC_BASE = "https://data.sec.gov";
+export const SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data";
 
-function secHeaders(): HeadersInit {
+export function secHeaders(): HeadersInit {
   return {
     // SEC's usage policy: identify yourself with a plain-text User-Agent
     // that includes contact info. Rate-limited to 10 requests per second.
@@ -503,7 +852,7 @@ function secHeaders(): HeadersInit {
   };
 }
 
-interface SubmissionsRecent {
+export interface SubmissionsRecent {
   accessionNumber: string[];
   form: string[];
   filingDate: string[];
@@ -511,7 +860,7 @@ interface SubmissionsRecent {
   primaryDocument: string[];
 }
 
-interface SubmissionsResponse {
+export interface SubmissionsResponse {
   cik: string;
   name: string;
   filings: { recent: SubmissionsRecent };
@@ -717,8 +1066,12 @@ function form4Extract(name: string, source: string): string | null {
  * We surface all `<nonDerivativeTransaction>` and `<nonDerivativeHolding>`
  * blocks (i.e. common / preferred stock rows), and skip everything under
  * `<derivativeTable>` (options / warrants / RSUs).
+ *
+ * Also extracts the reporting owner block so callers can surface who
+ * filed the report (e.g. "Cook Timothy D · CEO") — issuer-centric flows
+ * need this because they don't know the filer up front.
  */
-function parseForm4Xml(
+export function parseForm4Xml(
   xml: string,
   formType: string,
   filingDate: string,
@@ -729,6 +1082,9 @@ function parseForm4Xml(
   issuerName: string;
   issuerTicker: string | null;
   issuerCik: string | null;
+  reporterName: string;
+  reporterCik: string | null;
+  reporterRelation: string | null;
 } {
   const issuerBlockRe = /<issuer\b[^>]*>([\s\S]*?)<\/issuer>/;
   const issuerBlock = issuerBlockRe.exec(xml)?.[1] ?? "";
@@ -736,6 +1092,15 @@ function parseForm4Xml(
   const rawTicker = form4Extract("issuerTradingSymbol", issuerBlock) ?? "";
   const issuerTicker = rawTicker ? rawTicker.toUpperCase() : null;
   const issuerCik = form4Extract("issuerCik", issuerBlock) ?? null;
+
+  // Reporting owner — Form 4 always has at least one, but may have
+  // multiple (rare: joint filings). We surface just the first for now.
+  const ownerBlockRe = /<reportingOwner\b[^>]*>([\s\S]*?)<\/reportingOwner>/;
+  const ownerBlock = ownerBlockRe.exec(xml)?.[1] ?? "";
+  const rawOwnerName = form4Extract("rptOwnerName", ownerBlock) ?? "";
+  const reporterName = rawOwnerName.trim();
+  const reporterCik = form4Extract("rptOwnerCik", ownerBlock) ?? null;
+  const reporterRelation = describeOwnerRelation(ownerBlock);
 
   const transactions: InsiderTransaction[] = [];
 
@@ -789,7 +1154,46 @@ function parseForm4Xml(
   const holdRe = /<nonDerivativeHolding\b[^>]*>([\s\S]*?)<\/nonDerivativeHolding>/g;
   while ((m = holdRe.exec(xml)) !== null) pushTx(m[1]!, "holding");
 
-  return { transactions, issuerName, issuerTicker, issuerCik };
+  return {
+    transactions,
+    issuerName,
+    issuerTicker,
+    issuerCik,
+    reporterName,
+    reporterCik,
+    reporterRelation,
+  };
+}
+
+/**
+ * Human-readable relation from a `<reportingOwnerRelationship>` block.
+ * Combines all "is*" flags into a comma-separated list, with the officer
+ * title appended when applicable. Returns null when nothing usable is
+ * present (rare — most Form 4s have at least one flag set).
+ */
+function describeOwnerRelation(ownerBlock: string): string | null {
+  const relBlockRe = /<reportingOwnerRelationship\b[^>]*>([\s\S]*?)<\/reportingOwnerRelationship>/;
+  const rel = relBlockRe.exec(ownerBlock)?.[1] ?? "";
+  if (!rel) return null;
+
+  const parts: string[] = [];
+  const isTrue = (tag: string): boolean => {
+    const raw = form4Extract(tag, rel);
+    if (!raw) return false;
+    const t = raw.trim();
+    return t === "1" || t.toLowerCase() === "true";
+  };
+  if (isTrue("isDirector")) parts.push("Director");
+  if (isTrue("isOfficer")) {
+    const title = form4Extract("officerTitle", rel);
+    parts.push(title ? `Officer: ${title}` : "Officer");
+  }
+  if (isTrue("isTenPercentOwner")) parts.push("10% owner");
+  if (isTrue("isOther")) {
+    const other = form4Extract("otherText", rel);
+    parts.push(other ? `Other: ${other}` : "Other");
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /**
@@ -836,7 +1240,7 @@ function summariseHoldings(transactions: InsiderTransaction[]): InsiderHolding[]
 }
 
 /** Small semaphore so we don't blow past SEC's 10 req/sec rate limit. */
-async function mapConcurrent<T, R>(
+export async function mapConcurrent<T, R>(
   items: readonly T[],
   concurrency: number,
   fn: (item: T, index: number) => Promise<R>,
@@ -971,16 +1375,261 @@ export async function fetchPersonInsiderReport(
 // List helper (used by the /portfolios page to render the preset chooser)
 // ---------------------------------------------------------------------------
 
+/**
+ * The `custom` flag on each entry distinguishes user-added presets
+ * (persisted in SQLite via `lib/portfolio-presets.ts`) from the built-in
+ * seed lists. The UI uses this to gate the "delete" affordance so a user
+ * can't remove the built-in entries.
+ */
+export type PoliticianPresetView = PoliticianPreset & { custom: boolean };
+export type FundPresetView = FundPreset & { custom: boolean };
+export type PersonPresetView = PersonPreset & { custom: boolean };
+
 export interface PortfolioIndex {
-  politicians: PoliticianPreset[];
-  funds: FundPreset[];
-  people: PersonPreset[];
+  politicians: PoliticianPresetView[];
+  funds: FundPresetView[];
+  people: PersonPresetView[];
 }
 
 export function listPresets(): PortfolioIndex {
+  const seededPols = new Set(POLITICIAN_PRESETS.map((p) => p.id));
+  const seededFunds = new Set(FUND_PRESETS.map((f) => f.id));
+  const seededPeople = new Set(PERSON_PRESETS.map((p) => p.id));
+
+  const customPols = listCustomPoliticians().filter((p) => !seededPols.has(p.id));
+  const customFunds = listCustomFunds().filter((f) => !seededFunds.has(f.id));
+  const customPeople = listCustomPeople().filter((p) => !seededPeople.has(p.id));
+
   return {
-    politicians: [...POLITICIAN_PRESETS],
-    funds: [...FUND_PRESETS],
-    people: [...PERSON_PRESETS],
+    politicians: [
+      ...POLITICIAN_PRESETS.map((p) => ({ ...p, custom: false })),
+      ...customPols.map((p) => ({ ...p, custom: true })),
+    ],
+    funds: [
+      ...FUND_PRESETS.map((f) => ({ ...f, custom: false })),
+      ...customFunds.map((f) => ({ ...f, custom: true })),
+    ],
+    people: [
+      ...PERSON_PRESETS.map((p) => ({ ...p, custom: false })),
+      ...customPeople.map((p) => ({ ...p, custom: true })),
+    ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// SEC EDGAR full-text search — power the "type a name to add" UX
+// ---------------------------------------------------------------------------
+
+/**
+ * One row shown in the add-preset autocomplete. `cik` is always zero-padded
+ * to 10 digits (EDGAR's canonical form). `companies` is the top few
+ * counterparties surfaced across the person's filings — the issuer of the
+ * shares for insider filings, or the fund entity itself for 13F filings.
+ */
+export interface EntitySearchResult {
+  kind: "person" | "fund";
+  cik: string;
+  name: string;
+  /**
+   * For `person`: recent issuers this insider has filed against, most
+   * frequent first. For `fund`: usually just the filing entity itself,
+   * so this is typically empty for 13F results.
+   */
+  companies: string[];
+  /** Number of matching filings (used to rank results). */
+  filingCount: number;
+  /** Most-recent filing date across the matches, ISO. */
+  latestFilingDate: string | null;
+  /** Distinct SEC form types observed (e.g. ["4","3"] or ["13F-HR"]). */
+  formTypes: string[];
+}
+
+const EDGAR_FTS_URL = "https://efts.sec.gov/LATEST/search-index";
+
+interface FtsHit {
+  _source?: {
+    ciks?: string[];
+    display_names?: string[];
+    form?: string;
+    file_date?: string;
+    adsh?: string;
+  };
+}
+
+interface FtsResponse {
+  hits?: {
+    total?: { value?: number };
+    hits?: FtsHit[];
+  };
+}
+
+/** Strip the "  (CIK 0001234567)" suffix EDGAR appends to display names. */
+function stripCikSuffix(display: string): string {
+  return display.replace(/\s*\(CIK\s*\d+\)\s*$/i, "").trim();
+}
+
+interface AggEntry {
+  cik: string;
+  name: string;
+  companies: Map<string, number>;
+  filingCount: number;
+  latest: string;
+  formTypes: Set<string>;
+}
+
+/** Single EDGAR FTS call, up to 100 hits. */
+async function fetchFtsPage(
+  entityName: string,
+  forms: string,
+): Promise<FtsHit[]> {
+  const url = new URL(EDGAR_FTS_URL);
+  url.searchParams.set("entityName", entityName);
+  url.searchParams.set("forms", forms);
+  url.searchParams.set("hits", "100");
+  const res = await fetch(url.toString(), {
+    cache: "no-store",
+    headers: {
+      "User-Agent": settings.portfolios.secUserAgent,
+      "Accept": "application/json",
+    },
+  });
+  if (!res.ok) {
+    throw new DataSourceUnavailableError("sec-edgar-fts", res.status);
+  }
+  const body = (await res.json()) as FtsResponse;
+  return body.hits?.hits ?? [];
+}
+
+/**
+ * Aggregate FTS hits into unique-entity results. Only display_names that
+ * match every token of `query` (as case-insensitive substrings) are
+ * treated as the "entity we care about"; the rest of the display_names
+ * in a hit become "companies" context.
+ */
+function aggregateHits(
+  hits: FtsHit[],
+  tokens: string[],
+  agg: Map<string, AggEntry>,
+): void {
+  const matches = (name: string): boolean => {
+    const n = name.toLowerCase();
+    return tokens.every((t) => n.includes(t));
+  };
+
+  for (const hit of hits) {
+    const src = hit._source ?? {};
+    const names = src.display_names ?? [];
+    const ciks = src.ciks ?? [];
+    const form = src.form ?? "";
+    const fileDate = src.file_date ?? "";
+
+    for (let i = 0; i < names.length; i++) {
+      const raw = names[i] ?? "";
+      const clean = stripCikSuffix(raw);
+      if (!matches(clean)) continue;
+
+      const cikRaw = ciks[i];
+      if (!cikRaw) continue;
+      const cik = cikRaw.padStart(10, "0");
+
+      let entry = agg.get(cik);
+      if (!entry) {
+        entry = {
+          cik,
+          name: clean,
+          companies: new Map(),
+          filingCount: 0,
+          latest: "",
+          formTypes: new Set(),
+        };
+        agg.set(cik, entry);
+      }
+      entry.filingCount++;
+      if (fileDate > entry.latest) entry.latest = fileDate;
+      if (form) entry.formTypes.add(form);
+      for (let j = 0; j < names.length; j++) {
+        if (j === i) continue;
+        const other = stripCikSuffix(names[j] ?? "");
+        if (!other) continue;
+        entry.companies.set(other, (entry.companies.get(other) ?? 0) + 1);
+      }
+    }
+  }
+}
+
+/**
+ * Search SEC EDGAR by name for either an insider (Forms 3/4/5) or a
+ * fund manager (Form 13F-HR), returning up to 20 unique CIKs ranked by
+ * recent filing activity.
+ *
+ * Uses EDGAR's full-text-search index with the `entityName` filter (not
+ * the plain `q` filter, which matches anywhere in filing text and would
+ * pollute fund results with holdings-table mentions).
+ *
+ * Because EDGAR's `entityName` is a whole-token match (so "Tim Cook"
+ * returns 0 hits while "Cook Timothy" returns 176), when the exact query
+ * yields nothing we fall back to querying each token individually and
+ * post-filter to entries whose display name contains every query token
+ * as a substring. This is what makes "Tim Cook" find "COOK TIMOTHY D".
+ *
+ * The CIK returned is always zero-padded to 10 digits so it can be fed
+ * straight into `PersonPreset.cik` / `FundPreset.cik`.
+ *
+ * Results are cached for 15 minutes per (kind, normalized query) pair.
+ */
+export async function searchEntities(
+  query: string,
+  kind: "person" | "fund",
+): Promise<EntitySearchResult[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+
+  const cacheKey = `entity-search:${kind}:${q.toLowerCase()}`;
+  const cached = cacheGet<EntitySearchResult[]>(cacheKey);
+  if (cached) return cached;
+
+  const forms = kind === "person" ? "4,3,5" : "13F-HR,13F-HR/A";
+  const tokens = q
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+
+  const agg = new Map<string, AggEntry>();
+
+  const primary = await fetchFtsPage(q, forms);
+  aggregateHits(primary, tokens, agg);
+
+  // Nickname / shortened-name fallback: if the whole-token entityName
+  // match returned no candidates, try each token separately and rely on
+  // the substring post-filter to narrow.
+  if (agg.size === 0 && tokens.length > 1) {
+    const byLength = [...tokens].sort((a, b) => b.length - a.length);
+    for (const t of byLength) {
+      const hits = await fetchFtsPage(t, forms);
+      aggregateHits(hits, tokens, agg);
+      if (agg.size > 0) break;
+    }
+  }
+
+  const results: EntitySearchResult[] = Array.from(agg.values())
+    .sort((a, b) => {
+      if (b.filingCount !== a.filingCount) return b.filingCount - a.filingCount;
+      return b.latest.localeCompare(a.latest);
+    })
+    .slice(0, 20)
+    .map((e) => ({
+      kind,
+      cik: e.cik,
+      name: e.name,
+      companies: Array.from(e.companies.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([n]) => n),
+      filingCount: e.filingCount,
+      latestFilingDate: e.latest || null,
+      formTypes: Array.from(e.formTypes),
+    }));
+
+  cacheSet(cacheKey, results, 60 * 15);
+  return results;
 }

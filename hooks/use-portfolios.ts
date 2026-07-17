@@ -12,50 +12,138 @@ import type {
 } from "@/lib/portfolios";
 
 // ---------------------------------------------------------------------------
-// Index (preset list) — fetched once per session.
+// Index (preset list) — merged built-in + custom presets. Kept in a
+// module-scoped cache with a listener fan-out so an add/remove in one
+// component instantly updates every other consumer (same pattern as
+// `useWatchlist`).
 // ---------------------------------------------------------------------------
 
 interface IndexState {
   data: PortfolioIndex | null;
   loading: boolean;
   error: string | null;
+  addPreset: (
+    category: "politician" | "fund" | "person",
+    preset: PoliticianPreset | FundPreset | PersonPreset,
+  ) => Promise<void>;
+  removePreset: (
+    category: "politician" | "fund" | "person",
+    id: string,
+  ) => Promise<void>;
 }
 
+type Listener = () => void;
+const _listeners = new Set<Listener>();
 let _indexCache: PortfolioIndex | null = null;
+let _indexError: string | null = null;
+let _inflight: Promise<PortfolioIndex> | null = null;
+
+function _notify() {
+  _listeners.forEach((l) => l());
+}
+
+async function _fetchIndex(): Promise<PortfolioIndex> {
+  if (_inflight) return _inflight;
+  _inflight = (async () => {
+    try {
+      const res = await fetch("/api/portfolios", { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      _indexCache = body as PortfolioIndex;
+      _indexError = null;
+      return _indexCache;
+    } catch (e) {
+      _indexError = e instanceof Error ? e.message : String(e);
+      throw e;
+    } finally {
+      _inflight = null;
+    }
+  })();
+  return _inflight;
+}
+
+async function _refreshIndex(): Promise<void> {
+  _indexCache = null;
+  try {
+    await _fetchIndex();
+  } finally {
+    _notify();
+  }
+}
 
 export function usePortfolioIndex(): IndexState {
   const [data, setData] = React.useState<PortfolioIndex | null>(_indexCache);
   const [loading, setLoading] = React.useState(_indexCache === null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(_indexError);
 
   React.useEffect(() => {
-    if (_indexCache) {
-      setData(_indexCache);
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/portfolios", { cache: "no-store" });
-        const body = await res.json();
-        if (cancelled) return;
-        if (!res.ok) {
-          setError(body?.error ?? `HTTP ${res.status}`);
-        } else {
-          _indexCache = body as PortfolioIndex;
-          setData(_indexCache);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    const sync: Listener = () => {
+      if (cancelled) return;
+      setData(_indexCache);
+      setError(_indexError);
+    };
+    _listeners.add(sync);
+
+    if (_indexCache === null && !_inflight) {
+      setLoading(true);
+      _fetchIndex()
+        .catch(() => { /* error captured on _indexError and fanned via sync */ })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+          _notify();
+        });
+    } else if (_inflight) {
+      _inflight.finally(() => { if (!cancelled) setLoading(false); });
+    } else {
+      setLoading(false);
+    }
+
+    return () => {
+      cancelled = true;
+      _listeners.delete(sync);
+    };
   }, []);
 
-  return { data, loading, error };
+  const addPreset = React.useCallback(
+    async (
+      category: "politician" | "fund" | "person",
+      preset: PoliticianPreset | FundPreset | PersonPreset,
+    ) => {
+      const res = await fetch("/api/portfolios/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ category, preset }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      _indexCache = body.index as PortfolioIndex;
+      _indexError = null;
+      _notify();
+    },
+    [],
+  );
+
+  const removePreset = React.useCallback(
+    async (category: "politician" | "fund" | "person", id: string) => {
+      const params = new URLSearchParams({ category, id });
+      const res = await fetch(`/api/portfolios/presets?${params}`, { method: "DELETE" });
+      const body = await res.json();
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      _indexCache = body.index as PortfolioIndex;
+      _indexError = null;
+      _notify();
+    },
+    [],
+  );
+
+  return { data, loading, error, addPreset, removePreset };
 }
 
 // ---------------------------------------------------------------------------

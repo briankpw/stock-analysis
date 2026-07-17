@@ -4,9 +4,14 @@ import * as React from "react";
 import dynamic from "next/dynamic";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
+import { KeyTerms } from "@/components/key-terms";
+import { TermTip } from "@/components/term-tip";
+import { TechnicalSignalCard } from "@/components/technical-signal-card";
 import { ErrorBanner, LoadingPage, RateLimitBanner } from "@/components/loading";
 import { useBundle } from "@/hooks/use-bundle";
 import { useUi } from "@/lib/state";
+import { useT } from "@/lib/i18n";
+import { computeTechnicalSignal } from "@/lib/technical-signal";
 import { Card } from "@/components/ui/card";
 
 // lightweight-charts touches `document` at import time; ensure it only
@@ -23,14 +28,18 @@ function OverlayToggles() {
   const toggleSma = useUi((s) => s.toggleSma);
   const toggleBb = useUi((s) => s.toggleBb);
   return (
-    <div className="flex items-center gap-4 text-sm">
+    <div className="flex items-center gap-4 text-sm flex-wrap">
       <label className="inline-flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={showSma} onChange={toggleSma} className="h-4 w-4 rounded" />
-        <span>SMA 20 / 50 / 200</span>
+        <span>
+          <TermTip term="SMA">SMA</TermTip> 20 / 50 / 200
+        </span>
       </label>
       <label className="inline-flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={showBb} onChange={toggleBb} className="h-4 w-4 rounded" />
-        <span>Bollinger Bands (20, 2σ)</span>
+        <span>
+          <TermTip term="Bollinger Bands">Bollinger Bands</TermTip> (20, 2σ)
+        </span>
       </label>
     </div>
   );
@@ -38,27 +47,46 @@ function OverlayToggles() {
 
 export default function ChartsPage() {
   const { data, loading, error, reload } = useBundle();
+  const t = useT();
+
+  // Compute the technical Buy/Sell verdict from what's already on the
+  // page — everything below the chart is derived from `data.indicators`
+  // and `data.bars`, so no extra fetch is needed.
+  const signal = React.useMemo(() => {
+    if (!data || data.bars.length === 0) return null;
+    return computeTechnicalSignal({
+      bars: data.bars,
+      sma50: data.indicators.sma50,
+      sma200: data.indicators.sma200,
+      rsi14: data.indicators.rsi14,
+      macd: data.indicators.macd,
+      bb20: data.indicators.bb20,
+      levels: data.indicators.levels,
+    });
+  }, [data]);
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader pageTitle="Price & Volume" />
+      <PageHeader pageTitleKey="nav.charts" />
       <PageIntro pageKey="charts" />
 
       {data?.rateLimited && <RateLimitBanner />}
       {error && <ErrorBanner message={error} retry={reload} />}
-      {!data && !error && loading && <LoadingPage label="Loading OHLCV…" />}
+      {!data && !error && loading && <LoadingPage label={t("loading.ohlcv")} />}
 
       {data && (
         <div className="space-y-4 animate-fade-in">
+          {signal && <TechnicalSignalCard signal={signal} />}
+
           <Card className="p-4 flex flex-col md:flex-row md:items-center gap-3 justify-between">
             <OverlayToggles />
             <p className="text-xs text-muted-foreground">
-              {data.bars.length.toLocaleString()} bars · {data.period} @ {data.interval}
+              {t("charts.meta", { count: data.bars.length.toLocaleString(), period: data.period, interval: data.interval })}
             </p>
           </Card>
           <Card className="p-2">
             {data.bars.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">No price history.</div>
+              <div className="p-8 text-center text-muted-foreground">{t("charts.noHistory")}</div>
             ) : (
               <PriceChart
                 bars={data.bars}
@@ -69,6 +97,25 @@ export default function ChartsPage() {
               />
             )}
           </Card>
+
+          <KeyTerms
+            terms={[
+              "Candlestick",
+              "OHLC",
+              "Wick",
+              "Volume",
+              "SMA",
+              "Bollinger Bands",
+              "Support",
+              "Resistance",
+              "52-Week High",
+              "52-Week Low",
+              "Volatility",
+              "Golden Cross",
+              "Death Cross",
+              "Technical Signal",
+            ]}
+          />
         </div>
       )}
     </div>

@@ -200,6 +200,152 @@ export function atr(bars: Bar[], period = 14): NullableSeries {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Support & Resistance levels — pivot detection + tolerance clustering.
+//
+// Method (the classic textbook approach):
+//   1. Find "swing pivots": bars whose high is strictly greater than the `k`
+//      bars on either side (pivot high), and same for lows (pivot low).
+//   2. Cluster nearby pivots (within `tolerancePct` of each other) into a
+//      single level, whose price is the average of the members weighted
+//      by recency (newer touches count more).
+//   3. Score each cluster by:  touches × recency (last touch age).
+//   4. Return top-N clusters, split into "support" (level < last close) and
+//      "resistance" (level >= last close), ordered by strength.
+// ---------------------------------------------------------------------------
+
+export interface Level {
+  /** Price level. */
+  price: number;
+  /** Number of pivots that clustered into this level. */
+  touches: number;
+  /** Timestamp (unix seconds) of the most recent touch. */
+  lastTouch: number;
+  /** Timestamp (unix seconds) of the first touch. */
+  firstTouch: number;
+  /** Composite strength score — higher = more meaningful. */
+  strength: number;
+}
+
+export interface SupportResistance {
+  support: Level[];
+  resistance: Level[];
+}
+
+interface Pivot { price: number; time: number; index: number }
+
+/**
+ * Compute support & resistance levels for a series of OHLC bars.
+ *
+ * @param bars           OHLCV bars (chronologically ordered).
+ * @param lookback       Half-window used for pivot detection (default 5 —
+ *                       so a bar must be higher/lower than the 5 on each side).
+ * @param tolerancePct   Two pivots are considered the same level if they're
+ *                       within this fraction of each other (default 1.5%).
+ * @param maxPerSide     Cap on how many support / resistance levels to
+ *                       return (default 4 each). The strongest come first.
+ */
+export function supportResistance(
+  bars: Bar[],
+  lookback = 5,
+  tolerancePct = 0.015,
+  maxPerSide = 4,
+): SupportResistance {
+  if (bars.length < 2 * lookback + 1) {
+    return { support: [], resistance: [] };
+  }
+
+  // ---- 1) Collect pivot highs & lows ------------------------------------
+  const pivotHighs: Pivot[] = [];
+  const pivotLows: Pivot[] = [];
+  for (let i = lookback; i < bars.length - lookback; i++) {
+    const b = bars[i]!;
+    let isHigh = true;
+    let isLow = true;
+    for (let j = 1; j <= lookback; j++) {
+      const left = bars[i - j]!;
+      const right = bars[i + j]!;
+      if (b.high <= left.high || b.high <= right.high) isHigh = false;
+      if (b.low >= left.low || b.low >= right.low) isLow = false;
+      if (!isHigh && !isLow) break;
+    }
+    if (isHigh) pivotHighs.push({ price: b.high, time: b.time, index: i });
+    if (isLow) pivotLows.push({ price: b.low, time: b.time, index: i });
+  }
+
+  // ---- 2) Cluster pivots that are within tolerancePct -------------------
+  const lastTime = bars[bars.length - 1]!.time;
+  const firstTime = bars[0]!.time;
+  const timeSpan = Math.max(1, lastTime - firstTime);
+
+  function cluster(pivots: Pivot[]): Level[] {
+    if (pivots.length === 0) return [];
+    // Sort by price so nearby pivots group naturally.
+    const sorted = [...pivots].sort((a, b) => a.price - b.price);
+    const groups: Pivot[][] = [];
+    let current: Pivot[] = [sorted[0]!];
+    for (let i = 1; i < sorted.length; i++) {
+      const p = sorted[i]!;
+      const ref = current[0]!.price;
+      if (Math.abs(p.price - ref) / ref <= tolerancePct) {
+        current.push(p);
+      } else {
+        groups.push(current);
+        current = [p];
+      }
+    }
+    groups.push(current);
+
+    return groups.map((g): Level => {
+      // Recency-weighted average price so the latest touches anchor the
+      // level (older pivots drift out of relevance).
+      let wSum = 0;
+      let priceSum = 0;
+      let lastTouch = 0;
+      let firstTouch = Infinity;
+      for (const p of g) {
+        const age = (lastTime - p.time) / timeSpan; // 0 = newest, 1 = oldest
+        const w = 1 - 0.5 * age; // newest = 1.0, oldest = 0.5
+        wSum += w;
+        priceSum += p.price * w;
+        if (p.time > lastTouch) lastTouch = p.time;
+        if (p.time < firstTouch) firstTouch = p.time;
+      }
+      const price = priceSum / wSum;
+      // Strength: touches × recency bonus (levels recently retested matter more).
+      const recency = 1 - (lastTime - lastTouch) / timeSpan;
+      const strength = g.length * (0.5 + 0.5 * recency);
+      return { price, touches: g.length, lastTouch, firstTouch, strength };
+    });
+  }
+
+  const highClusters = cluster(pivotHighs);
+  const lowClusters = cluster(pivotLows);
+
+  // ---- 3) Split relative to current price -------------------------------
+  const lastClose = bars[bars.length - 1]!.close;
+
+  // Resistance = clusters whose price is above the last close.
+  // Support   = clusters whose price is below the last close.
+  // We also merge both cluster pools together — a former resistance that
+  // price broke below is now support, and vice versa.
+  const all = [...highClusters, ...lowClusters];
+
+  const resistance = all
+    .filter((c) => c.price > lastClose)
+    .sort((a, b) => b.strength - a.strength || a.price - b.price)
+    .slice(0, maxPerSide)
+    .sort((a, b) => a.price - b.price);
+
+  const support = all
+    .filter((c) => c.price < lastClose)
+    .sort((a, b) => b.strength - a.strength || b.price - a.price)
+    .slice(0, maxPerSide)
+    .sort((a, b) => b.price - a.price);
+
+  return { support, resistance };
+}
+
 /** Daily percentage returns (leading `null` because the first bar has none). */
 export function returns(values: number[]): NullableSeries {
   const out: NullableSeries = new Array(values.length).fill(null);
@@ -237,6 +383,7 @@ export interface Enriched {
   bb20: BollingerBands;
   atr14: NullableSeries;
   returns: NullableSeries;
+  levels: SupportResistance;
 }
 
 export function enrich(bars: Bar[]): Enriched {
@@ -253,6 +400,7 @@ export function enrich(bars: Bar[]): Enriched {
     bb20: bollinger(closes, 20, 2),
     atr14: atr(bars, 14),
     returns: returns(closes),
+    levels: supportResistance(bars),
   };
 }
 

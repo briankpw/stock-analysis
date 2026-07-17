@@ -12,10 +12,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type ExperienceLevel = "beginner" | "advanced";
+export type Locale = "en" | "zh-CN";
 
 interface UiState {
   ticker: string;
   level: ExperienceLevel;
+  locale: Locale;
   period: string;
   interval: string;
   showSma: boolean;
@@ -23,6 +25,7 @@ interface UiState {
 
   setTicker: (t: string) => void;
   setLevel: (l: ExperienceLevel) => void;
+  setLocale: (l: Locale) => void;
   setPeriod: (p: string) => void;
   setInterval: (i: string) => void;
   toggleSma: () => void;
@@ -34,6 +37,7 @@ export const useUi = create<UiState>()(
     (set) => ({
       ticker: "KEYS",
       level: "beginner",
+      locale: "en",
       period: "1y",
       interval: "1d",
       showSma: true,
@@ -41,6 +45,7 @@ export const useUi = create<UiState>()(
 
       setTicker: (ticker) => set({ ticker: ticker.toUpperCase() }),
       setLevel: (level) => set({ level }),
+      setLocale: (locale) => set({ locale }),
       setPeriod: (period) => set({ period }),
       setInterval: (interval) => set({ interval }),
       toggleSma: () => set((s) => ({ showSma: !s.showSma })),
@@ -53,3 +58,4 @@ export const useUi = create<UiState>()(
 export const useLevel = () => useUi((s) => s.level);
 export const useIsBeginner = () => useUi((s) => s.level === "beginner");
 export const useTicker = () => useUi((s) => s.ticker);
+export const useLocale = () => useUi((s) => s.locale);

@@ -3,12 +3,15 @@
 import * as React from "react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
+import { KeyTerms } from "@/components/key-terms";
+import { TermTip } from "@/components/term-tip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
 import { useBundle } from "@/hooks/use-bundle";
 import { useUi } from "@/lib/state";
+import { useT } from "@/lib/i18n";
 import { fmtCurrency, fmtNumber, fmtSigned, fmtSignedPercent, relativeTime } from "@/lib/format";
 import type { Valuation, Trade, Side } from "@/lib/paper-trading";
 import { cn } from "@/lib/utils";
@@ -54,6 +57,7 @@ function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [note, setNote] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const t = useT();
 
   const suggestedPrice = bundle?.quote.price ?? null;
   React.useEffect(() => {
@@ -88,35 +92,35 @@ function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
 
   return (
     <Card>
-      <CardHeader><CardTitle>Place an order</CardTitle></CardHeader>
+      <CardHeader><CardTitle>{t("paper.card.placeOrder")}</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-2 gap-2">
-          <Button variant={side === "buy" ? "success" : "outline"} onClick={() => setSide("buy")}>Buy</Button>
-          <Button variant={side === "sell" ? "danger" : "outline"} onClick={() => setSide("sell")}>Sell</Button>
+          <Button variant={side === "buy" ? "success" : "outline"} onClick={() => setSide("buy")}>{t("paper.side.buy")}</Button>
+          <Button variant={side === "sell" ? "danger" : "outline"} onClick={() => setSide("sell")}>{t("paper.side.sell")}</Button>
         </div>
         <div>
-          <label className="metric-label">Symbol</label>
+          <label className="metric-label">{t("paper.field.symbol")}</label>
           <input value={ticker} readOnly
             className="mt-1 w-full h-9 rounded-md border border-border bg-muted/40 px-3 text-sm cursor-not-allowed" />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="metric-label">Shares</label>
+            <label className="metric-label">{t("paper.field.shares")}</label>
             <input type="number" min="0" step="1" value={shares}
               onChange={(e) => setShares(e.target.value)}
               className="mt-1 w-full h-9 rounded-md border border-border bg-card px-3 text-sm tabular-nums" />
           </div>
           <div>
-            <label className="metric-label">Price</label>
+            <label className="metric-label">{t("paper.field.price")}</label>
             <input type="number" min="0" step="0.01" value={price}
               onChange={(e) => setPrice(e.target.value)}
               className="mt-1 w-full h-9 rounded-md border border-border bg-card px-3 text-sm tabular-nums" />
           </div>
         </div>
         <div>
-          <label className="metric-label">Note (optional)</label>
+          <label className="metric-label">{t("paper.field.note")}</label>
           <input value={note} onChange={(e) => setNote(e.target.value)}
-            placeholder="Why?"
+            placeholder={t("paper.field.notePlaceholder")}
             className="mt-1 w-full h-9 rounded-md border border-border bg-card px-3 text-sm" />
         </div>
         {error && <p className="text-xs text-danger">{error}</p>}
@@ -126,10 +130,12 @@ function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
           variant={side === "buy" ? "success" : "danger"}
           className="w-full"
         >
-          {submitting ? "Submitting…" : `${side === "buy" ? "Buy" : "Sell"} ${shares || 0} ${ticker}`}
+          {submitting
+            ? t("paper.submitting")
+            : t("paper.submit", { side: side === "buy" ? t("paper.side.buy") : t("paper.side.sell"), n: shares || 0, ticker })}
         </Button>
         <p className="text-[0.7rem] text-muted-foreground text-center">
-          Simulated brokerage. No real money moves.
+          {t("paper.disclaimer")}
         </p>
       </CardContent>
     </Card>
@@ -138,29 +144,34 @@ function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
 
 function PortfolioCard({ valuation, onReset }: { valuation: Valuation; onReset: () => void }) {
   const pnlPos = valuation.totalPnl >= 0;
+  const t = useT();
 
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between">
-        <CardTitle>Portfolio</CardTitle>
-        <Button variant="outline" size="sm" onClick={onReset}>Reset</Button>
+        <CardTitle>{t("paper.card.portfolio")}</CardTitle>
+        <Button variant="outline" size="sm" onClick={onReset}>{t("common.reset")}</Button>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <p className="metric-label">Total value</p>
+            <p className="metric-label">{t("paper.stat.totalValue")}</p>
             <p className="metric-value">{fmtCurrency(valuation.totalValue)}</p>
           </div>
           <div>
-            <p className="metric-label">Cash</p>
+            <p className="metric-label">{t("paper.stat.cash")}</p>
             <p className="metric-value">{fmtCurrency(valuation.cash)}</p>
           </div>
           <div>
-            <p className="metric-label">Positions value</p>
+            <p className="metric-label">
+              <TermTip term="Market Value">{t("paper.stat.positionsValue")}</TermTip>
+            </p>
             <p className="text-lg font-semibold tabular-nums">{fmtCurrency(valuation.marketValue)}</p>
           </div>
           <div>
-            <p className="metric-label">Total P&amp;L</p>
+            <p className="metric-label">
+              <TermTip term="Unrealised P&L">{t("paper.stat.totalPnl")}</TermTip>
+            </p>
             <p className={cn("text-lg font-semibold tabular-nums", pnlPos ? "text-success" : "text-danger")}>
               {fmtSigned(valuation.totalPnl)}{" "}
               <span className="text-xs">({fmtSignedPercent(valuation.totalPnlPct)})</span>
@@ -170,7 +181,9 @@ function PortfolioCard({ valuation, onReset }: { valuation: Valuation; onReset: 
 
         {valuation.positions.length > 0 && (
           <div>
-            <p className="metric-label mb-2 mt-4">Open positions</p>
+            <p className="metric-label mb-2 mt-4">
+              <TermTip term="Position">{t("paper.openPositions")}</TermTip>
+            </p>
             <ul className="space-y-2">
               {valuation.positions.map((p) => {
                 const pnlPos = (p.unrealised ?? 0) >= 0;
@@ -180,11 +193,12 @@ function PortfolioCard({ valuation, onReset }: { valuation: Valuation; onReset: 
                       <span className="font-semibold">{p.symbol}</span>
                       <AddToWatchlistButton symbol={p.symbol} />
                       <span className="text-sm text-muted-foreground">
-                        {fmtNumber(p.shares, 0)} @ avg {fmtCurrency(p.avgCost)}
+                        {fmtNumber(p.shares, 0)} @{" "}
+                        <TermTip term="Avg Cost">{t("paper.avg")}</TermTip> {fmtCurrency(p.avgCost)}
                       </span>
                     </div>
                     <div className="text-right text-sm tabular-nums">
-                      <div>Last {p.last === null ? "—" : fmtCurrency(p.last)}</div>
+                      <div>{t("paper.last")} {p.last === null ? "—" : fmtCurrency(p.last)}</div>
                       <div className={cn("font-semibold", pnlPos ? "text-success" : "text-danger")}>
                         {p.unrealised === null ? "—" : fmtSigned(p.unrealised)}
                       </div>
@@ -201,35 +215,36 @@ function PortfolioCard({ valuation, onReset }: { valuation: Valuation; onReset: 
 }
 
 function TradesLog({ trades }: { trades: Trade[] }) {
+  const t = useT();
   if (trades.length === 0) {
     return (
       <Card>
-        <CardHeader><CardTitle>Recent trades</CardTitle></CardHeader>
-        <CardContent><p className="text-sm text-muted-foreground">No trades yet.</p></CardContent>
+        <CardHeader><CardTitle>{t("paper.card.trades")}</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-muted-foreground">{t("paper.noTrades")}</p></CardContent>
       </Card>
     );
   }
   return (
     <Card>
-      <CardHeader><CardTitle>Recent trades</CardTitle></CardHeader>
+      <CardHeader><CardTitle>{t("paper.card.trades")}</CardTitle></CardHeader>
       <CardContent className="p-0">
         <ul className="divide-y divide-border">
-          {trades.map((t) => (
-            <li key={t.id} className="p-3 flex items-center justify-between gap-3">
+          {trades.map((trade) => (
+            <li key={trade.id} className="p-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className={cn("chip", t.side === "buy" ? "chip-bull" : "chip-bear")}>
-                    {t.side.toUpperCase()}
+                  <span className={cn("chip", trade.side === "buy" ? "chip-bull" : "chip-bear")}>
+                    {trade.side === "buy" ? t("paper.side.buy") : t("paper.side.sell")}
                   </span>
-                  <span className="font-semibold">{t.symbol}</span>
-                  <AddToWatchlistButton symbol={t.symbol} />
-                  <span className="text-xs text-muted-foreground">{relativeTime(t.createdAt)}</span>
+                  <span className="font-semibold">{trade.symbol}</span>
+                  <AddToWatchlistButton symbol={trade.symbol} />
+                  <span className="text-xs text-muted-foreground">{relativeTime(trade.createdAt)}</span>
                 </div>
-                {t.note && <p className="text-xs text-muted-foreground mt-1 truncate">{t.note}</p>}
+                {trade.note && <p className="text-xs text-muted-foreground mt-1 truncate">{trade.note}</p>}
               </div>
               <div className="text-right text-sm tabular-nums">
-                <div>{fmtNumber(t.shares, 0)} @ {fmtCurrency(t.price)}</div>
-                <div className="text-xs text-muted-foreground">Cash → {fmtCurrency(t.cashAfter)}</div>
+                <div>{fmtNumber(trade.shares, 0)} @ {fmtCurrency(trade.price)}</div>
+                <div className="text-xs text-muted-foreground">{t("paper.cashAfter")} {fmtCurrency(trade.cashAfter)}</div>
               </div>
             </li>
           ))}
@@ -241,29 +256,46 @@ function TradesLog({ trades }: { trades: Trade[] }) {
 
 export default function PaperTradingPage() {
   const { data, loading, error, reload } = usePaper();
+  const t = useT();
 
   const doReset = async () => {
-    if (!confirm("Reset the portfolio? All positions and trades will be cleared.")) return;
+    if (!confirm(t("paper.resetConfirm"))) return;
     await fetch("/api/paper", { method: "DELETE" });
     reload();
   };
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader pageTitle="Paper Trading" />
+      <PageHeader pageTitleKey="nav.paper" />
       <PageIntro pageKey="paper" />
 
       {error && <ErrorBanner message={error} retry={reload} />}
-      {!data && !error && loading && <LoadingPage label="Loading portfolio…" />}
+      {!data && !error && loading && <LoadingPage label={t("loading.portfolio")} />}
 
       {data && (
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr] animate-fade-in">
-          <OrderForm onSubmitted={reload} />
-          <div className="space-y-4">
-            <PortfolioCard valuation={data.valuation} onReset={doReset} />
-            <TradesLog trades={data.trades} />
+        <>
+          <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr] animate-fade-in">
+            <OrderForm onSubmitted={reload} />
+            <div className="space-y-4">
+              <PortfolioCard valuation={data.valuation} onReset={doReset} />
+              <TradesLog trades={data.trades} />
+            </div>
           </div>
-        </div>
+
+          <KeyTerms
+            terms={[
+              "Paper Trading",
+              "Position",
+              "Cost Basis",
+              "Avg Cost",
+              "Market Value",
+              "Realised P&L",
+              "Unrealised P&L",
+              "Long",
+              "Short",
+            ]}
+          />
+        </>
       )}
     </div>
   );

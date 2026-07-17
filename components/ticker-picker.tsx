@@ -3,9 +3,11 @@
 import * as React from "react";
 import { useUi } from "@/lib/state";
 import { Button } from "./ui/button";
-import { Plus, Trash2 } from "lucide-react";
+import { Bell, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { useWatchlist } from "@/hooks/use-watchlist";
+import { useStockWatches } from "@/hooks/use-stock-watches";
 
 /**
  * Sidebar ticker picker — reads and mutates the watchlist through the
@@ -22,9 +24,11 @@ export function TickerPicker({ className }: { className?: string }) {
   const ticker = useUi((s) => s.ticker);
   const setTicker = useUi((s) => s.setTicker);
   const { entries, error: fetchError, add, remove } = useWatchlist();
+  const { isTickerWatched } = useStockWatches();
   const [pendingSymbol, setPendingSymbol] = React.useState("");
   const [pendingName, setPendingName] = React.useState("");
   const [mutationError, setMutationError] = React.useState<string | null>(null);
+  const t = useT();
 
   const error = mutationError ?? fetchError;
 
@@ -60,7 +64,7 @@ export function TickerPicker({ className }: { className?: string }) {
 
   return (
     <div className={cn("space-y-2", className)}>
-      <label className="metric-label">Ticker</label>
+      <label className="metric-label">{t("ticker.header")}</label>
       <select
         value={ticker}
         onChange={(e) => setTicker(e.target.value)}
@@ -76,23 +80,23 @@ export function TickerPicker({ className }: { className?: string }) {
       </select>
 
       <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer select-none py-1">Manage watchlist</summary>
+        <summary className="cursor-pointer select-none py-1">{t("ticker.watchlist")}</summary>
         <div className="mt-2 space-y-2">
           <div className="flex flex-col gap-2">
             <input
               value={pendingSymbol}
               onChange={(e) => setPendingSymbol(e.target.value.toUpperCase())}
-              placeholder="Symbol (e.g. AAPL)"
+              placeholder={t("ticker.placeholder")}
               className="h-8 rounded-md border border-border bg-card px-2 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <input
               value={pendingName}
               onChange={(e) => setPendingName(e.target.value)}
-              placeholder="Display name (optional)"
+              placeholder={t("form.displayName")}
               className="h-8 rounded-md border border-border bg-card px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <Button size="sm" onClick={onAdd} className="w-full gap-1.5">
-              <Plus className="h-3.5 w-3.5" /> Add
+              <Plus className="h-3.5 w-3.5" /> {t("common.add")}
             </Button>
           </div>
 
@@ -100,15 +104,23 @@ export function TickerPicker({ className }: { className?: string }) {
             <ul className="space-y-1 pt-2">
               {entries.map((e) => (
                 <li key={e.symbol} className="flex justify-between items-center gap-2">
-                  <span className="truncate">{e.symbol}</span>
+                  <span className="truncate inline-flex items-center gap-1.5">
+                    {e.symbol}
+                    {isTickerWatched(e.symbol) && (
+                      <Bell
+                        className="h-3 w-3 text-primary shrink-0"
+                        aria-label="Insider alerts enabled"
+                      />
+                    )}
+                  </span>
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={() => onRemove(e.symbol)}
-                    aria-label={`Remove ${e.symbol}`}
+                    aria-label={t("ticker.removeFromList")}
                     className="h-7 w-7"
                     disabled={entries.length <= 1}
-                    title={entries.length <= 1 ? "Cannot remove the last entry" : `Remove ${e.symbol}`}
+                    title={entries.length <= 1 ? t("ticker.removeFromList") : t("ticker.removeFromList")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
