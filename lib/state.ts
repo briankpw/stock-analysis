@@ -26,6 +26,15 @@ interface UiState {
   showEma: boolean;
   /** Bollinger Bands (20, 2σ) chart overlay. Off by default. */
   showBb: boolean;
+  /**
+   * Desktop-only "hide the sidebar" preference. When true, the persistent
+   * sidebar column collapses off-screen at the `lg:` breakpoint and a
+   * floating expand button takes its place — mirroring the mobile
+   * drawer/hamburger interaction so wide-screen users can also reclaim
+   * the horizontal space. Persisted so the choice survives reloads.
+   * Ignored below `lg:` (mobile always uses the drawer + hamburger).
+   */
+  sidebarDesktopCollapsed: boolean;
 
   setTicker: (t: string) => void;
   setLevel: (l: ExperienceLevel) => void;
@@ -35,6 +44,8 @@ interface UiState {
   toggleSma: () => void;
   toggleEma: () => void;
   toggleBb: () => void;
+  toggleSidebarDesktopCollapsed: () => void;
+  setSidebarDesktopCollapsed: (v: boolean) => void;
 }
 
 // Persistence schema version. Bump whenever the *default* value of a
@@ -53,6 +64,7 @@ export const useUi = create<UiState>()(
       showSma: false,
       showEma: true,
       showBb: false,
+      sidebarDesktopCollapsed: false,
 
       setTicker: (ticker) => set({ ticker: ticker.toUpperCase() }),
       setLevel: (level) => set({ level }),
@@ -62,6 +74,9 @@ export const useUi = create<UiState>()(
       toggleSma: () => set((s) => ({ showSma: !s.showSma })),
       toggleEma: () => set((s) => ({ showEma: !s.showEma })),
       toggleBb: () => set((s) => ({ showBb: !s.showBb })),
+      toggleSidebarDesktopCollapsed: () =>
+        set((s) => ({ sidebarDesktopCollapsed: !s.sidebarDesktopCollapsed })),
+      setSidebarDesktopCollapsed: (v) => set({ sidebarDesktopCollapsed: v }),
     }),
     {
       name: "key-stock-ui",

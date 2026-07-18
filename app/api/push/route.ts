@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getVapidKeys, webPushConfigured } from "@/lib/bot/webpush";
+import {
+  getVapidKeys,
+  validatePushEndpoint,
+  webPushConfigured,
+} from "@/lib/bot/webpush";
 import { testWebPush } from "@/lib/bot/notifier";
 import {
   listPushSubscriptions,
@@ -74,6 +78,30 @@ export async function POST(req: Request) {
   try {
     const body = bodySchema.parse(await req.json());
     if (body.action === "subscribe") {
+      // SSRF guard — refuse to persist anything the server would then
+      // POST authenticated payloads to unless it's clearly a real push
+      // service. `validatePushEndpoint` enforces https:// + known-host
+      // allow-list + no IP literals. We do NOT echo the endpoint back
+      // in the error body (it's attacker-controlled); the reason is
+      // safe to surface because it's from a static enum.
+      const check = validatePushEndpoint(body.subscription.endpoint);
+      if (!check.ok) {
+        // Log server-side so an operator can trace attempted abuse —
+        // the endpoint IS sensitive here (may leak internal IPs of
+        // whoever tried to register it) so we redact to the reason
+        // + hostname only in the log, and never in the response body.
+        let hostForLog = "invalid";
+        try {
+          hostForLog = new URL(body.subscription.endpoint).hostname || "invalid";
+        } catch { /* keep placeholder */ }
+        console.warn(
+          `[api/push] rejected subscribe: ${check.reason} (host=${hostForLog})`,
+        );
+        return NextResponse.json(
+          { ok: false, error: `Push endpoint rejected: ${check.reason}` },
+          { status: 400 },
+        );
+      }
       // Prefer the client-supplied user agent over the request header
       // when present — the header can be spoofed by proxies and the
       // client already has to run navigator.userAgent to render the

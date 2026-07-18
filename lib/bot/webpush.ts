@@ -99,6 +99,123 @@ export function webPushConfigured(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Endpoint allow-list — SSRF guard for /api/push subscribe
+// ---------------------------------------------------------------------------
+
+/**
+ * Known Web Push service hosts.
+ *
+ * An entry that starts with "." means "any subdomain suffix of this
+ * host"; anything else is an exact-match hostname. This list is
+ * intentionally small — it covers every browser/OS that ships a real
+ * push service today (Chrome/Chromium, Edge Chromium, Firefox, Safari
+ * 16.4+, Windows PWAs). If a new push service is added we add its host
+ * here; we do NOT accept arbitrary user-supplied URLs.
+ *
+ * Why this list matters — SSRF context
+ * ------------------------------------
+ * Without allow-listing, the POST /api/push endpoint accepts any URL
+ * as a "push endpoint" and the server then dutifully POSTs
+ * authenticated alert payloads (VAPID-signed) to it on every tick.
+ * A visitor to a self-hosted instance (recall: `AUTH_ENABLED` defaults
+ * to false) could therefore register:
+ *   * `http://169.254.169.254/latest/meta-data/…` — AWS/GCP cloud
+ *      metadata endpoint (credential exfil in a cloud deploy).
+ *   * `http://127.0.0.1:6379/…` — talk to an internal Redis/other TCP
+ *      service that happens to accept POST-shaped bytes.
+ *   * `http://10.0.0.10/…` — reach any RFC1918 neighbour on the LAN.
+ *   * `http://attacker.com/collect` — turn our server into a
+ *      denial-of-service beacon or a request-signal exfil channel.
+ * The allow-list + IP-literal reject below eliminates all four in a
+ * single validation step at the ingress boundary.
+ */
+const ALLOWED_PUSH_HOST_SUFFIXES: readonly string[] = [
+  // Google FCM — Chrome / Chromium / Edge Chromium / Android
+  "fcm.googleapis.com",
+  "android.googleapis.com",
+  "updates.googleapis.com",
+  // Mozilla — Firefox desktop + Android
+  "updates.push.services.mozilla.com",
+  "autopush.services.mozilla.com",
+  ".push.services.mozilla.com",
+  // Apple — Safari 16.4+ Web Push
+  "web.push.apple.com",
+  // Microsoft WNS — Edge Legacy + native Windows PWAs
+  ".notify.windows.com",
+];
+
+export interface PushEndpointValidation {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Validate a browser-supplied push endpoint URL. Rejects anything that
+ * isn't (a) a well-formed HTTPS URL to (b) a hostname on our known
+ * push-service allow-list, with (c) no IP literal in the hostname
+ * (which would bypass the allow-list via DNS rebinding or a raw
+ * private-range address).
+ *
+ * Returns a structured result so the caller can render the reject
+ * reason for operators — the endpoint string itself is potentially
+ * attacker-controlled, so DO NOT echo it back in the HTTP response
+ * body.
+ */
+export function validatePushEndpoint(raw: string): PushEndpointValidation {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: "not a valid URL" };
+  }
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: `only https:// is allowed (got ${url.protocol})` };
+  }
+  const host = url.hostname.toLowerCase();
+  if (host.length === 0) {
+    return { ok: false, reason: "missing hostname" };
+  }
+  // Any bare IP literal is out — real push services are always
+  // addressed via DNS, and this closes SSRF against cloud metadata
+  // (169.254.*), loopback (127.*, ::1), link-local (169.254.*, fe80::/10)
+  // and every RFC1918 range in one check.
+  if (isIpAddress(host)) {
+    return { ok: false, reason: "IP-literal hostnames are not allowed" };
+  }
+  const matches = ALLOWED_PUSH_HOST_SUFFIXES.some((suffix) => {
+    if (suffix.startsWith(".")) {
+      // Suffix match — but require at least one non-empty label in
+      // front so ".push.services.mozilla.com" doesn't accidentally
+      // match "push.services.mozilla.com" (which is also fine, but
+      // then it would need an explicit entry above).
+      return host.length > suffix.length && host.endsWith(suffix);
+    }
+    return host === suffix;
+  });
+  if (!matches) {
+    return { ok: false, reason: "host is not a recognised push service" };
+  }
+  return { ok: true };
+}
+
+/**
+ * `true` for any hostname that is actually an IP address literal.
+ * URLs quote IPv6 in square brackets but `URL.hostname` already strips
+ * them, so IPv6 arrives here as the raw address string (which always
+ * contains a colon — a legal DNS label never does).
+ */
+function isIpAddress(host: string): boolean {
+  // IPv4 — four dot-separated groups of 1–3 digits. We don't bother
+  // checking each group is ≤255 because the URL parser has already
+  // normalised the address (invalid IPv4 fails at `new URL(...)`).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;
+  // IPv6 — the only legal DNS name containing a colon is a punycode
+  // artefact we don't need to worry about; treat any colon as IPv6.
+  if (host.includes(":")) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Payload shape received by the service worker
 // ---------------------------------------------------------------------------
 
@@ -134,9 +251,42 @@ export interface WebPushBatchResult {
 export async function sendWebPushBatch(
   payload: WebPushPayload,
 ): Promise<WebPushBatchResult> {
-  const subs = listPushSubscriptions();
-  if (subs.length === 0) {
+  const rawSubs = listPushSubscriptions();
+  if (rawSubs.length === 0) {
     return { sent: 0, failed: 0, pruned: 0, detail: "no subscribers" };
+  }
+
+  // Defense-in-depth against legacy DB rows created *before* the
+  // ingress-side allow-list was added — if such a row snuck in when
+  // /api/push was still permissive, re-validate here and prune it
+  // instead of sending our VAPID-signed payload to whatever
+  // (potentially attacker-controlled) URL it points at. Auto-prune
+  // rather than skip so the DB self-heals on the first tick after
+  // upgrade.
+  let legacyPruned = 0;
+  const subs: typeof rawSubs = [];
+  for (const s of rawSubs) {
+    const check = validatePushEndpoint(s.endpoint);
+    if (check.ok) {
+      subs.push(s);
+      continue;
+    }
+    console.warn(
+      `[webpush] pruning legacy subscription with untrusted endpoint (${check.reason})`,
+    );
+    removePushSubscription(s.endpoint);
+    legacyPruned += 1;
+  }
+  if (subs.length === 0) {
+    return {
+      sent: 0,
+      failed: 0,
+      pruned: legacyPruned,
+      detail:
+        legacyPruned > 0
+          ? `no valid subscribers (pruned ${legacyPruned} untrusted)`
+          : "no subscribers",
+    };
   }
 
   const keys = await getVapidKeys();
@@ -147,7 +297,7 @@ export async function sendWebPushBatch(
   const delivered: string[] = [];
   let sent = 0;
   let failed = 0;
-  let pruned = 0;
+  let pruned = legacyPruned;
   const failReasons: string[] = [];
 
   // Fan out in parallel — most push services accept POSTs concurrently
@@ -161,7 +311,11 @@ export async function sendWebPushBatch(
       try {
         await webpush.sendNotification(target, body, {
           TTL: 3600,
-          urgency: "normal",
+          // `high` is what interactive alerts (chat, mail) use; it tells
+          // the push service (FCM / APNs / Mozilla) to deliver the payload
+          // immediately rather than deferring for battery. Required for
+          // iOS PWA pushes to actually pop as a banner.
+          urgency: "high",
         });
         return { ok: true as const, endpoint: s.endpoint };
       } catch (err) {

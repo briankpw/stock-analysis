@@ -14,7 +14,9 @@
  */
 
 import { notifyStockInsiderBatch } from "@/lib/bot/notifier";
-import { getState, setState, tryLockTick } from "@/lib/bot/store";
+import { isEventRecent } from "@/lib/bot/recency";
+import { getState, setState } from "@/lib/bot/store";
+import { withTickLock } from "@/lib/watch/tick-lock";
 import {
   fetchIssuerInsiderTransactions,
   type IssuerInsiderTransaction,
@@ -80,18 +82,9 @@ export async function runStockTick(): Promise<StockTickReport> {
     notifiesSent: 0,
     errors: [],
   };
-
-  const release = tryLockTick("stock");
-  if (!release) {
-    report.ok = false;
-    report.errors.push("Another stock tick is already running.");
-    return report;
-  }
-  try {
-    return await runStockTickBody(ranAt, report);
-  } finally {
-    release();
-  }
+  return withTickLock("stock", report, () =>
+    runStockTickBody(ranAt, report),
+  );
 }
 
 async function runStockTickBody(
@@ -124,10 +117,17 @@ async function runStockTickBody(
   }
   report.transactionsSeen = allTx.length;
 
-  // Filter to actions the user actually wants (BUY / SELL).
+  // Filter to actions the user actually wants (BUY / SELL) *and* to
+  // recent transactions only. `transactionDate` is the real trade date;
+  // fall back to `filingDate` for the rare row with neither. See
+  // `lib/bot/recency.ts` for the rationale on the age gate — it stops
+  // late-filed Form 4 amendments from waking anyone up about a trade
+  // that happened months ago.
   const eligible = allTx.filter(({ tx, watch }) => {
     if (tx.action === "OTHER") return false;
-    return watch.actions.includes(tx.action);
+    if (!watch.actions.includes(tx.action)) return false;
+    if (!isEventRecent(tx.transactionDate ?? tx.filingDate)) return false;
+    return true;
   });
   report.transactionsMatched = eligible.length;
 

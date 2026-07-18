@@ -96,12 +96,58 @@ export const FINANCE_LEXICON: Readonly<Record<string, number>> = {
   shortage: -1.5, shortages: -1.5,
   downturn: -2.2, recession: -2.5,
   selloff: -2.0,
+  // ---- Additional vocabulary flagged in the senior-analyst review ----
+  // Analyst-rating language — "overweight" from a bank note is a
+  // meaningful upgrade cue that the original lexicon missed.
+  overweight: 1.8, underweight: -1.8,
+  outperformer: 2.0, marketperform: 0, peerperform: 0,
+  buyrating: 2.0, sellrating: -2.0, holdrating: 0,
+  reiterate: 0.5, reiterated: 0.5, reaffirm: 0.5, reaffirmed: 0.5,
+  initiated: 0.3, initiate: 0.3,
+  // Corporate-action vocabulary
+  hostile: -1.2, dilution: -2.0, dilutive: -1.8, dilute: -1.5,
+  secondary: -1.2, offering: -0.5, // "secondary offering" reads as dilutive
+  goingconcern: -3.5, restatement: -2.5, restate: -2.0,
+  merger: 0.5, tenderoffer: 1.0, allcash: 1.5,
+  // Macro / regulatory vocabulary
+  tariff: -1.8, tariffs: -1.8, sanction: -2.0, sanctions: -2.0,
+  antitrust: -1.5, monopoly: -1.5, penalty: -1.8, penalties: -1.8,
+  fined: -1.8, fine: -1.2,
+  subpoena: -2.0, indictment: -3.0, indicted: -3.0, guilty: -2.5,
+  // Guidance vocabulary (paired below via negation/context handling —
+  // "cut guidance" resolves via the -1.8 on `cut` combined with a small
+  // negative pull from `guidance` when the surrounding words are neutral).
+  guidance: -0.3,
+  forecast: 0, outlook: 0.2,
+  reiterates: 0.5,
 };
 
 /**
- * Tokenise + score a text using the finance lexicon only. Returns a value
- * in [-1, +1] (the average lexicon weight of hit words, normalised).
- * Returns `null` if no finance words matched (caller falls back to VADER).
+ * Words that flip the sign of a lexicon hit within `NEGATION_WINDOW`
+ * tokens on the LEFT of the hit. Chosen conservatively — over-eager
+ * negation ("not just great, spectacular") flips true positives.
+ */
+const NEGATION_WORDS: ReadonlySet<string> = new Set([
+  "not", "no", "never", "none", "n't", "nt",
+  "failed", "fails", "fail", "failing",
+  "without", "cannot", "cant",
+  "reject", "rejected", "rejects", "rejecting",
+  "denied", "deny", "denies",
+]);
+/** How many tokens back from a hit to scan for a negator. */
+const NEGATION_WINDOW = 3;
+
+/**
+ * Tokenise + score a text using the finance lexicon only. Returns a
+ * value in [-1, +1] (the average lexicon weight of hit words,
+ * normalised). Returns `null` if no finance words matched (caller falls
+ * back to VADER).
+ *
+ * Negation handling: when any of `NEGATION_WORDS` appears within
+ * `NEGATION_WINDOW` tokens *before* a lexicon hit, the hit's sign is
+ * flipped. This handles "beat" (bullish) → "failed to beat" (bearish),
+ * "downgrade" (bearish) → "no downgrade" (mildly bullish), etc. Simple
+ * bag-of-words has no context; this is the cheapest defensible fix.
  */
 function financeScore(text: string): number | null {
   // Simple word tokenizer: keep letters/hyphens, drop everything else.
@@ -113,12 +159,25 @@ function financeScore(text: string): number | null {
 
   let sum = 0;
   let hits = 0;
-  for (const t of tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!;
     const w = FINANCE_LEXICON[t];
-    if (w !== undefined) {
-      sum += w;
-      hits++;
+    if (w === undefined) continue;
+    // Scan the preceding NEGATION_WINDOW tokens for a negator. If we
+    // find one, flip the weight sign. Multiple negators in the window
+    // still flip once — "not failed to beat" is a triple-negative in
+    // English that a real parser would decode; the simple approach is
+    // consistent-if-blunt.
+    let negated = false;
+    const start = Math.max(0, i - NEGATION_WINDOW);
+    for (let j = i - 1; j >= start; j--) {
+      if (NEGATION_WORDS.has(tokens[j]!)) {
+        negated = true;
+        break;
+      }
     }
+    sum += negated ? -w : w;
+    hits++;
   }
   if (hits === 0) return null;
   // Average weight / max (4) gives a well-behaved [-1, +1] mapping.

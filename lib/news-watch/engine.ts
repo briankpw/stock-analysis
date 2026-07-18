@@ -18,7 +18,9 @@
 
 import { fetchNews, RateLimitedError } from "@/lib/data";
 import { notifyNewsBatch } from "@/lib/bot/notifier";
-import { getState, setState, tryLockTick } from "@/lib/bot/store";
+import { isEventRecent } from "@/lib/bot/recency";
+import { getState, setState } from "@/lib/bot/store";
+import { withTickLock } from "@/lib/watch/tick-lock";
 import {
   impactFromScore,
   labelFromScore,
@@ -121,18 +123,9 @@ export async function runNewsTick(): Promise<NewsTickReport> {
     notifiesSent: 0,
     errors: [],
   };
-
-  const release = tryLockTick("news");
-  if (!release) {
-    report.ok = false;
-    report.errors.push("Another news tick is already running.");
-    return report;
-  }
-  try {
-    return await runNewsTickBody(ranAt, report);
-  } finally {
-    release();
-  }
+  return withTickLock("news", report, () =>
+    runNewsTickBody(ranAt, report),
+  );
 }
 
 async function runNewsTickBody(
@@ -164,6 +157,9 @@ async function runNewsTickBody(
         // created. Prevents backfill spam if Yahoo suddenly starts
         // returning older headlines.
         if (item.publishedAt < sub.createdAt) continue;
+        // Recency floor — skip re-syndicated old headlines. Default is
+        // "today + yesterday"; see `lib/bot/recency.ts`.
+        if (!isEventRecent(item.publishedAt)) continue;
         candidates.push({ item, subscription: sub });
       }
     } catch (err) {

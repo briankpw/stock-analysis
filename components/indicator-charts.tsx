@@ -212,11 +212,39 @@ export function KdjChart({
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
 
+/**
+ * Pick a "nice" tick step so labels land on human-friendly percentages
+ * (0.5%, 1%, 2%, 5%, 10%, …) regardless of the actual range of returns.
+ * Standard log10-normalise-and-snap idiom.
+ */
+function niceTickStep(span: number, targetTicks = 6): number {
+  if (span <= 0 || !Number.isFinite(span)) return 0.01;
+  const rough = span / targetTicks;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  const nice = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+  return nice * mag;
+}
+
+/**
+ * Format a returns tick value (fraction) as a signed percent. Uses 0
+ * decimal places when the step is coarse (≥ 1%) and 1 decimal place
+ * when it's tight, so labels never end up as noisy "1.0%".
+ */
+function fmtReturnTick(fraction: number, step: number): string {
+  const dp = step >= 0.01 ? 0 : 1;
+  const pct = fraction * 100;
+  // -0 → 0 hygiene.
+  const clean = Math.abs(pct) < Math.pow(10, -dp) / 2 ? 0 : pct;
+  const sign = clean > 0 ? "+" : "";
+  return `${sign}${clean.toFixed(dp)}%`;
+}
+
 /** Simple histogram of daily returns — built with SVG (no lib dep). */
 export function ReturnsHistogram({
   returns,
   bins = 30,
-  height = 220,
+  height = 240,
 }: {
   returns: NullableSeries;
   bins?: number;
@@ -229,32 +257,81 @@ export function ReturnsHistogram({
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
-  const width = 800;
-  const padding = 32;
-  const chartW = width - padding * 2;
-  const chartH = height - padding;
-  const step = span / bins;
 
+  // Distinct paddings so we can leave room for tick labels at the bottom
+  // without stealing space from the min/max hint at the top.
+  const width = 800;
+  const padTop = 24;
+  const padBottom = 34;   // axis + label + a little breathing room
+  const padH = 32;
+  const chartW = width - padH * 2;
+  const chartH = height - padTop - padBottom;
+  const axisY = height - padBottom;
+
+  // Bin the returns.
+  const binStep = span / bins;
   const counts = new Array(bins).fill(0) as number[];
   for (const v of values) {
-    const idx = Math.min(bins - 1, Math.max(0, Math.floor((v - min) / step)));
+    const idx = Math.min(bins - 1, Math.max(0, Math.floor((v - min) / binStep)));
     counts[idx] = (counts[idx] ?? 0) + 1;
   }
   const maxCount = Math.max(...counts);
-  const zeroX = padding + ((0 - min) / span) * chartW;
+
+  // Value → screen-X mapping.
+  const xFor = (v: number) => padH + ((v - min) / span) * chartW;
+  const zeroX = xFor(0);
+
+  // "Nice" x-axis ticks. Anchor them on multiples of `tickStep` so the
+  // set includes zero when zero is in range, and every label is a round
+  // percentage number.
+  const tickStep = niceTickStep(span);
+  const firstTick = Math.ceil(min / tickStep) * tickStep;
+  const ticks: number[] = [];
+  for (
+    let v = firstTick;
+    v <= max + tickStep * 1e-6;
+    v += tickStep
+  ) {
+    // Snap to the exact step to avoid FP drift like 0.30000000000004%.
+    ticks.push(Math.round(v / tickStep) * tickStep);
+  }
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Daily returns histogram" className="w-full h-full">
-      <line x1={padding} y1={height - padding / 2} x2={width - padding} y2={height - padding / 2} stroke="hsl(var(--border))" />
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      role="img"
+      aria-label="Daily returns histogram"
+      className="w-full h-full"
+    >
+      {/* Axis line */}
+      <line
+        x1={padH}
+        y1={axisY}
+        x2={width - padH}
+        y2={axisY}
+        stroke="hsl(var(--border))"
+      />
+
+      {/* Faint zero divider — dashed vertical line if zero is in range. */}
       {min < 0 && max > 0 && (
-        <line x1={zeroX} y1={padding / 2} x2={zeroX} y2={height - padding / 2} stroke="hsl(var(--border))" strokeDasharray="3 3" />
+        <line
+          x1={zeroX}
+          y1={padTop}
+          x2={zeroX}
+          y2={axisY}
+          stroke="hsl(var(--border))"
+          strokeDasharray="3 3"
+        />
       )}
+
+      {/* Bars */}
       {counts.map((c, i) => {
-        const x = padding + (i / bins) * chartW;
+        const x = padH + (i / bins) * chartW;
         const w = chartW / bins - 1;
-        const h = (c / maxCount) * chartH;
-        const y = height - padding / 2 - h;
-        const binMid = min + step * (i + 0.5);
+        const h = maxCount > 0 ? (c / maxCount) * chartH : 0;
+        const y = axisY - h;
+        const binMid = min + binStep * (i + 0.5);
         const fill = binMid >= 0 ? "hsl(var(--success))" : "hsl(var(--danger))";
         return (
           <g key={i}>
@@ -263,10 +340,67 @@ export function ReturnsHistogram({
           </g>
         );
       })}
-      <text x={padding} y={padding - 6} fontSize="10" fill="currentColor" opacity="0.6">
+
+      {/* X-axis ticks + labels */}
+      {ticks.map((v, i) => {
+        const cx = xFor(v);
+        // Skip ticks that would render off the plot area.
+        if (cx < padH - 0.5 || cx > width - padH + 0.5) return null;
+        const isZero = Math.abs(v) < tickStep * 1e-6;
+        return (
+          <g key={i}>
+            <line
+              x1={cx}
+              y1={axisY}
+              x2={cx}
+              y2={axisY + 4}
+              stroke="hsl(var(--border))"
+            />
+            <text
+              x={cx}
+              y={axisY + 16}
+              fontSize="10"
+              fill="currentColor"
+              opacity={isZero ? 0.85 : 0.65}
+              fontWeight={isZero ? 600 : 400}
+              textAnchor="middle"
+            >
+              {fmtReturnTick(v, tickStep)}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* "Daily return" hint centred under the axis */}
+      <text
+        x={width / 2}
+        y={height - 4}
+        fontSize="9"
+        fill="currentColor"
+        opacity="0.5"
+        textAnchor="middle"
+      >
+        Daily return
+      </text>
+
+      {/* Min / max labels at the top */}
+      <text
+        x={padH}
+        y={padTop - 8}
+        fontSize="10"
+        fill="currentColor"
+        opacity="0.6"
+      >
         min: {(min * 100).toFixed(2)}%
       </text>
-      <text x={width - padding} y={padding - 6} fontSize="10" fill="currentColor" opacity="0.6" textAnchor="end">
+      <text
+        x={width - padH}
+        y={padTop - 8}
+        fontSize="10"
+        fill="currentColor"
+        opacity="0.6"
+        textAnchor="end"
+      >
         max: {(max * 100).toFixed(2)}%
       </text>
     </svg>

@@ -5,7 +5,7 @@
 //
 // Bump CACHE_NAME whenever the SW behaviour changes so browsers pick up
 // the new script; the old cache is dropped on activate.
-const CACHE_NAME = "key-stock-v2";
+const CACHE_NAME = "key-stock-v3";
 const ASSETS = ["/", "/overview"];
 
 // Fallback rendering used when a push arrives without a JSON payload
@@ -90,6 +90,20 @@ self.addEventListener("push", (event) => {
     }
   }
 
+  // Diagnostic: visible in the SW console under DevTools →
+  // Application → Service workers → key-stock. If pushes arrive but no
+  // toast appears, the log line still fires here — that pinpoints the
+  // problem to the OS notification stack (Focus Assist, DND, etc.) rather
+  // than the server / subscription.
+  try {
+    // eslint-disable-next-line no-console
+    console.log("[sw] push received", {
+      hasData: Boolean(event.data),
+      title: payload.title,
+      tag: payload.tag,
+    });
+  } catch (_) {}
+
   const title = payload.title || FALLBACK_TITLE;
   const options = {
     body: payload.body || FALLBACK_BODY,
@@ -100,6 +114,19 @@ self.addEventListener("push", (event) => {
     // category. `renotify` re-triggers vibration/sound on tag collision.
     tag: payload.tag || "stock-analysis",
     renotify: true,
+    // Windows in particular treats notifications without this flag as
+    // "transient" and skips the on-screen toast whenever the target app
+    // is currently focused — the notification only appears in the Action
+    // Center. Keeping the banner sticky forces the OS to actually pop it
+    // and matches how a real chat / mail client behaves. Users can still
+    // dismiss it manually.
+    requireInteraction: true,
+    // Explicitly non-silent (some UAs default `silent` to true when
+    // `requireInteraction` is set from a background context).
+    silent: false,
+    // Vibration pattern (Android; ignored on desktop/iOS).
+    vibrate: [180, 80, 180],
+    timestamp: Date.now(),
     // Attach the raw payload so notificationclick can read the target URL.
     data: {
       url: payload.url || "/",
@@ -107,7 +134,22 @@ self.addEventListener("push", (event) => {
     },
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    self.registration
+      .showNotification(title, options)
+      .then(() => {
+        try {
+          // eslint-disable-next-line no-console
+          console.log("[sw] showNotification ok", title);
+        } catch (_) {}
+      })
+      .catch((err) => {
+        try {
+          // eslint-disable-next-line no-console
+          console.error("[sw] showNotification failed", err);
+        } catch (_) {}
+      }),
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {

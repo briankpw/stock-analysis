@@ -28,6 +28,7 @@ import type {
   StoredNewsNotification,
 } from "@/lib/news-watch/store";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
+import { SignalAlertsPanel } from "@/components/signal-alerts-panel";
 import { cn } from "@/lib/utils";
 
 interface BotStatus {
@@ -276,6 +277,7 @@ export default function BotPage() {
       )}
 
       <PushAlertsPanel />
+      <SignalAlertsPanel />
       <PortfolioAlertsPanel />
       <StockAlertsPanel />
       <NewsAlertsPanel />

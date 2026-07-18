@@ -417,6 +417,111 @@ export function kdj(
   return { k, d, j };
 }
 
+// ---------------------------------------------------------------------------
+// TDX / MooMoo formula-language primitives.
+//
+// The Chinese trading-platform lineage (TongDaXin → MooMoo → Futu → 同花顺)
+// exposes a handful of low-level primitives — `SMA(X, N, M)`, `EMA(X, N)`,
+// `HHV(X, N)`, `LLV(X, N)` — that scripts like the 6-signal resonance
+// strategy compose. Ports read a lot cleaner when we mirror those
+// primitives directly rather than reinventing the arithmetic each time.
+//
+// Naming caveat: TDX `SMA(X, N, M)` is *not* the simple moving average
+// (that's `MA(X, N)` in TDX). It's the Wilder-style weighted smoothing
+// `Y_t = (M·X_t + (N−M)·Y_{t-1}) / N`. We expose it as `smaSmoothed` to
+// keep the difference explicit in TypeScript.
+// ---------------------------------------------------------------------------
+
+/**
+ * TDX-style weighted moving average: `SMA(X, N, M)`.
+ *
+ *   Y_t = (M · X_t + (N − M) · Y_{t-1}) / N,     alpha = M / N
+ *
+ * Seeded with the first non-null value of `X` (TDX platform convention).
+ * Null / NaN entries preserve `prev` and emit `null` at that position so
+ * the series can be composed with other TDX primitives without gaps
+ * silently corrupting the smoothing state.
+ */
+export function smaSmoothed(
+  values: NullableSeries | number[],
+  period: number,
+  weight = 1,
+): NullableSeries {
+  if (period <= 0) throw new Error("period must be > 0");
+  if (weight <= 0 || weight > period) {
+    throw new Error("weight must be in (0, period]");
+  }
+  const n = values.length;
+  const out: NullableSeries = new Array(n).fill(null);
+  const alpha = weight / period;
+  let prev: number | null = null;
+  for (let i = 0; i < n; i++) {
+    const raw = values[i];
+    const v = raw === null || raw === undefined ? null : (raw as number);
+    if (v === null || !Number.isFinite(v)) continue;
+    prev = prev === null ? v : alpha * v + (1 - alpha) * prev;
+    out[i] = prev;
+  }
+  return out;
+}
+
+/**
+ * TDX-style EMA seeded from the *first* non-null value (rather than the
+ * SMA of the first `period` values, which is what `ema()` above does).
+ *
+ * This matches what a moomoo script author sees on-screen and also lets
+ * us EMA a series that already has leading `null`s (e.g. a derived
+ * indicator like DIFF) without index gymnastics.
+ */
+export function emaSeeded(
+  values: NullableSeries | number[],
+  period: number,
+): NullableSeries {
+  if (period <= 0) throw new Error("period must be > 0");
+  const n = values.length;
+  const out: NullableSeries = new Array(n).fill(null);
+  const alpha = 2 / (period + 1);
+  let prev: number | null = null;
+  for (let i = 0; i < n; i++) {
+    const raw = values[i];
+    const v = raw === null || raw === undefined ? null : (raw as number);
+    if (v === null || !Number.isFinite(v)) continue;
+    prev = prev === null ? v : alpha * v + (1 - alpha) * prev;
+    out[i] = prev;
+  }
+  return out;
+}
+
+/** Rolling max over the last `window` bars (inclusive). Warm-up bars use
+ * the max of whatever is available so early bars still get a value —
+ * TDX convention. */
+export function hhv(values: number[], window: number): NullableSeries {
+  if (window <= 0) throw new Error("window must be > 0");
+  const n = values.length;
+  const out: NullableSeries = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - window + 1);
+    let m = -Infinity;
+    for (let j = start; j <= i; j++) if (values[j]! > m) m = values[j]!;
+    out[i] = m === -Infinity ? null : m;
+  }
+  return out;
+}
+
+/** Rolling min over the last `window` bars (inclusive). See `hhv`. */
+export function llv(values: number[], window: number): NullableSeries {
+  if (window <= 0) throw new Error("window must be > 0");
+  const n = values.length;
+  const out: NullableSeries = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - window + 1);
+    let m = Infinity;
+    for (let j = start; j <= i; j++) if (values[j]! < m) m = values[j]!;
+    out[i] = m === Infinity ? null : m;
+  }
+  return out;
+}
+
 /** Daily percentage returns (leading `null` because the first bar has none). */
 export function returns(values: number[]): NullableSeries {
   const out: NullableSeries = new Array(values.length).fill(null);

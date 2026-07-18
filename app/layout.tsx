@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import "./globals.css";
 import { Providers } from "@/components/providers";
-import { Sidebar } from "@/components/sidebar";
+import { AppShell } from "@/components/app-shell";
 
 export const metadata: Metadata = {
   title: "Stock Analysis",
@@ -39,12 +39,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen antialiased">
         <Providers>
-          <div className="lg:grid lg:grid-cols-[18rem_1fr] min-h-screen w-full max-w-full">
-            <Sidebar />
-            <main className="app-main min-w-0 max-w-full py-6 lg:py-8">
-              {children}
-            </main>
-          </div>
+          {/* AppShell is a client wrapper so the grid template can react
+              to the persisted `sidebarDesktopCollapsed` preference —
+              layout.tsx itself stays a Server Component (required for
+              metadata + <html lang>). */}
+          <AppShell>{children}</AppShell>
         </Providers>
         {/*
           Service-worker registrar. Using next/script keeps the app CSP-clean
@@ -54,7 +53,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Script id="sw-register" strategy="afterInteractive">
           {`if ('serviceWorker' in navigator) {
               window.addEventListener('load', function () {
-                navigator.serviceWorker.register('/service-worker.js').catch(function () {});
+                // updateViaCache: 'none' bypasses the HTTP cache for the SW
+                // script itself, so a bumped service-worker.js is picked up
+                // on the next reload instead of after 24h. .update() then
+                // asks the browser to check for a byte-difference right
+                // now — cheap when unchanged.
+                navigator.serviceWorker
+                  .register('/service-worker.js', { updateViaCache: 'none' })
+                  .then(function (reg) { reg.update().catch(function () {}); })
+                  .catch(function () {});
               });
             }`}
         </Script>

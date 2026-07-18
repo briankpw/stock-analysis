@@ -117,6 +117,49 @@ export function createTtlCache<T>(opts: {
 }
 
 /**
+ * Bounded-parallelism variant of `Promise.all(items.map(fn))`.
+ *
+ * `Promise.all(items.map(fn))` fans every request out **simultaneously**.
+ * That works for a handful of items but explodes for hundreds — e.g. the
+ * segments routes that need one quote per company can enqueue 100+
+ * concurrent Yahoo Finance calls, which reliably trips Yahoo's rate
+ * limiter (429 storm), starves other in-flight background work, and can
+ * crash the Node process by exceeding its default socket pool.
+ *
+ * `mapConcurrent` keeps at most `concurrency` promises in flight at any
+ * time. Results are returned in the **same order** as `items`. If the
+ * mapper throws for one element, the whole call rejects with that error
+ * (matching `Promise.all`'s fail-fast behaviour); if you need per-item
+ * error containment, catch inside `fn` and return a sentinel/`null`.
+ *
+ * Concurrency defaults to 6, which matches Chromium's per-origin socket
+ * limit and empirically avoids Yahoo throttling for the ~100-symbol
+ * segment fan-outs the app makes on `/api/segments/...`.
+ */
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  fn: (item: T, index: number) => Promise<R>,
+  concurrency = 6,
+): Promise<R[]> {
+  const size = items.length;
+  if (size === 0) return [];
+  const cap = Math.max(1, Math.min(concurrency, size));
+  const results = new Array<R>(size);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= size) return;
+      results[idx] = await fn(items[idx], idx);
+    }
+  };
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < cap; i++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * Race `promise` against a hard deadline. On timeout the returned promise
  * rejects with `Error("timeout after Nms: label")` and the underlying work
  * keeps running (there's no generic cancellation for arbitrary promises);

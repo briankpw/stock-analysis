@@ -56,6 +56,23 @@ const TICK_RATE = { capacity: 6, refillPerSec: 1 / 60 }; // ~1/min sustained
 const RATE_LIMITED_MUTATION_PATHS = /^\/api\/(?!auth)/;
 
 /**
+ * Dedicated brute-force budget for /api/auth/login.
+ *
+ * Runs on **every** request, not just when auth is disabled — the whole
+ * point is to make password guessing against `APP_PASSWORD` infeasible
+ * for anyone who *hasn't* authenticated yet, which is precisely the
+ * traffic the broader rate-limiter skips (see #5 in the security audit).
+ *
+ * 5 attempts of burst, refilling at 5/min sustained: at ~12s between
+ * attempts a 100M-word wordlist would take ~38 years per IP, which
+ * pushes the attacker onto distributed infrastructure and gives
+ * operators time to notice the 429 storm in their logs. If a legit
+ * user typos their password 5 times in a minute they wait 12s and try
+ * again — that's the price of stopping the brute-force path entirely.
+ */
+const LOGIN_RATE = { capacity: 5, refillPerSec: 5 / 60 }; // 5/min sustained, burst 5
+
+/**
  * True if the request's Origin (or Referer when Origin is missing) matches
  * one of the trusted hosts:
  *
@@ -177,6 +194,27 @@ export function middleware(req: NextRequest): NextResponse | undefined {
   // grep-able and makes middleware-unit-testing straightforward.
   for (const prefix of IGNORED_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(prefix)) return undefined;
+  }
+
+  // ---- 0a. Login brute-force throttle --------------------------------
+  // /api/auth/login is unauthenticated by definition, which means the
+  // general rate-limit block further down (gated on `!AUTH_ENABLED`)
+  // never runs on the request path that most needs one. Apply a
+  // dedicated per-IP budget here, before the UNPROTECTED_PATHS
+  // early-exit, so unlimited password guessing against APP_PASSWORD is
+  // impossible regardless of the app's auth mode.
+  //
+  // Only POSTs consume tokens; the GET-shaped preflight the browser
+  // sometimes issues (or a curl -I probe) shouldn't count as a
+  // credential attempt.
+  if (pathname === "/api/auth/login" && method === "POST") {
+    const r = rateLimit({
+      bucket: "auth-login",
+      key: getClientIp(req),
+      capacity: LOGIN_RATE.capacity,
+      refillPerSec: LOGIN_RATE.refillPerSec,
+    });
+    if (!r.ok) return tooManyRequests(r.retryAfterMs);
   }
 
   // ---- 0. Unprotected probe / auth endpoints -------------------------

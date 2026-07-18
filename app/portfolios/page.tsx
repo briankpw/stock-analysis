@@ -35,6 +35,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
+import { AddIssuerToWatchlistButton } from "@/components/add-issuer-to-watchlist-button";
 import { useT } from "@/lib/i18n";
 import { WatchTradeButton } from "@/components/watch-trade-button";
 import {
@@ -898,7 +899,7 @@ function FundDetail({ preset }: { preset: FundPreset }) {
                   <th className="px-4 py-3 font-semibold text-right">Value</th>
                   <th className="px-4 py-3 font-semibold text-right">% of portfolio</th>
                   <th className="px-4 py-3 font-semibold">Put/Call</th>
-                  <th className="px-4 py-3 font-semibold">Look up</th>
+                  <th className="px-4 py-3 font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -964,16 +965,19 @@ function HoldingRow({ rank, h }: { rank: number; h: FundHolding }) {
         )}
       </td>
       <td className="px-4 py-3">
-        <a
-          href={`https://finance.yahoo.com/lookup?s=${searchQuery}`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-muted-foreground hover:text-primary inline-flex items-center gap-1 text-xs"
-          title="Look up ticker on Yahoo Finance"
-        >
-          <Search className="h-3 w-3" />
-          find
-        </a>
+        <div className="inline-flex items-center gap-2">
+          <a
+            href={`https://finance.yahoo.com/lookup?s=${searchQuery}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground hover:text-primary inline-flex items-center gap-1 text-xs"
+            title="Look up ticker on Yahoo Finance"
+          >
+            <Search className="h-3 w-3" />
+            find
+          </a>
+          <AddIssuerToWatchlistButton issuerName={h.issuer} />
+        </div>
       </td>
     </tr>
   );

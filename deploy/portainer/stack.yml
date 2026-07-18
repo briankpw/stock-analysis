@@ -239,6 +239,20 @@ services:
       - ${DATA_MOUNT:-key_stock_data}:/app/data
     networks:
       - app_net
+    healthcheck:
+      # The image ships with a baked-in HEALTHCHECK that pings /api/health
+      # on $PORT (see Dockerfile) — appropriate for the UI but wrong for
+      # this background bot, which runs `node dist/worker.js` and never
+      # opens a socket. Without this override the inherited check always
+      # fails and Docker (and Portainer) mark the container `unhealthy`
+      # after ~90 s even though the bot loop is running fine. Replace it
+      # with a process-liveness probe: as long as node is alive, we're
+      # healthy. `pidof` is a BusyBox built-in on Alpine — no extra deps.
+      test: ["CMD-SHELL", "pidof node >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     deploy:
       resources:
         limits:

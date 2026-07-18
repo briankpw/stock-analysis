@@ -37,21 +37,658 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "sidebar.primaryNav":      { en: "Primary navigation",   "zh-CN": "主导航" },
   "sidebar.portfolioNav":    { en: "Portfolio presets",    "zh-CN": "投资组合预设" },
   "sidebar.toggleMenu":      { en: "Toggle menu",          "zh-CN": "切换菜单" },
+  "sidebar.preferences":     { en: "Preferences",          "zh-CN": "偏好设置" },
+  "sidebar.togglePreferences": { en: "Toggle preferences", "zh-CN": "切换偏好设置" },
+  "sidebar.collapseSidebar": { en: "Collapse sidebar",     "zh-CN": "折叠侧边栏" },
+  "sidebar.expandSidebar":   { en: "Expand sidebar",       "zh-CN": "展开侧边栏" },
 
   // -------- Nav labels --------
   "nav.overview":    { en: "Overview",              "zh-CN": "概览" },
   "nav.ratios":      { en: "Ratios",                "zh-CN": "财务比率" },
-  "nav.charts":      { en: "Price & Volume",        "zh-CN": "价格与成交量" },
+  "nav.charts":      { en: "Charts & Indicators",   "zh-CN": "图表与技术指标" },
   "nav.indicators":  { en: "Technical Indicators",  "zh-CN": "技术指标" },
+  "nav.signal":      { en: "Technical Signal",     "zh-CN": "技术信号" },
   "nav.news":        { en: "News",                  "zh-CN": "新闻" },
   "nav.holders":     { en: "Holders",               "zh-CN": "持有者" },
   "nav.paper":       { en: "Paper Trading",         "zh-CN": "模拟交易" },
+  "nav.myPortfolio": { en: "My Portfolio",          "zh-CN": "我的投资组合" },
   "nav.bot":         { en: "Alert Bot",             "zh-CN": "提醒机器人" },
   "nav.raw":         { en: "Raw Data",              "zh-CN": "原始数据" },
   "nav.market":      { en: "Market Mood",           "zh-CN": "市场情绪" },
+  "nav.segments":    { en: "Segments",              "zh-CN": "板块分析" },
 
   "market.heading":     { en: "Market Mood",                                          "zh-CN": "市场情绪" },
   "market.subheading":  { en: "How the US market is feeling right now — updated every close.", "zh-CN": "美股当前的整体情绪——每次收盘后更新。" },
+
+  // -------- Segments (market-segment analysis pages) --------
+  "segments.heading":        { en: "Market Segment Analysis",
+                               "zh-CN": "市场板块分析" },
+  "segments.subheading":     { en: "Bull-vs-bear read on the themes that move the market — AI, semis, healthcare, energy, and more — plus the household names inside each bucket.",
+                               "zh-CN": "AI、半导体、医疗、能源等主要板块的多空判读，以及每个板块内的代表性公司。" },
+  "segments.loading":        { en: "Loading segments…", "zh-CN": "板块数据加载中…" },
+  "segments.errorTag":       { en: "unavailable",       "zh-CN": "不可用" },
+  "segments.price":          { en: "Price",             "zh-CN": "价格" },
+  "segments.trackedBy":      { en: "Tracked by {ticker}",  "zh-CN": "以 {ticker} 追踪" },
+  "segments.tickerCount":    { en: "{n} companies",     "zh-CN": "{n} 家公司" },
+
+  "segments.stance.bullish": { en: "Bullish", "zh-CN": "看多" },
+  "segments.stance.bearish": { en: "Bearish", "zh-CN": "看空" },
+  "segments.stance.neutral": { en: "Neutral", "zh-CN": "中性" },
+
+  // -- Stance interpretation tooltips ---------------------------------------
+  // Some indices don't have a simple "up = bullish, down = bearish" reading
+  // when viewed through an equity-portfolio lens. The stance chip's tooltip
+  // uses these strings to explain why. `.title` is the tooltip heading; the
+  // per-ticker slugs (vix / tnx / dxy / gold / crude / btc) carry the body.
+  // `.default` is the fallback when we haven't hand-written a body for a
+  // new inverted/mixed ticker yet.
+  "segments.stanceMode.inverted.title":
+    { en: "Read as equity-portfolio impact",
+      "zh-CN": "以股票组合角度解读" },
+  "segments.stanceMode.inverted.default":
+    { en: "Chip is inverted from the raw price trend — rising values here typically pressure equities, and vice versa.",
+      "zh-CN": "该标签相对于原始价格走势已经反转——此指标上行通常对股票市场构成压力，反之亦然。" },
+  "segments.stanceMode.inverted.vix":
+    { en: "VIX is the market's fear gauge. When VIX rises the chip flips to bearish because rising fear pressures stock prices, and when VIX falls the chip shows bullish (calm markets).",
+      "zh-CN": "VIX 衡量市场恐慌情绪。VIX 上行时标签显示看空——恐慌上升对股价形成压力；VIX 下行时显示看多——市场趋于平静。" },
+  "segments.stanceMode.inverted.tnx":
+    { en: "The 10-year Treasury yield is the discount rate behind every valuation model. Rising yields (a technical uptrend on ^TNX) compress equity multiples — shown as bearish. Falling yields ease valuations — shown as bullish.",
+      "zh-CN": "10 年期美债收益率是所有估值模型背后的贴现率。收益率上行（^TNX 技术性上涨）会压缩股票估值倍数——显示看空；收益率下行则支撑估值——显示看多。" },
+  "segments.stanceMode.inverted.dxy":
+    { en: "A rising US dollar is a headwind for commodities, emerging markets, and US multinationals with foreign earnings. The chip flips: an uptrend on DXY reads as bearish for a globally-exposed portfolio, a downtrend as bullish.",
+      "zh-CN": "美元走强对大宗商品、新兴市场以及海外营收占比高的美国跨国公司构成阻力。因此对全球化投资组合来说，DXY 上行显示看空，下行显示看多。" },
+
+  "segments.stanceMode.mixed.title":
+    { en: "Direction alone doesn't say buy or sell",
+      "zh-CN": "仅凭方向无法直接得出买卖" },
+  "segments.stanceMode.mixed.default":
+    { en: "Whether an uptrend here helps or hurts your portfolio depends on which sectors and factors you're exposed to. Treat the chip as a raw price signal, not a portfolio verdict.",
+      "zh-CN": "此指标上行对你的组合是利是弊，取决于你实际持仓的板块与风险敞口。请把标签当作纯价格信号，而非组合层面的买卖建议。" },
+  "segments.stanceMode.mixed.gold":
+    { en: "Gold rises on fear, inflation, and dollar weakness — it can go up while stocks also go up (dollar down, cyclical bull) or fall (risk-off flight to safety). Read gold alongside the dollar and yields, not on its own.",
+      "zh-CN": "黄金因避险、通胀预期或美元走弱而上涨，可能与股市同涨（美元走弱、周期性牛市），也可能在股市下跌时（避险资金流入）上涨。请与美元和收益率一起解读。" },
+  "segments.stanceMode.mixed.crude":
+    { en: "Rising crude helps energy stocks but hurts consumer staples, airlines, and any consumer-discretionary name with fuel or logistics exposure. The chip only says 'oil is going up' — the portfolio impact depends on your sector mix.",
+      "zh-CN": "油价上涨利好能源股，但对必需消费、航空以及依赖燃料/物流的可选消费构成压力。该标签只表示「油价在上涨」——对组合的实际影响取决于你持仓的板块结构。" },
+  "segments.stanceMode.mixed.btc":
+    { en: "Bitcoin is a risk-on barometer with its own liquidity and adoption cycles. It sometimes tracks the Nasdaq closely and sometimes decouples. Read it as its own asset, not as an equity indicator.",
+      "zh-CN": "比特币是风险偏好的晴雨表，但也有其独立的流动性与采纳周期。有时与纳斯达克同步，有时独立走出行情。请将其视为独立资产，而非股票市场的先行指标。" },
+
+  "segments.indices.title":  { en: "Broad Indices", "zh-CN": "大盘指数" },
+  "segments.indices.hint":   { en: "The macro backdrop — read this first.",
+                               "zh-CN": "宏观大环境——请先看这里。" },
+  "segments.indices.showAll": {
+    en: "Show all ({n} more)",
+    "zh-CN": "显示全部（还有 {n} 个）",
+  },
+  "segments.indices.showLess": {
+    en: "Show less",
+    "zh-CN": "收起",
+  },
+
+  "segments.grid.title":     { en: "Themes & Sectors", "zh-CN": "主题与板块" },
+  "segments.grid.hint":      { en: "Each card is tracked by an ETF proxy; click through for constituents.",
+                               "zh-CN": "每张卡片以 ETF 代理追踪；点击查看成分股。" },
+  "segments.grid.count":     { en: "{n} tracked",       "zh-CN": "{n} 个板块" },
+
+  // Sort dropdown for the Themes & Sectors grid.
+  "segments.grid.sortLabel":         { en: "Sort by",       "zh-CN": "排序方式" },
+  "segments.grid.sort.default":      { en: "Default",       "zh-CN": "默认" },
+  "segments.grid.sort.nameAsc":      { en: "Name (A → Z)",  "zh-CN": "名称（A → Z）" },
+  "segments.grid.sort.changeDesc":   { en: "Top gainers",   "zh-CN": "涨幅最大" },
+  "segments.grid.sort.changeAsc":    { en: "Top losers",    "zh-CN": "跌幅最大" },
+  "segments.grid.sort.sizeDesc":     { en: "Most companies", "zh-CN": "公司数最多" },
+  "segments.grid.sort.sizeAsc":      { en: "Fewest companies", "zh-CN": "公司数最少" },
+
+  "segments.mini.trend":     { en: "Trend", "zh-CN": "趋势" },
+  "segments.mini.rsi":       { en: "RSI",   "zh-CN": "RSI" },
+  "segments.mini.macd":      { en: "MACD",  "zh-CN": "MACD" },
+
+  // Detail page
+  "segments.detail.backToSegments": { en: "Back to segments", "zh-CN": "返回板块" },
+  "segments.detail.overviewTitle":  { en: "Segment signal",   "zh-CN": "板块信号" },
+  "segments.detail.overviewHint":   { en: "Technical read on the proxy ETF that tracks this theme.",
+                                       "zh-CN": "追踪本板块的代理 ETF 的技术面判读。" },
+  "segments.detail.trackedByFull":  { en: "Tracked by {ticker} — {name}",
+                                       "zh-CN": "由 {ticker} 追踪——{name}" },
+  "segments.detail.constituentsTitle": { en: "Companies in this segment",
+                                          "zh-CN": "本板块的公司" },
+  "segments.detail.constituentsHint":  { en: "Household-name leaders — not the full ETF holding list.",
+                                          "zh-CN": "代表性龙头公司——并非 ETF 的完整持仓表。" },
+  "segments.detail.emptyProxy":     { en: "The proxy ETF for this segment couldn't be loaded right now — try again in a minute.",
+                                       "zh-CN": "当前无法加载该板块的代理 ETF——请稍后重试。" },
+
+  "segments.tbl.ticker":     { en: "Ticker",         "zh-CN": "代码" },
+  "segments.tbl.price":      { en: "Price",          "zh-CN": "价格" },
+  "segments.tbl.change":     { en: "Change",         "zh-CN": "涨跌" },
+  "segments.tbl.trend":      { en: "Trend",          "zh-CN": "趋势" },
+  "segments.tbl.rsi":        { en: "RSI",            "zh-CN": "RSI" },
+  "segments.tbl.macd":       { en: "MACD",           "zh-CN": "MACD" },
+  "segments.tbl.stance":     { en: "Stance",         "zh-CN": "多空" },
+  "segments.tbl.openStock":  { en: "Open stock analysis for {ticker}",
+                               "zh-CN": "打开 {ticker} 的个股分析" },
+
+  // -------- My Portfolio (user CSV upload) --------
+  "myPortfolio.heading":     { en: "My Portfolio",
+                               "zh-CN": "我的投资组合" },
+  "myPortfolio.subheading":  { en: "Upload the CSV your broker/tracker exports and see every trade, watch and cost detail on-device — nothing leaves the browser.",
+                               "zh-CN": "上传券商或投资组合软件导出的 CSV，即可在本地查看每一笔交易、关注与成本明细——数据不会离开浏览器。" },
+
+  "myPortfolio.upload.title":         { en: "Import portfolio CSV",
+                                        "zh-CN": "导入投资组合 CSV" },
+  "myPortfolio.upload.subtitle":      { en: "MyStocksPortfolio-style export supported (any CSV with Symbol, Portfolio, Shares Owned, Cost Per Share, Type, Transaction Date columns).",
+                                        "zh-CN": "支持 MyStocksPortfolio 格式（任意包含 Symbol、Portfolio、Shares Owned、Cost Per Share、Type、Transaction Date 等列的 CSV）。" },
+  "myPortfolio.upload.dropHere":      { en: "Drop your CSV here",
+                                        "zh-CN": "将 CSV 拖放到此处" },
+  "myPortfolio.upload.helper":        { en: "or use the button below. Files are read in your browser and stored only on this device.",
+                                        "zh-CN": "或点击下方按钮选择文件。文件将在浏览器内解析，仅保存在本设备上。" },
+  "myPortfolio.upload.pickButton":    { en: "Choose CSV file",
+                                        "zh-CN": "选择 CSV 文件" },
+  "myPortfolio.upload.pickLabel":     { en: "Choose a CSV file",
+                                        "zh-CN": "选择 CSV 文件" },
+  "myPortfolio.upload.reading":       { en: "Reading…",
+                                        "zh-CN": "读取中…" },
+  "myPortfolio.upload.saveButton":    { en: "Save to my portfolio",
+                                        "zh-CN": "保存到我的组合" },
+  "myPortfolio.upload.mergeButton":   { en: "Merge ({n} new)",
+                                        "zh-CN": "合并（{n} 条新记录）" },
+  "myPortfolio.upload.mergeHint":     { en: "Adds only rows that aren't already stored — safe to run every export.",
+                                        "zh-CN": "只添加尚未存储的行——每次导出都可以安全运行。" },
+  "myPortfolio.upload.replaceButton": { en: "Replace all",
+                                        "zh-CN": "全部替换" },
+  "myPortfolio.upload.replaceHint":   { en: "Wipe all currently-stored rows and use this CSV as the sole source of truth.",
+                                        "zh-CN": "清除当前所有存储的行，仅以此 CSV 为准。" },
+  "myPortfolio.upload.confirmReplace":{ en: "Replace ALL currently-imported rows with this CSV? Existing rows not present in the file will be removed. This cannot be undone.",
+                                        "zh-CN": "用此 CSV 替换当前所有已导入的行吗？文件中未包含的现有行将被移除。此操作无法撤销。" },
+  "myPortfolio.upload.tooLarge":      { en: "That file is unusually large for a portfolio CSV — please pick one under 25 MB.",
+                                        "zh-CN": "该文件对于投资组合 CSV 而言过大，请选择小于 25 MB 的文件。" },
+  "myPortfolio.upload.readErrorTitle":{ en: "Couldn't read that file",
+                                        "zh-CN": "无法读取该文件" },
+  "myPortfolio.upload.previewTitle":  { en: "Preview",
+                                        "zh-CN": "预览" },
+
+  "myPortfolio.preview.total":        { en: "Rows",         "zh-CN": "行数"   },
+  "myPortfolio.preview.buys":         { en: "Buys",         "zh-CN": "买入"   },
+  "myPortfolio.preview.sells":        { en: "Sells",        "zh-CN": "卖出"   },
+  "myPortfolio.preview.watches":      { en: "Watch",        "zh-CN": "关注"   },
+  "myPortfolio.preview.portfolios":   { en: "Portfolios",   "zh-CN": "组合数" },
+  "myPortfolio.preview.symbols":      { en: "Symbols",      "zh-CN": "代码数" },
+  "myPortfolio.preview.dateRange":    { en: "Transactions between {from} and {to}.",
+                                        "zh-CN": "交易日期范围：{from} 至 {to}。" },
+  "myPortfolio.preview.portfoliosLabel": { en: "Portfolios found",
+                                           "zh-CN": "发现的组合" },
+  "myPortfolio.preview.symbolsLabel":    { en: "Symbols found",
+                                           "zh-CN": "发现的代码" },
+  "myPortfolio.preview.warningsTitle":   { en: "{n} row(s) needed a note",
+                                           "zh-CN": "{n} 行需要注意" },
+  "myPortfolio.preview.warningLine":     { en: "Line {line}: {message}",
+                                           "zh-CN": "第 {line} 行：{message}" },
+  "myPortfolio.preview.warningMore":     { en: "…and {n} more.",
+                                           "zh-CN": "…还有 {n} 条。" },
+
+  "myPortfolio.preview.alreadyStored":  { en: "Already stored",
+                                           "zh-CN": "已存储" },
+  "myPortfolio.preview.inFile":         { en: "In this file",
+                                           "zh-CN": "本次文件" },
+  "myPortfolio.preview.newRows":        { en: "New rows",
+                                           "zh-CN": "新增" },
+  "myPortfolio.preview.duplicateRows":  { en: "Already imported",
+                                           "zh-CN": "已导入" },
+  "myPortfolio.preview.upToDate":       { en: "Every row in this file is already in your portfolio — nothing new to add. Use \"Replace all\" only if you want to overwrite existing rows.",
+                                           "zh-CN": "此文件中的每一行都已存在于您的组合中——无新记录可添加。仅当您希望覆盖现有行时才使用“全部替换”。" },
+
+  "myPortfolio.imported.at":   { en: "Imported {when}", "zh-CN": "导入时间 {when}" },
+  "myPortfolio.imported.rows": { en: "{n} rows",        "zh-CN": "{n} 行"        },
+  "myPortfolio.imported.merged":     { en: "+{added} new / {skipped} duplicates skipped",
+                                        "zh-CN": "新增 +{added} / 跳过重复 {skipped}" },
+  "myPortfolio.imported.mergeHint":  { en: "Last import merged only new rows into the existing store.",
+                                        "zh-CN": "上次导入仅将新行合并到现有数据中。" },
+  "myPortfolio.imported.replaced":   { en: "Replaced all",
+                                        "zh-CN": "已全部替换" },
+  "myPortfolio.imported.replaceHint":{ en: "Last import overwrote all previously-stored rows.",
+                                        "zh-CN": "上次导入已覆盖之前存储的全部行。" },
+  "myPortfolio.clear":         { en: "Clear",           "zh-CN": "清除"          },
+  "myPortfolio.confirmClear":  { en: "Remove all imported portfolio rows from this device? You can re-upload the CSV any time.",
+                                 "zh-CN": "从本设备移除全部导入的组合数据？您可随时重新上传 CSV。" },
+
+  "myPortfolio.filter.searchLabel":       { en: "Search by symbol or company name",
+                                            "zh-CN": "按代码或公司名称搜索" },
+  "myPortfolio.filter.searchPlaceholder": { en: "Search symbol or name…",
+                                            "zh-CN": "搜索代码或名称…" },
+  "myPortfolio.filter.portfolio":     { en: "Portfolio",     "zh-CN": "组合"     },
+  "myPortfolio.filter.allPortfolios": { en: "All portfolios", "zh-CN": "全部组合" },
+  "myPortfolio.filter.type":          { en: "Type",          "zh-CN": "类型"     },
+  "myPortfolio.filter.typeAll":       { en: "All",           "zh-CN": "全部"     },
+  "myPortfolio.filter.typeBuy":       { en: "Buys",          "zh-CN": "买入"     },
+  "myPortfolio.filter.typeSell":      { en: "Sells",         "zh-CN": "卖出"     },
+  "myPortfolio.filter.typeWatch":     { en: "Watch entries", "zh-CN": "关注条目" },
+  "myPortfolio.filter.sort":          { en: "Sort",          "zh-CN": "排序"     },
+  "myPortfolio.filter.sortNewest":    { en: "Newest first",  "zh-CN": "最新优先" },
+  "myPortfolio.filter.sortOldest":    { en: "Oldest first",  "zh-CN": "最早优先" },
+  "myPortfolio.filter.sortCsv":       { en: "Original CSV order",
+                                        "zh-CN": "按 CSV 原始顺序"  },
+  "myPortfolio.filter.reset":         { en: "Reset filters", "zh-CN": "重置筛选" },
+
+  "myPortfolio.table.showing":     { en: "Showing {shown} of {total} rows",
+                                      "zh-CN": "显示 {shown} / {total} 行" },
+  "myPortfolio.table.emptyStore":  { en: "No portfolio imported yet.",
+                                      "zh-CN": "尚未导入投资组合。" },
+  "myPortfolio.table.emptyFilter": { en: "No rows match the current filters.",
+                                      "zh-CN": "当前筛选条件下无匹配的行。" },
+  "myPortfolio.table.buy":         { en: "Buy",   "zh-CN": "买入" },
+  "myPortfolio.table.sell":        { en: "Sell",  "zh-CN": "卖出" },
+  "myPortfolio.table.watch":       { en: "Watch", "zh-CN": "关注" },
+  "myPortfolio.table.watchTooltip":{ en: "Portfolio-header row — the symbol is tracked but no trade is attached.",
+                                      "zh-CN": "组合表头行——该代码被追踪但没有交易记录。" },
+
+  "myPortfolio.col.symbol":     { en: "Symbol / Name", "zh-CN": "代码 / 名称" },
+  "myPortfolio.col.portfolio":  { en: "Portfolio",     "zh-CN": "组合"        },
+  "myPortfolio.col.exchange":   { en: "Exchange",      "zh-CN": "交易所"      },
+  "myPortfolio.col.type":       { en: "Type",          "zh-CN": "类型"        },
+  "myPortfolio.col.shares":     { en: "Shares",        "zh-CN": "股数"        },
+  "myPortfolio.col.cost":       { en: "Cost / share",  "zh-CN": "每股成本"    },
+  "myPortfolio.col.gross":      { en: "Gross value",   "zh-CN": "总金额"      },
+  "myPortfolio.col.commission": { en: "Commission",    "zh-CN": "佣金"        },
+  "myPortfolio.col.date":       { en: "Date / time",   "zh-CN": "日期 / 时间" },
+  "myPortfolio.col.fx":         { en: "FX rate",       "zh-CN": "汇率"        },
+  "myPortfolio.col.accounting": { en: "Accounting",    "zh-CN": "记账方法"    },
+
+  // -- Tabs (Positions / Transactions) --------------------------------------
+  "myPortfolio.tabs.label":         { en: "Portfolio views",
+                                       "zh-CN": "组合视图" },
+  "myPortfolio.tabs.positions":     { en: "Positions",
+                                       "zh-CN": "持仓" },
+  "myPortfolio.tabs.transactions":  { en: "Transactions",
+                                       "zh-CN": "交易明细" },
+  "myPortfolio.tabs.risks":         { en: "Risks",
+                                       "zh-CN": "风险" },
+  "myPortfolio.tabs.risksBadged":   { en: "Risks — {n} urgent",
+                                       "zh-CN": "风险 — {n} 项紧急" },
+
+  // -- Positions table (grouped-by-stock rollup) ----------------------------
+  "myPortfolio.positions.title":       { en: "Positions",
+                                          "zh-CN": "持仓明细" },
+  "myPortfolio.positions.subtitle":    { en: "Grouped by stock. Live prices auto-refresh every 60 seconds while this tab is open.",
+                                          "zh-CN": "按股票分组。此标签页打开时价格每 60 秒自动刷新。" },
+  "myPortfolio.positions.updatedAt":   { en: "Updated {when}",
+                                          "zh-CN": "更新于 {when}" },
+  "myPortfolio.positions.rateLimited": { en: "Market data provider is throttling — some quotes may be stale. Existing figures are kept until the next refresh.",
+                                          "zh-CN": "行情源目前限流，部分价格可能过期，下次刷新前保留现有数据。" },
+  "myPortfolio.positions.statusLabel": { en: "Status filter",
+                                          "zh-CN": "状态筛选" },
+  "myPortfolio.positions.statusOpen":  { en: "Open positions",
+                                          "zh-CN": "持仓中" },
+  "myPortfolio.positions.statusClosed":{ en: "Closed only",
+                                          "zh-CN": "已平仓" },
+  "myPortfolio.positions.statusAll":   { en: "All positions",
+                                          "zh-CN": "全部持仓" },
+  "myPortfolio.positions.sortValue":   { en: "Sort by market value",
+                                          "zh-CN": "按市值排序" },
+  "myPortfolio.positions.sortPnl":     { en: "Sort by total P&L",
+                                          "zh-CN": "按总盈亏排序" },
+  "myPortfolio.positions.sortDay":     { en: "Sort by today's change",
+                                          "zh-CN": "按当日涨跌排序" },
+  "myPortfolio.positions.sortAlpha":   { en: "Sort A → Z",
+                                          "zh-CN": "按代码 A → Z 排序" },
+  "myPortfolio.positions.footnote":    { en: "Average cost uses the running weighted average; each sell realizes P&L against the current average. All figures are in each stock's own currency — no FX conversion.",
+                                          "zh-CN": "平均成本使用加权移动平均；每次卖出按当时的平均成本计算已实现盈亏。所有数字均以各股票自身币种展示，未做汇率换算。" },
+
+  // -- Winners & losers panel -----------------------------------------------
+  "myPortfolio.winners.title": {
+    en: "Winners & losers",
+    "zh-CN": "涨跌榜",
+  },
+  "myPortfolio.winners.subtitle": {
+    en: "Top {n} best and worst performing open positions by unrealized P&L. Closed positions are excluded — their P&L is history.",
+    "zh-CN": "按未实现盈亏排出的前 {n} 名表现最好和最差的持仓。已平仓的头寸不计入 —— 其盈亏已成过去。",
+  },
+  "myPortfolio.winners.winners": {
+    en: "Top winners",
+    "zh-CN": "涨幅榜",
+  },
+  "myPortfolio.winners.losers": {
+    en: "Top losers",
+    "zh-CN": "跌幅榜",
+  },
+  "myPortfolio.winners.byPct": {
+    en: "By %",
+    "zh-CN": "按 %",
+  },
+  "myPortfolio.winners.byAbs": {
+    en: "By $",
+    "zh-CN": "按 $",
+  },
+  "myPortfolio.winners.sortByLabel": {
+    en: "Ranking metric",
+    "zh-CN": "排序指标",
+  },
+  "myPortfolio.winners.emptyWinners": {
+    en: "No positions in the green yet.",
+    "zh-CN": "暂时没有盈利的持仓。",
+  },
+  "myPortfolio.winners.emptyLosers": {
+    en: "No positions in the red — nice.",
+    "zh-CN": "没有亏损的持仓 —— 不错。",
+  },
+
+  // -- Position row cells ---------------------------------------------------
+  "myPortfolio.pos.closed":       { en: "Closed",     "zh-CN": "已平仓" },
+  "myPortfolio.pos.watch":        { en: "Watch",      "zh-CN": "关注" },
+  "myPortfolio.pos.holding":      { en: "Shares held","zh-CN": "持仓股数" },
+  "myPortfolio.pos.avgCost":      { en: "Avg cost {v}",
+                                     "zh-CN": "均价 {v}" },
+  "myPortfolio.pos.priceToday":   { en: "Price · today",
+                                     "zh-CN": "价格 · 今日" },
+  "myPortfolio.pos.marketValue":  { en: "Market value",
+                                     "zh-CN": "市值" },
+  "myPortfolio.pos.pnl":          { en: "Realized · Total",
+                                     "zh-CN": "已实现 · 总盈亏" },
+  "myPortfolio.pos.realizedTag":  { en: "realized",   "zh-CN": "已实现" },
+  "myPortfolio.pos.totalTag":     { en: "Total {v}",  "zh-CN": "总计 {v}" },
+  "myPortfolio.pos.tradeSummary": { en: "{buys} buys · {sells} sells",
+                                     "zh-CN": "{buys} 次买入 · {sells} 次卖出" },
+  "myPortfolio.pos.viewInsights": { en: "View technical insights for this ticker",
+                                     "zh-CN": "查看该代码的技术分析" },
+
+  // -- Drilldown (expanded row) ---------------------------------------------
+  "myPortfolio.drill.bought":         { en: "Bought",
+                                          "zh-CN": "累计买入" },
+  "myPortfolio.drill.sold":           { en: "Sold",
+                                          "zh-CN": "累计卖出" },
+  "myPortfolio.drill.netHeld":        { en: "Currently held",
+                                          "zh-CN": "当前持仓" },
+  "myPortfolio.drill.totalInvested":  { en: "Cash out (buys)",
+                                          "zh-CN": "累计买入金额" },
+  "myPortfolio.drill.totalProceeds":  { en: "Cash in (sells)",
+                                          "zh-CN": "累计卖出收入" },
+  "myPortfolio.drill.commissions":    { en: "Commissions",
+                                          "zh-CN": "累计佣金" },
+  "myPortfolio.drill.buyCount":       { en: "{n} buy trades",
+                                          "zh-CN": "{n} 次买入" },
+  "myPortfolio.drill.sellCount":      { en: "{n} sell trades",
+                                          "zh-CN": "{n} 次卖出" },
+  "myPortfolio.drill.flat":           { en: "Position is flat",
+                                          "zh-CN": "已平仓" },
+  "myPortfolio.drill.dateRange":      { en: "{from} → {to}",
+                                          "zh-CN": "{from} → {to}" },
+  "myPortfolio.drill.noTrades":       { en: "No trades recorded for this position.",
+                                          "zh-CN": "该持仓没有交易记录。" },
+  "myPortfolio.drill.timelineTitle":  { en: "Trade timeline (newest first)",
+                                          "zh-CN": "交易时间线（最新在前）" },
+  "myPortfolio.drill.openInAnalysis": { en: "Open {symbol} in analysis",
+                                          "zh-CN": "在分析页打开 {symbol}" },
+  "myPortfolio.drill.timelineFootnote": { en: "Each row shows the running position AFTER that trade. Cash flow: negative = money out (buy), positive = money in (sell). Realized P&L on a sell = (sell price − running average cost) × shares sold − commission.",
+                                          "zh-CN": "每一行显示该笔交易之后的持仓状态。现金流：负数 = 支出（买入），正数 = 收入（卖出）。卖出的已实现盈亏 =（卖出价 − 当前平均成本）× 卖出股数 − 佣金。" },
+
+  // Drilldown column labels
+  "myPortfolio.drill.col.date":         { en: "Date",           "zh-CN": "日期"       },
+  "myPortfolio.drill.col.type":         { en: "Type",           "zh-CN": "类型"       },
+  "myPortfolio.drill.col.shares":       { en: "Shares",         "zh-CN": "股数"       },
+  "myPortfolio.drill.col.price":        { en: "Price",          "zh-CN": "价格"       },
+  "myPortfolio.drill.col.commission":   { en: "Commission",     "zh-CN": "佣金"       },
+  "myPortfolio.drill.col.cashFlow":     { en: "Cash flow",      "zh-CN": "现金流"     },
+  "myPortfolio.drill.col.afterShares":  { en: "After · shares", "zh-CN": "之后 · 股数" },
+  "myPortfolio.drill.col.afterAvg":     { en: "After · avg",    "zh-CN": "之后 · 均价" },
+  "myPortfolio.drill.col.realized":     { en: "Realized P&L",   "zh-CN": "已实现盈亏" },
+  "myPortfolio.drill.col.afterHint":    { en: "Running position after this trade was applied.",
+                                          "zh-CN": "该交易执行之后的持仓状态。" },
+
+  // -- Grand totals bar (per currency) --------------------------------------
+  "myPortfolio.summary.positionsSummary": { en: "{open} open · {closed} closed",
+                                             "zh-CN": "{open} 持仓 · {closed} 已平仓" },
+  "myPortfolio.summary.marketValue":      { en: "Market value",
+                                             "zh-CN": "市值" },
+  "myPortfolio.summary.investedSub":      { en: "Invested {v}",
+                                             "zh-CN": "投入 {v}" },
+  "myPortfolio.summary.dayChange":        { en: "Today's change",
+                                             "zh-CN": "今日盈亏" },
+  "myPortfolio.summary.unrealized":       { en: "Unrealized P&L",
+                                             "zh-CN": "未实现盈亏" },
+  "myPortfolio.summary.realized":         { en: "Realized P&L",
+                                             "zh-CN": "已实现盈亏" },
+  "myPortfolio.summary.totalPnl":         { en: "Total P&L",
+                                             "zh-CN": "总盈亏" },
+  "myPortfolio.summary.commissions":      { en: "Commissions",
+                                             "zh-CN": "佣金合计" },
+  "myPortfolio.summary.commissionsSub":   { en: "Fees paid to date",
+                                             "zh-CN": "累计已付费用" },
+
+  // -------- Portfolio delisting / bankruptcy risk tab --------------------
+  // Tab body + notification switch + per-signal detail rows. The
+  // signal labels intentionally mirror the server-side notifier
+  // labels in `lib/bot/notifier.ts` so users see consistent wording
+  // between the app and their Telegram / push channels.
+  "portfolioRisk.empty.noHoldings": {
+    en: "Import a portfolio to see risk analysis for your holdings.",
+    "zh-CN": "导入组合后即可查看持仓的风险分析。",
+  },
+  "portfolioRisk.loading": {
+    en: "Analysing {n} holding(s) for delisting / bankruptcy risk…",
+    "zh-CN": "正在分析 {n} 只持仓的退市 / 破产风险…",
+  },
+  "portfolioRisk.error": {
+    en: "Couldn't run the risk check",
+    "zh-CN": "无法完成风险分析",
+  },
+  "portfolioRisk.allClear.title": {
+    en: "No urgent risks detected",
+    "zh-CN": "未发现紧急风险",
+  },
+  "portfolioRisk.allClear.body": {
+    en: "We checked all {n} of your holdings against news, price behaviour, and listing rules. No delisting or bankruptcy triggers fired.",
+    "zh-CN": "已就 {n} 只持仓比对新闻、价格与上市规则，未触发退市或破产信号。",
+  },
+  "portfolioRisk.severity.critical": { en: "Critical", "zh-CN": "紧急" },
+  "portfolioRisk.severity.high":     { en: "High",     "zh-CN": "高危" },
+  "portfolioRisk.severity.medium":   { en: "Monitor",  "zh-CN": "关注" },
+
+  // Section headers
+  "portfolioRisk.section.needAction": {
+    en: "Need action",
+    "zh-CN": "需要采取行动",
+  },
+  "portfolioRisk.section.needAction.hint": {
+    en: "These holdings show signals that historically precede a delisting or bankruptcy — review each one and decide whether to hold, hedge, or exit.",
+    "zh-CN": "这些持仓出现了历史上常在退市或破产前出现的信号——请逐只判断继续持有、对冲还是卖出。",
+  },
+  "portfolioRisk.section.monitor": {
+    en: "Monitor",
+    "zh-CN": "关注中",
+  },
+  "portfolioRisk.section.monitor.hint": {
+    en: "{n} name(s) worth watching — moderate drawdown or sub-$1 close, but no urgent trigger yet.",
+    "zh-CN": "{n} 只需继续关注——回撤中等或单日跌破 $1，但暂无紧急触发。",
+  },
+
+  // Risk card body
+  "portfolioRisk.card.signalCount": {
+    en: "{n} signal(s) fired",
+    "zh-CN": "触发 {n} 项信号",
+  },
+  "portfolioRisk.card.snapshot": {
+    en: "Latest close {close} · 90-day drawdown {dd}",
+    "zh-CN": "最新收盘 {close} · 90 日回撤 {dd}",
+  },
+  "portfolioRisk.card.openSignal": { en: "Open in Signal",  "zh-CN": "打开信号页" },
+  "portfolioRisk.card.openNews":   { en: "Open in News",    "zh-CN": "打开新闻页" },
+  "portfolioRisk.card.openChart":  { en: "Open in Charts",  "zh-CN": "打开图表页" },
+
+  // Notification switch
+  "portfolioRisk.notify.title": {
+    en: "Push me when a holding turns risky",
+    "zh-CN": "持仓出现风险时推送通知",
+  },
+  "portfolioRisk.notify.enabledBody": {
+    en: "Monitoring {n} symbol(s). We'll ping you via Telegram and Web-Push whenever a new critical or high-severity signal appears.",
+    "zh-CN": "已监控 {n} 只股票。当出现新的紧急或高危信号时，将通过 Telegram 与网页推送通知你。",
+  },
+  "portfolioRisk.notify.disabledBody": {
+    en: "Enable to have the background worker watch your holdings every few minutes and send you a Telegram / push alert on delisting, bankruptcy, or price-collapse signals.",
+    "zh-CN": "启用后，后台程序将每隔几分钟检查一次持仓，并在出现退市、破产或价格崩跌等信号时通过 Telegram / 推送通知你。",
+  },
+  "portfolioRisk.notify.on":         { en: "Notifications on",  "zh-CN": "已启用通知" },
+  "portfolioRisk.notify.off":        { en: "Enable",            "zh-CN": "启用" },
+  "portfolioRisk.notify.enabled":    { en: "Enabled — you'll be notified for critical & high risks.", "zh-CN": "已启用——将在出现紧急与高危风险时通知你。" },
+  "portfolioRisk.notify.disabled":   { en: "Disabled — no more risk pushes.", "zh-CN": "已停用——不再推送风险提醒。" },
+  "portfolioRisk.notify.synced":     { en: "Watchlist synced.", "zh-CN": "监控列表已同步。" },
+  "portfolioRisk.notify.severity":   { en: "Notify me on:",     "zh-CN": "通知严重程度：" },
+  "portfolioRisk.notify.severity.high":     { en: "Critical + High", "zh-CN": "紧急 + 高危" },
+  "portfolioRisk.notify.severity.critical": { en: "Critical only",   "zh-CN": "仅紧急" },
+  "portfolioRisk.notify.severityHelp": {
+    en: "\"Critical\" covers bankruptcy filings, delisting notices, missing price data, and 80%+ collapse. \"High\" adds going-concern, SEC investigations, and sub-$1 for a month.",
+    "zh-CN": "「紧急」包括破产申请、退市通知、无价格数据以及 80%+ 崩跌。「高危」在此基础上增加持续经营警告、SEC 调查以及连续跌破 $1。",
+  },
+  "portfolioRisk.notify.report": {
+    en: "+{added} added · −{removed} removed · {total} total",
+    "zh-CN": "+{added} 新增 · −{removed} 移除 · 共 {total}",
+  },
+  "portfolioRisk.notify.lastSync": {
+    en: "Synced at {time}",
+    "zh-CN": "同步于 {time}",
+  },
+  "portfolioRisk.notify.syncError": {
+    en: "Couldn't sync",
+    "zh-CN": "同步失败",
+  },
+  "portfolioRisk.notify.currentlyRisky": {
+    en: "{n} of your holdings match the alert gate right now — you'll be pinged when a NEW signal appears.",
+    "zh-CN": "当前有 {n} 只持仓已满足通知条件——出现新信号时会向你推送。",
+  },
+
+  // Footer
+  "portfolioRisk.footer.checked": {
+    en: "Checked {n} holding(s)",
+    "zh-CN": "已检查 {n} 只持仓",
+  },
+  "portfolioRisk.footer.updated": {
+    en: "Updated {time}",
+    "zh-CN": "更新于 {time}",
+  },
+  "portfolioRisk.footer.fetchErrors": {
+    en: "{n} ticker(s) failed to analyse",
+    "zh-CN": "{n} 只未能完成分析",
+  },
+  "portfolioRisk.footer.skippedForex": {
+    en: "{n} forex position(s) skipped — delisting / bankruptcy risk doesn't apply to currency pairs:",
+    "zh-CN": "已跳过 {n} 只外汇持仓——退市 / 破产风险不适用于货币对：",
+  },
+  "portfolioRisk.footer.skippedShort": {
+    en: "{n} skipped",
+    "zh-CN": "跳过 {n} 项",
+  },
+  "portfolioRisk.signal.source":     { en: "Read source",  "zh-CN": "查看原文" },
+
+  // Per-signal labels + details. Kept short — the full explanation
+  // lives in the tab body below the label.
+  "portfolioRisk.signal.news.bankruptcy.label":    { en: "Bankruptcy filing news",                "zh-CN": "破产申请相关新闻" },
+  "portfolioRisk.signal.news.bankruptcy.detail":   { en: "Recent headline: \"{title}\". Chapter 7/11 filings usually wipe out common shareholders. Verify the article and consider exiting.", "zh-CN": "近期标题：「{title}」。第 7 章 / 第 11 章破产通常会使普通股股东权益归零，请核实新闻并考虑退出。" },
+  "portfolioRisk.signal.news.delisting.label":     { en: "Delisting notice",                      "zh-CN": "退市相关公告" },
+  "portfolioRisk.signal.news.delisting.detail":    { en: "Recent headline: \"{title}\". Once a stock delists to the OTC market, it typically loses 30–70% of remaining value overnight.", "zh-CN": "近期标题：「{title}」。股票被转至场外市场后，剩余市值通常一夜之间下跌 30%–70%。" },
+  "portfolioRisk.signal.news.goingConcern.label":  { en: "Going-concern / audit warning",         "zh-CN": "持续经营 / 审计警告" },
+  "portfolioRisk.signal.news.goingConcern.detail": { en: "Recent headline: \"{title}\". Auditors flagged doubts about the company's ability to survive the next 12 months.", "zh-CN": "近期标题：「{title}」。审计师对公司未来 12 个月的持续经营能力提出质疑。" },
+  "portfolioRisk.signal.news.sec.label":           { en: "SEC action",                            "zh-CN": "SEC（美国证监会）行动" },
+  "portfolioRisk.signal.news.sec.detail":          { en: "Recent headline: \"{title}\". Formal SEC investigations or charges often precede sharp price falls.", "zh-CN": "近期标题：「{title}」。SEC 正式调查或指控通常伴随股价大幅下跌。" },
+  "portfolioRisk.signal.news.tradingHalt.label":   { en: "Trading halted",                        "zh-CN": "交易被停牌" },
+  "portfolioRisk.signal.news.tradingHalt.detail":  { en: "Recent headline: \"{title}\". Trading halts are called when material news is pending — the reopen can gap sharply in either direction.", "zh-CN": "近期标题：「{title}」。停牌通常由重大待披露事项触发，复牌后可能出现较大跳空。" },
+  "portfolioRisk.signal.data.noBars.label":        { en: "No price data available",               "zh-CN": "无可用价格数据" },
+  "portfolioRisk.signal.data.noBars.detail":       { en: "Yahoo Finance returned zero bars for this ticker. That usually means the symbol has been delisted or renamed — verify manually.", "zh-CN": "Yahoo Finance 未返回任何 K 线，通常意味着代码已退市或被更名，请人工核实。" },
+  "portfolioRisk.signal.bars.stale.label":         { en: "Price data is stale",                   "zh-CN": "价格数据过期" },
+  "portfolioRisk.signal.bars.stale.detail":        { en: "Latest bar is {days} day(s) old ({date}). Trading may be halted or the ticker may have been delisted.", "zh-CN": "最新 K 线已 {days} 天未更新（{date}）。可能正在停牌或已退市。" },
+  "portfolioRisk.signal.price.collapse90d.label":  { en: "Price collapse (90 days)",              "zh-CN": "90 日价格崩跌" },
+  "portfolioRisk.signal.price.collapse90d.detail": { en: "Down {pct}% from the 90-day peak, now at {price}. Combined with penny-stock territory, this pattern often precedes a listing violation.", "zh-CN": "自 90 日高点下跌 {pct}%，现价 {price}。若已进入低价股区间，通常预示接下来的上市合规问题。" },
+  "portfolioRisk.signal.price.drawdown60d.label":  { en: "Severe drawdown",                       "zh-CN": "严重回撤" },
+  "portfolioRisk.signal.price.drawdown60d.detail": { en: "Down {pct}% from the 90-day peak — reassess the thesis and position size.", "zh-CN": "自 90 日高点下跌 {pct}%，请重新评估投资逻辑与仓位。" },
+  "portfolioRisk.signal.price.drawdown40d.label":  { en: "Elevated drawdown",                     "zh-CN": "回撤偏大" },
+  "portfolioRisk.signal.price.drawdown40d.detail": { en: "Down {pct}% from the 90-day peak. Not urgent, but keep monitoring.", "zh-CN": "自 90 日高点下跌 {pct}%，非紧急，但请持续关注。" },
+  "portfolioRisk.signal.price.subOneExtended.label":{ en: "Sub-$1 for extended period",           "zh-CN": "长期低于 $1" },
+  "portfolioRisk.signal.price.subOneExtended.detail":{ en: "Close was below $1 on {count} of the last {total} sessions — NYSE and NASDAQ both trigger a delisting notice at 30 consecutive trading days below $1.", "zh-CN": "近 {total} 个交易日中有 {count} 天收盘价低于 $1。NYSE 与 NASDAQ 均会在连续 30 个交易日低于 $1 时发出退市通知。" },
+  "portfolioRisk.signal.price.subOne.label":       { en: "Sub-$1 close",                          "zh-CN": "收盘价低于 $1" },
+  "portfolioRisk.signal.price.subOne.detail":      { en: "Latest close is {price}. Exchange minimum-price rules kick in if this persists for 30 sessions.", "zh-CN": "最新收盘价 {price}。若连续 30 个交易日低于 $1，将触发交易所最低价规则。" },
+  "portfolioRisk.signal.volume.collapse.label":    { en: "Volume collapse",                       "zh-CN": "成交量崩塌" },
+  "portfolioRisk.signal.volume.collapse.detail":   { en: "5-day average volume is under 20% of the 60-day average — buyers have walked, and exits at a fair price get much harder.", "zh-CN": "近 5 日平均成交量不足 60 日均量的 20%——买盘已明显撤离，按合理价格卖出将变得困难。" },
+
+  // Constituent-table pagination
+  "segments.tbl.pager.showing":  { en: "Showing {start}–{end} of {total}",
+                                     "zh-CN": "显示第 {start}–{end} 项，共 {total} 项" },
+  "segments.tbl.pager.pageSize": { en: "Rows",         "zh-CN": "每页" },
+  "segments.tbl.pager.pageOf":   { en: "{page} / {total}",
+                                     "zh-CN": "{page} / {total}" },
+  "segments.tbl.pager.prev":     { en: "Previous page", "zh-CN": "上一页" },
+  "segments.tbl.pager.next":     { en: "Next page",     "zh-CN": "下一页" },
+
+  // Heatmap (segments overview + constituent drilldown)
+  "segments.heatmap.title": { en: "Segment heatmap",
+                               "zh-CN": "板块热力图" },
+  "segments.heatmap.hint":  { en: "Box size = how you weight the theme; colour = today's move.",
+                               "zh-CN": "方块大小 = 你选择的权重指标；颜色 = 今日涨跌。" },
+  "segments.heatmap.weightLabel":     { en: "Weight by",      "zh-CN": "权重指标" },
+  "segments.heatmap.weight.companies":   { en: "Companies",   "zh-CN": "公司数" },
+  "segments.heatmap.weight.volume":      { en: "Volume ($)",  "zh-CN": "成交额" },
+  "segments.heatmap.weight.absChange":   { en: "|Change|",    "zh-CN": "|涨跌|" },
+  "segments.heatmap.weight.marketCap":   { en: "Market cap",  "zh-CN": "市值" },
+  "segments.heatmap.weight.dollarVolume":{ en: "Dollar volume","zh-CN": "美元成交额" },
+  "segments.heatmap.weight.volumeShares":{ en: "Volume (shares)","zh-CN": "成交量（股）" },
+  "segments.heatmap.weight.equal":       { en: "Equal",       "zh-CN": "等权" },
+
+  // Descriptions surfaced in the heatmap legend tooltip / italic hint —
+  // plain-English "why this tile is bigger" explanations for beginners.
+  "segments.heatmap.weight.companies.desc": {
+    en: "Bigger tile = theme covers more listed companies.",
+    "zh-CN": "方块越大 = 该板块下上市公司越多。",
+  },
+  "segments.heatmap.weight.volume.desc": {
+    en: "Bigger tile = more money changed hands today (price × shares traded).",
+    "zh-CN": "方块越大 = 今日交易金额越多（价格 × 成交量）。",
+  },
+  "segments.heatmap.weight.absChange.desc": {
+    en: "Bigger tile = larger move today, whether up or down.",
+    "zh-CN": "方块越大 = 今日涨跌幅越大（不区分方向）。",
+  },
+  "segments.heatmap.weight.marketCap.desc": {
+    en: "Bigger tile = bigger company by market value (shares × price).",
+    "zh-CN": "方块越大 = 公司市值越大（股本 × 股价）。",
+  },
+  "segments.heatmap.weight.dollarVolume.desc": {
+    en: "Bigger tile = more dollars traded today (price × shares).",
+    "zh-CN": "方块越大 = 今日成交金额越大（价格 × 成交量）。",
+  },
+  "segments.heatmap.weight.volumeShares.desc": {
+    en: "Bigger tile = more shares traded today (regardless of price).",
+    "zh-CN": "方块越大 = 今日成交股数越多（不考虑价格）。",
+  },
+  "segments.heatmap.weight.equal.desc": {
+    en: "Every tile is the same size — colour is the only signal.",
+    "zh-CN": "所有方块尺寸相同 —— 只看颜色。",
+  },
+
+  // Heatmap legend tooltip
+  "heatmap.legend.aria":          { en: "How to read this heatmap",
+                                     "zh-CN": "如何读懂这张热力图" },
+  "heatmap.legend.title":         { en: "How to read this heatmap",
+                                     "zh-CN": "如何读懂这张热力图" },
+  "heatmap.legend.sizeHeading":   { en: "Size — how big each box is",
+                                     "zh-CN": "大小 —— 方块面积代表什么" },
+  "heatmap.legend.sizeIntro": {
+    en: "The current selection is shown in bold. Switch the toggle to change what \"bigger\" means.",
+    "zh-CN": "加粗项为当前选中；切换按钮可改变「更大」的含义。",
+  },
+  "heatmap.legend.colourHeading": { en: "Colour — today's price move",
+                                     "zh-CN": "颜色 —— 今日涨跌" },
+  "heatmap.legend.colourIntro": {
+    en: "Green = up, red = down, grey = flat. Deeper tint = bigger daily % change.",
+    "zh-CN": "绿色代表上涨，红色代表下跌，灰色代表持平。颜色越深 = 今日涨跌幅越大。",
+  },
+  "heatmap.legend.colourNote": {
+    en: "Grey with no number means we don't have a live quote right now (rate-limited or unavailable), not a flat day.",
+    "zh-CN": "灰色且无数值 = 暂无实时报价（受限或数据缺失），并非当天持平。",
+  },
+
+  // Constituents view toggle (heatmap / table)
+  "segments.detail.view.label":   { en: "View",       "zh-CN": "视图" },
+  "segments.detail.view.heatmap": { en: "Heatmap",    "zh-CN": "热力图" },
+  "segments.detail.view.table":   { en: "Table",      "zh-CN": "表格" },
+
+  "common.refresh":          { en: "Refresh", "zh-CN": "刷新" },
 
   // -------- Mode / experience / theme / locale toggles --------
   "mode.stock":       { en: "Stock",     "zh-CN": "个股" },
@@ -76,6 +713,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ticker.watchlist":    { en: "Watchlist",      "zh-CN": "关注列表" },
   "ticker.addToList":    { en: "Add to watchlist", "zh-CN": "添加到关注列表" },
   "ticker.removeFromList": { en: "Remove from watchlist", "zh-CN": "从关注列表移除" },
+  "ticker.offList":      { en: "{ticker} — not in watchlist", "zh-CN": "{ticker} — 未加入关注" },
   "ticker.periodLabel":  { en: "Period",         "zh-CN": "时间范围" },
   "ticker.intervalLabel":{ en: "Interval",       "zh-CN": "间隔" },
 
@@ -314,6 +952,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "charts.overlay.bb":         { en: "Bollinger Bands (20, 2σ)", "zh-CN": "布林带 (20, 2σ)" },
   "charts.meta":               { en: "{count} bars · {period} @ {interval}", "zh-CN": "{count} 根 K 线 · {period} @ {interval}" },
   "charts.noHistory":          { en: "No price history.", "zh-CN": "没有价格历史数据。" },
+  "charts.indicatorsHeading":  { en: "Technical indicators", "zh-CN": "技术指标" },
 
   // -------- Technical Signal (Buy/Sell) card --------
   "ts.title":                  { en: "Technical Signal",         "zh-CN": "技术面信号" },
@@ -324,6 +963,34 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ts.bullishCount":           { en: "{n} bullish",              "zh-CN": "{n} 项看多" },
   "ts.bearishCount":           { en: "{n} bearish",              "zh-CN": "{n} 项看空" },
   "ts.confidence":             { en: "Confidence {pct}%",        "zh-CN": "置信度 {pct}%" },
+
+  // Conviction chip — how much to trust the headline verdict itself.
+  // Combines coverage (how many of the 9 signals fired) with agreement
+  // (how one-directional the fires were).
+  "ts.conviction.aria":        { en: "Verdict conviction — how much to trust this label",
+                                  "zh-CN": "判断可信度——该结论的可靠程度" },
+  "ts.conviction.high":        { en: "High conviction",   "zh-CN": "高可信度" },
+  "ts.conviction.medium":      { en: "Medium conviction", "zh-CN": "中等可信度" },
+  "ts.conviction.low":         { en: "Low conviction",    "zh-CN": "低可信度" },
+  "ts.conviction.high.title":  { en: "High conviction",   "zh-CN": "高可信度" },
+  "ts.conviction.medium.title":{ en: "Medium conviction", "zh-CN": "中等可信度" },
+  "ts.conviction.low.title":   { en: "Low conviction",    "zh-CN": "低可信度" },
+  "ts.conviction.high.body": {
+    en: "Many of the 9 signals fired ({cov}% coverage) and they agree strongly ({agr}% one-directional). This verdict rests on a solid, consistent read of the tape.",
+    "zh-CN": "9 项信号中大量触发（覆盖率 {cov}%）且高度一致（一致度 {agr}%）。该判断建立在稳固而一致的行情读数之上。",
+  },
+  "ts.conviction.medium.body": {
+    en: "A reasonable number of signals fired ({cov}% coverage) with moderate agreement ({agr}% one-directional). Directionally OK, but not overwhelming — expect some back-and-forth.",
+    "zh-CN": "触发的信号数量较合理（覆盖率 {cov}%），但一致度中等（{agr}% 同向）。方向可参考，但难称压倒性——短期或有反复。",
+  },
+  "ts.conviction.low.body": {
+    en: "Only a few signals fired ({cov}% coverage) or they disagreed ({agr}% one-directional). We downgrade any 'Buy'/'Sell' label to 'Hold' when conviction is low — the picture is too thin or too conflicted to act on.",
+    "zh-CN": "触发信号偏少（覆盖率 {cov}%）或分歧较大（{agr}% 同向）。低可信度时我们会将「买入/卖出」下调为「观望」——当前信号不足以采取行动。",
+  },
+  "ts.downgradeNotice": {
+    en: "Would have been {raw} on raw score — downgraded to Hold because conviction is low. Wait for more signals to align.",
+    "zh-CN": "按原始得分本为「{raw}」——因可信度不足已下调至「观望」，请等待更多信号一致。",
+  },
 
   "ts.verdict.strong_buy":     { en: "Strong Buy",   "zh-CN": "强烈买入" },
   "ts.verdict.buy":            { en: "Buy",          "zh-CN": "买入" },
@@ -343,6 +1010,98 @@ export const DICT: Readonly<Record<string, Entry>> = {
     en: "The verdict is a transparent weighted vote across the seven technical indicators listed. It considers only price and volume — not fundamentals, news, or your risk tolerance. Do your own research before trading.",
     "zh-CN": "该判断由所列七项技术指标加权投票产生，仅考虑价格与成交量，不含基本面、新闻或个人风险偏好。交易前请自行做进一步研究。",
   },
+
+  // -------- Technical Signal notifications (bell button + settings popover) --
+  "ts.alert.button.configured":  { en: "Notifications configured", "zh-CN": "已配置通知" },
+  "ts.alert.button.off":         { en: "Set up notifications",     "zh-CN": "设置通知" },
+  "ts.alert.chip.off":           { en: "Alerts off",               "zh-CN": "通知已关" },
+  "ts.alert.chip.on":            { en: "Alerts on",                "zh-CN": "通知已开" },
+  "ts.alert.chip.digest":        { en: "Daily {time} {tz}",        "zh-CN": "每日 {time} {tz}" },
+  "ts.alert.title":              { en: "Signal notifications",     "zh-CN": "信号通知" },
+  "ts.alert.subtitle":           {
+    en: "Get pinged with the current buy/sell verdict for {ticker}. Uses your Telegram + Web-Push channels.",
+    "zh-CN": "在指定时间接收 {ticker} 的当前买卖判断，通过 Telegram 与网页推送发送。",
+  },
+  "ts.alert.close":              { en: "Close",                    "zh-CN": "关闭" },
+  "ts.alert.digest.title":       { en: "Daily digest at a time",   "zh-CN": "每日定时摘要" },
+  "ts.alert.digest.enable":      { en: "Send me the verdict each day", "zh-CN": "每日发送当前判断" },
+  "ts.alert.digest.time":        { en: "Time",                     "zh-CN": "时间" },
+  "ts.alert.digest.timezone":    { en: "Timezone",                 "zh-CN": "时区" },
+  "ts.alert.digest.hint":        {
+    en: "Fires once per day at (or just after) this time. The bot polls every ~15 min, so delivery can be up to 15 min late.",
+    "zh-CN": "每天在此时间或稍后触发一次。机器人每 ~15 分钟检查一次，因此可能延迟不超过 15 分钟。",
+  },
+  "ts.alert.change.title":       { en: "When the verdict changes", "zh-CN": "判断变化时" },
+  "ts.alert.change.enable":      { en: "Also notify me on band changes", "zh-CN": "判断档位变化时也通知" },
+  "ts.alert.change.strength":    { en: "Only for these verdicts:", "zh-CN": "仅对以下档位通知：" },
+  "ts.alert.change.strength.all":         { en: "All (incl. Hold)", "zh-CN": "全部（含观望）" },
+  "ts.alert.change.strength.buy_sell":    { en: "Buy or Sell",      "zh-CN": "买入或卖出" },
+  "ts.alert.change.strength.strong_only": { en: "Strong only",      "zh-CN": "仅强烈信号" },
+  "ts.alert.actions.save":       { en: "Save",                     "zh-CN": "保存" },
+  "ts.alert.actions.update":     { en: "Update",                   "zh-CN": "更新" },
+  "ts.alert.actions.test":       { en: "Test now",                 "zh-CN": "立即测试" },
+  "ts.alert.actions.testTitle":  {
+    en: "Fire a one-off digest right now to verify your Telegram / push setup.",
+    "zh-CN": "立即发送一次摘要，验证 Telegram / 推送是否正常。",
+  },
+  "ts.alert.actions.remove":     { en: "Remove",                   "zh-CN": "移除" },
+  "ts.alert.status.saved":       { en: "Saved. The worker will pick it up on its next tick.", "zh-CN": "已保存，机器人将在下一次轮询时启用。" },
+  "ts.alert.status.removed":     { en: "Alert removed.",           "zh-CN": "通知已移除。" },
+  "ts.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
+  "ts.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
+
+  // -------- 6-Signal Resonance notifications (bell button + settings popover) --
+  // Structural mirror of the ts.alert.* block above — same shape and
+  // copy conventions so users only learn the pattern once.
+  "rs.alert.button.configured":  { en: "Resonance alerts configured", "zh-CN": "已配置共振通知" },
+  "rs.alert.button.off":         { en: "Set up resonance alerts",     "zh-CN": "设置共振通知" },
+  "rs.alert.chip.off":           { en: "Alerts off",                  "zh-CN": "通知已关" },
+  "rs.alert.chip.on":            { en: "Alerts on",                   "zh-CN": "通知已开" },
+  "rs.alert.chip.digest":        { en: "Daily {time} {tz}",           "zh-CN": "每日 {time} {tz}" },
+  "rs.alert.title":              { en: "6-Signal Resonance notifications", "zh-CN": "6 信号共振通知" },
+  "rs.alert.subtitle":           {
+    en: "Get pinged when the 6-signal resonance verdict changes for {ticker}. Uses your Telegram + Web-Push channels.",
+    "zh-CN": "当 {ticker} 的 6 信号共振结论发生变化时通知你，通过 Telegram 与网页推送发送。",
+  },
+  "rs.alert.close":              { en: "Close",                       "zh-CN": "关闭" },
+  "rs.alert.digest.title":       { en: "Daily digest at a time",      "zh-CN": "每日定时摘要" },
+  "rs.alert.digest.enable":      { en: "Send me the resonance snapshot each day", "zh-CN": "每日发送共振快照" },
+  "rs.alert.digest.time":        { en: "Time",                        "zh-CN": "时间" },
+  "rs.alert.digest.timezone":    { en: "Timezone",                    "zh-CN": "时区" },
+  "rs.alert.digest.hint":        {
+    en: "Fires once per day at (or just after) this time. The bot polls every ~15 min, so delivery can be up to 15 min late.",
+    "zh-CN": "每天在此时间或稍后触发一次。机器人每 ~15 分钟检查一次，因此可能延迟不超过 15 分钟。",
+  },
+  "rs.alert.change.title":       { en: "When the resonance changes",  "zh-CN": "共振状态变化时" },
+  "rs.alert.change.enable":      { en: "Also notify me when the verdict flips", "zh-CN": "共振结论切换时同时通知" },
+  "rs.alert.change.strength":    { en: "Only notify for:",            "zh-CN": "仅在以下情况通知：" },
+  "rs.alert.change.strength.all":          { en: "All changes",       "zh-CN": "全部变化" },
+  "rs.alert.change.strength.trigger_only": { en: "Fresh Buy / Sell",  "zh-CN": "首次触发 买 / 卖" },
+  "rs.alert.change.strength.strong_only":  { en: "Full 6/6 only",     "zh-CN": "仅 6/6 全共振" },
+  "rs.alert.change.strength.all.hint":          {
+    en: "Every verdict transition — including holding ↔ out and warm-up changes. Most noisy.",
+    "zh-CN": "任何结论变化都会通知——包括持有 ↔ 出局与预热期切换。噪音最多。",
+  },
+  "rs.alert.change.strength.trigger_only.hint": {
+    en: "Only the moment a fresh BUY or SELL alignment triggers. Recommended default.",
+    "zh-CN": "仅在首次出现 BUY 或 SELL 共振时通知。默认推荐。",
+  },
+  "rs.alert.change.strength.strong_only.hint":  {
+    en: "Only fresh BUY / SELL at full 6/6 alignment. Skips early 5-signal triggers.",
+    "zh-CN": "仅在 6 项信号全部对齐（6/6）且首次触发时通知，跳过 5 信号早期触发。",
+  },
+  "rs.alert.actions.save":       { en: "Save",                        "zh-CN": "保存" },
+  "rs.alert.actions.update":     { en: "Update",                      "zh-CN": "更新" },
+  "rs.alert.actions.test":       { en: "Test now",                    "zh-CN": "立即测试" },
+  "rs.alert.actions.testTitle":  {
+    en: "Fire a one-off resonance digest right now to verify your Telegram / push setup.",
+    "zh-CN": "立即发送一次共振摘要，验证 Telegram / 推送是否正常。",
+  },
+  "rs.alert.actions.remove":     { en: "Remove",                      "zh-CN": "移除" },
+  "rs.alert.status.saved":       { en: "Saved. The worker will pick it up on its next tick.", "zh-CN": "已保存，机器人将在下一次轮询时启用。" },
+  "rs.alert.status.removed":     { en: "Alert removed.",              "zh-CN": "通知已移除。" },
+  "rs.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
+  "rs.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
 
   // Localized detail rows (fall back to English `detailEn` if key missing).
   "ts.row.trend.up":                 { en: "Uptrend: price above SMA-50, SMA-50 above SMA-200.", "zh-CN": "上升趋势：价格位于 SMA-50 之上，SMA-50 又位于 SMA-200 之上。" },
@@ -367,6 +1126,389 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ts.row.kdj.overbought":           { en: "KDJ overbought and turning down (K above 80, falling through D).", "zh-CN": "KDJ 超买回落（K 高于 80 并向下穿 D）。" },
   "ts.row.mood.extremeFear":         { en: "Market in Extreme Fear (F&G = {value}) — often a contrarian buy signal.", "zh-CN": "市场处于极度恐惧（恐惧与贪婪 = {value}）——常被视为逆向买入信号。" },
   "ts.row.mood.extremeGreed":        { en: "Market in Extreme Greed (F&G = {value}) — pullback risk, often a contrarian sell signal.", "zh-CN": "市场处于极度贪婪（恐惧与贪婪 = {value}）——存在回调风险，常被视为逆向卖出信号。" },
+
+  // Beginner-mode "How this score is calculated" explainer inside the card.
+  "ts.explain.title":         { en: "How this score is calculated",
+                                "zh-CN": "该得分是如何计算的" },
+  "ts.explain.intro":         { en: "Each signal casts a signed vote — positive if it looks bullish, negative if it looks bearish. We add the votes up and divide by the biggest possible vote to land inside −100 to +100.",
+                                "zh-CN": "每项信号投出一张带符号的票——看多为正、看空为负。将所有票相加后除以最大可能票数，得到介于 −100 到 +100 的分值。" },
+  "ts.explain.stepsLabel":    { en: "Today's math",       "zh-CN": "今日计算" },
+  "ts.explain.stepBullish":   { en: "Bullish weight ({n} signals)",
+                                "zh-CN": "看多权重（{n} 项信号）" },
+  "ts.explain.stepBearish":   { en: "Bearish weight ({n} signals)",
+                                "zh-CN": "看空权重（{n} 项信号）" },
+  "ts.explain.stepNet":       { en: "Net (bullish − bearish)",
+                                "zh-CN": "净值（看多 − 看空）" },
+  "ts.explain.stepMax":       { en: "Max possible weight",
+                                "zh-CN": "最大可能权重" },
+  "ts.explain.stepScore":     { en: "Final score",        "zh-CN": "最终得分" },
+  "ts.explain.stepRawScore":  { en: "Raw score",          "zh-CN": "原始得分" },
+  "ts.explain.stepAgreement": { en: "Agreement factor ({pct}% aligned)",
+                                "zh-CN": "共识系数（一致度 {pct}%）" },
+  "ts.explain.stepFinalScore":{ en: "Adjusted score",     "zh-CN": "调整后得分" },
+  "ts.explain.bandsLabel":    { en: "Verdict bands",      "zh-CN": "判断区间" },
+  "ts.explain.disclaimer":    { en: "Only price & volume — no news, fundamentals, or your personal risk tolerance are factored in.",
+                                "zh-CN": "仅基于价格与成交量——不包含新闻、基本面或个人风险承受力。" },
+
+  // Beginner-mode "All signals reference" section — one row per entry
+  // in SIGNAL_CATALOG (lib/technical-signal.ts). If you add a signal
+  // there, add a matching triple (label / bullish / bearish) here.
+  "ts.catalog.title":        { en: "All signals reference",
+                                "zh-CN": "全部信号参考" },
+  "ts.catalog.intro":        { en: "The full list of signals we look at, what makes each one vote bullish or bearish, and its weight. Signals firing right now are highlighted.",
+                                "zh-CN": "以下是我们考察的全部信号、各自的看多/看空触发条件与权重。今日触发的信号会被高亮显示。" },
+  "ts.catalog.colSignal":    { en: "Signal",         "zh-CN": "信号" },
+  "ts.catalog.colWeight":    { en: "Weight",         "zh-CN": "权重" },
+  "ts.catalog.colBullish":   { en: "Votes bullish (+) when…", "zh-CN": "看多（+）触发条件" },
+  "ts.catalog.colBearish":   { en: "Votes bearish (−) when…", "zh-CN": "看空（−）触发条件" },
+  "ts.catalog.activeChip":   { en: "Firing today",   "zh-CN": "今日触发" },
+  "ts.catalog.silentChip":   { en: "Silent",         "zh-CN": "未触发" },
+  "ts.catalog.weightVal":    { en: "±{n}",           "zh-CN": "±{n}" },
+
+  "ts.def.trend.label":      { en: "SMA trend regime",
+                                "zh-CN": "SMA 趋势格局" },
+  "ts.def.trend.bullish":    { en: "50-day SMA is above the 200-day SMA and price is above the 50-day SMA.",
+                                "zh-CN": "50 日 SMA 位于 200 日 SMA 之上，且价格位于 50 日 SMA 之上。" },
+  "ts.def.trend.bearish":    { en: "50-day SMA is below the 200-day SMA and price is below the 50-day SMA.",
+                                "zh-CN": "50 日 SMA 位于 200 日 SMA 之下，且价格位于 50 日 SMA 之下。" },
+
+  "ts.def.cross.label":      { en: "Golden / death cross",
+                                "zh-CN": "黄金交叉 / 死亡交叉" },
+  "ts.def.cross.bullish":    { en: "50-day SMA crossed above the 200-day SMA within the last 20 bars (golden cross).",
+                                "zh-CN": "近 20 根 K 线内 50 日 SMA 上穿 200 日 SMA（黄金交叉）。" },
+  "ts.def.cross.bearish":    { en: "50-day SMA crossed below the 200-day SMA within the last 20 bars (death cross).",
+                                "zh-CN": "近 20 根 K 线内 50 日 SMA 下穿 200 日 SMA（死亡交叉）。" },
+
+  "ts.def.macd.label":       { en: "MACD line vs signal",
+                                "zh-CN": "MACD 线 vs 信号线" },
+  "ts.def.macd.bullish":     { en: "MACD line is above its signal line.",
+                                "zh-CN": "MACD 线位于信号线之上。" },
+  "ts.def.macd.bearish":     { en: "MACD line is below its signal line.",
+                                "zh-CN": "MACD 线位于信号线之下。" },
+
+  "ts.def.rsi.label":        { en: "RSI(14) zone",
+                                "zh-CN": "RSI(14) 区域" },
+  "ts.def.rsi.bullish":      { en: "RSI(14) is at or below 30 (oversold — mean-reversion buy).",
+                                "zh-CN": "RSI(14) ≤ 30（超卖，均值回归买点）。" },
+  "ts.def.rsi.bearish":      { en: "RSI(14) is at or above 70 (overbought — pullback risk).",
+                                "zh-CN": "RSI(14) ≥ 70（超买，存在回调风险）。" },
+
+  "ts.def.bb.label":         { en: "Bollinger band position",
+                                "zh-CN": "布林带位置" },
+  "ts.def.bb.bullish":       { en: "Price is at or below the lower band (statistically cheap).",
+                                "zh-CN": "价格触及或低于下轨（统计上偏便宜）。" },
+  "ts.def.bb.bearish":       { en: "Price is at or above the upper band (statistically expensive).",
+                                "zh-CN": "价格触及或高于上轨（统计上偏贵）。" },
+
+  "ts.def.momentum5d.label": { en: "5-day return + volume",
+                                "zh-CN": "近 5 日回报 + 成交量" },
+  "ts.def.momentum5d.bullish": { en: "5-day return is +5% or better (extra weight if volume is above average).",
+                                  "zh-CN": "近 5 日回报 ≥ +5%（若成交量高于均值权重更强）。" },
+  "ts.def.momentum5d.bearish": { en: "5-day return is −5% or worse (sellers active if volume is above average).",
+                                  "zh-CN": "近 5 日回报 ≤ −5%（若成交量高于均值表明抛压活跃）。" },
+
+  "ts.def.kdj.label":        { en: "KDJ cross / zone",
+                                "zh-CN": "KDJ 交叉 / 区域" },
+  "ts.def.kdj.bullish":      { en: "K crossed above D in the last 3 bars, OR K is below 20 and turning up (oversold reversal).",
+                                "zh-CN": "近 3 根 K 线内 K 上穿 D，或 K < 20 且向上穿 D（超卖反转）。" },
+  "ts.def.kdj.bearish":      { en: "K crossed below D in the last 3 bars, OR K is above 80 and turning down (overbought reversal).",
+                                "zh-CN": "近 3 根 K 线内 K 下穿 D，或 K > 80 且向下穿 D（超买反转）。" },
+
+  "ts.def.levels.label":     { en: "Support / resistance proximity",
+                                "zh-CN": "支撑 / 阻力位邻近度" },
+  "ts.def.levels.bullish":   { en: "Price is within 2% of the nearest support level (potential bounce).",
+                                "zh-CN": "价格距最近支撑位 2% 以内（可能反弹）。" },
+  "ts.def.levels.bearish":   { en: "Price is within 2% of the nearest resistance level (potential rejection).",
+                                "zh-CN": "价格距最近阻力位 2% 以内（可能受阻回落）。" },
+
+  "ts.def.mood.label":       { en: "Market mood (Fear & Greed)",
+                                "zh-CN": "市场情绪（恐惧与贪婪）" },
+  "ts.def.mood.bullish":     { en: "CNN Fear & Greed Index is below 25 (Extreme Fear) — contrarian buy signal.",
+                                "zh-CN": "CNN 恐惧与贪婪指数 < 25（极度恐惧）——逆向买入信号。" },
+  "ts.def.mood.bearish":     { en: "CNN Fear & Greed Index is above 75 (Extreme Greed) — contrarian sell signal.",
+                                "zh-CN": "CNN 恐惧与贪婪指数 > 75（极度贪婪）——逆向卖出信号。" },
+
+  // -------- 6-Signal Resonance strategy card --------
+  "resonance.title":            { en: "6-Signal Resonance",                   "zh-CN": "六指标共振" },
+  "resonance.subtitle":         { en: "A moomoo-style strategy: BUY fires the moment six fast-tuned momentum checks all turn bullish on the same bar. HOLDING lasts as long as the alignment holds.",
+                                  "zh-CN": "移植自 moomoo 常见公式的策略：六项快速动量检查在同一根 K 线同时看多的瞬间发出「买入」；只要六项持续对齐，即维持「持有」。" },
+  "resonance.alignedLabel":     { en: "Aligned checks",                       "zh-CN": "对齐数量" },
+  "resonance.checksLabel":      { en: "Six checks",                           "zh-CN": "六项检查" },
+  "resonance.streak":           { en: "Aligned for {n} bar(s) in a row",      "zh-CN": "已连续对齐 {n} 根 K 线" },
+  "resonance.lastBuy":          { en: "Last BUY trigger: {date}",             "zh-CN": "上次买入触发：{date}" },
+  "resonance.noBuyYet":         { en: "No BUY trigger fired in the history window.",
+                                  "zh-CN": "所显示的历史窗口内暂未触发买入。" },
+  "resonance.warmupMessage":    { en: "Warming up — need at least 40 bars for every indicator to be defined. Currently have {n}.",
+                                  "zh-CN": "预热中——所有指标就绪需要至少 40 根 K 线，当前仅有 {n} 根。" },
+
+  "resonance.verdict.buy":      { en: "BUY signal",      "zh-CN": "买入信号" },
+  "resonance.verdict.holding":  { en: "Holding",         "zh-CN": "持有中"   },
+  "resonance.verdict.sell":     { en: "SELL signal",     "zh-CN": "卖出信号" },
+  "resonance.verdict.avoid":    { en: "Avoid",           "zh-CN": "回避中"   },
+  "resonance.verdict.out":      { en: "Out",             "zh-CN": "空仓"     },
+  "resonance.verdict.warmup":   { en: "Warming up",      "zh-CN": "预热中"   },
+  "resonance.streakBear":       { en: "Bearish alignment for {n} bar(s) in a row",
+                                  "zh-CN": "已连续看空对齐 {n} 根 K 线" },
+  "resonance.lastSell":         { en: "Last SELL trigger: {date}",
+                                  "zh-CN": "上次卖出触发：{date}" },
+
+  // Recent status strip — the visual counterpart to the TDX script's
+  // STICKLINE(共振)/STICKLINE(买入信号)/DRAWICON(买入信号) output. Colours
+  // deliberately mirror the TDX defaults (yellow ↔ buy, magenta ↔ hold)
+  // so a user familiar with the moomoo chart reads the strip the same
+  // way they read the source.
+  "resonance.history.title":        { en: "Recent status",
+                                       "zh-CN": "近期状态" },
+  "resonance.history.subtitle":     { en: "Last {n} bars",
+                                       "zh-CN": "近 {n} 根 K 线" },
+  "resonance.history.empty":        { en: "No bars in the history window yet.",
+                                       "zh-CN": "历史窗口内暂无数据。" },
+  "resonance.history.legend.buy":   { en: "Buy day",
+                                       "zh-CN": "买入日" },
+  "resonance.history.legend.hold":  { en: "Hold day",
+                                       "zh-CN": "持有日" },
+  "resonance.history.legend.sell":  { en: "Sell day",
+                                       "zh-CN": "卖出日" },
+  "resonance.history.legend.avoid": { en: "Avoid day",
+                                       "zh-CN": "回避日" },
+  "resonance.history.legend.out":   { en: "Out",
+                                       "zh-CN": "空仓" },
+  "resonance.history.tooltip.state":   { en: "State",   "zh-CN": "状态" },
+  "resonance.history.tooltip.close":   { en: "Close",   "zh-CN": "收盘" },
+  "resonance.history.tooltip.bullish": { en: "Bullish", "zh-CN": "看多" },
+  "resonance.history.tooltip.bearish": { en: "Bearish", "zh-CN": "看空" },
+  "resonance.history.tooltip.desc.buy":     { en: "Fresh 6-way bullish alignment — the BUY trigger fired on this bar.",
+                                              "zh-CN": "六项检查首次全部转多——本根 K 线触发买入信号。" },
+  "resonance.history.tooltip.desc.holding": { en: "Bullish alignment carried over from the prior bar — still holding.",
+                                              "zh-CN": "多头对齐从上一根 K 线延续——仍在持有。" },
+  "resonance.history.tooltip.desc.sell":    { en: "Fresh 6-way bearish alignment — the SELL trigger fired on this bar.",
+                                              "zh-CN": "六项检查首次全部转空——本根 K 线触发卖出信号。" },
+  "resonance.history.tooltip.desc.avoid":   { en: "Bearish alignment carried over from the prior bar — stay flat / stay short.",
+                                              "zh-CN": "空头对齐从上一根 K 线延续——空仓 / 保持空头。" },
+  "resonance.history.tooltip.desc.out":     { en: "Neither side fully aligned — no consensus, no trade.",
+                                              "zh-CN": "多空皆未完全对齐——无共识，不入场。" },
+
+  "resonance.state.bull":       { en: "Bull",   "zh-CN": "多头" },
+  "resonance.state.bear":       { en: "Bear",   "zh-CN": "空头" },
+  "resonance.state.warmup":     { en: "—",       "zh-CN": "—"    },
+
+  // Per-check display names, rule summaries and one-line descriptions.
+  "resonance.check.macd.name": { en: "MACD (8, 13, 5)",       "zh-CN": "MACD (8, 13, 5)" },
+  "resonance.check.macd.desc": { en: "Fast-tuned MACD. DIFF is the short EMA minus the longer one; DEA is its 5-period EMA.",
+                                 "zh-CN": "参数加速版 MACD。DIFF = 短周期 EMA 与长周期 EMA 之差；DEA 为 DIFF 的 5 周期 EMA。" },
+  "resonance.check.macd.rule": { en: "Bullish when DIFF is above DEA (momentum crossing up).",
+                                 "zh-CN": "当 DIFF 位于 DEA 之上时看多（动量上穿）。" },
+
+  "resonance.check.kdj.name":  { en: "KDJ (8, 3, 3)",         "zh-CN": "KDJ (8, 3, 3)" },
+  "resonance.check.kdj.desc":  { en: "Stochastic oscillator with an 8-bar look-back. K is the smoothed %K line; D is a further smoothing of K.",
+                                 "zh-CN": "回溯 8 根 K 线的随机指标。K 为平滑后的 %K；D 再对 K 做平滑。" },
+  "resonance.check.kdj.rule":  { en: "Bullish when K is above D (fast stochastic crossing up).",
+                                 "zh-CN": "当 K 位于 D 之上时看多（随机指标金叉倾向）。" },
+
+  "resonance.check.rsi.name":  { en: "RSI 5 vs 13",           "zh-CN": "RSI 5 vs 13" },
+  "resonance.check.rsi.desc":  { en: "Two RSIs at different speeds. When the fast one leads the slow one, short-term momentum is stronger than medium-term momentum.",
+                                 "zh-CN": "两条不同周期的 RSI。当短周期 RSI 高于长周期 RSI 时，短线动量强于中线动量。" },
+  "resonance.check.rsi.rule":  { en: "Bullish when RSI5 is above RSI13.",
+                                 "zh-CN": "当 RSI5 位于 RSI13 之上时看多。" },
+
+  "resonance.check.lwr.name":  { en: "LWR (13, 3, 3)",        "zh-CN": "LWR (13, 3, 3)" },
+  "resonance.check.lwr.desc":  { en: "Larry Williams %R (13-bar) smoothed twice. Values sit in [-100, 0]; upward turn means price is pushing back toward the top of the range.",
+                                 "zh-CN": "对 13 周期 Williams %R 进行两次平滑。取值 [-100, 0]，向上翻转表示价格正推向区间上沿。" },
+  "resonance.check.lwr.rule":  { en: "Bullish when the once-smoothed LWR1 is above the twice-smoothed LWR2.",
+                                 "zh-CN": "当一次平滑 LWR1 位于二次平滑 LWR2 之上时看多。" },
+
+  "resonance.check.bbi.name":  { en: "BBI (3, 5, 8, 13)",     "zh-CN": "BBI (3, 5, 8, 13)" },
+  "resonance.check.bbi.desc":  { en: "Bull-Bear Index — the average of four short moving averages. Blends noise across timeframes into a single reference line.",
+                                 "zh-CN": "多空指数——四条短周期均线的平均，将不同时间尺度的噪音合成为一条参考线。" },
+  "resonance.check.bbi.rule":  { en: "Bullish when Close is above BBI.",
+                                 "zh-CN": "当收盘价位于 BBI 之上时看多。" },
+
+  "resonance.check.mtm.name":  { en: "MTM double-smoothed",   "zh-CN": "MTM 双重平滑" },
+  "resonance.check.mtm.desc":  { en: "Momentum smoothed at two speeds. MMS uses (5,3), MMM uses (13,8). Ratio of signed to absolute momentum, so both are in [-100, +100].",
+                                 "zh-CN": "对动量做两组不同速度的平滑。MMS 采用 (5,3)，MMM 采用 (13,8)。以有向动量除以绝对动量，取值 [-100, +100]。" },
+  "resonance.check.mtm.rule":  { en: "Bullish when the fast MMS is above the slow MMM.",
+                                 "zh-CN": "当快线 MMS 位于慢线 MMM 之上时看多。" },
+
+  // Info tooltip on the card header.
+  "resonance.disclaimer.label": { en: "About this strategy",   "zh-CN": "关于该策略" },
+  "resonance.disclaimer.title": { en: "Educational — not advice", "zh-CN": "仅供学习 · 非投资建议" },
+  "resonance.disclaimer.body":  { en: "Direct port of a popular moomoo / TongDaXin (通达信) formula. Six independent momentum checks must all align before a BUY fires — a coincidence filter, not a forecast. Uses only price and volume; ignores news, fundamentals, and your risk tolerance.",
+                                  "zh-CN": "移植自 moomoo / 通达信中一段常见公式：只有六项独立动量检查同时看多才触发买入——本质是一个巧合过滤器，并非预测。仅使用价格与成交量，不考虑新闻、基本面或个人风险偏好。" },
+
+  // Beginner-mode explainer block.
+  "resonance.explain.title":     { en: "How this strategy fires",
+                                   "zh-CN": "策略触发规则详解" },
+  "resonance.explain.intro":     { en: "Each of the six checks is a small piece of the puzzle. Any one of them alone will flip bullish/bearish all the time — but requiring all six to agree filters most of that noise out. The trade-off is that entries are rare and can lag by a bar or two.",
+                                   "zh-CN": "每一项检查都只是拼图的一小块。单独看，任一指标都会频繁翻转多空——但要求六项同时对齐，可以过滤掉大部分噪音，代价是入场机会较少，且可能滞后一到两根 K 线。" },
+  "resonance.explain.ruleLabel": { en: "Rule:",                 "zh-CN": "规则：" },
+  "resonance.explain.combineLabel": { en: "Combining the six checks",
+                                      "zh-CN": "六项检查的组合规则" },
+  "resonance.explain.resonanceExpr": { en: "Resonance = TJ1 AND TJ2 AND … AND TJ6",
+                                       "zh-CN": "共振 = TJ1 AND TJ2 AND … AND TJ6" },
+  "resonance.explain.resonanceRule": { en: "all six checks bullish on the same bar.",
+                                       "zh-CN": "六项检查在同一根 K 线上全部看多。" },
+  "resonance.explain.buyExpr":  { en: "Buy Signal = Resonance AND NOT REF(Resonance, 1)",
+                                  "zh-CN": "买入信号 = 共振 AND NOT REF(共振,1)" },
+  "resonance.explain.buyRule":  { en: "resonance is TRUE now and was FALSE on the previous bar (fresh alignment).",
+                                  "zh-CN": "本根 K 线达到共振，且前一根尚未共振（新鲜对齐）。" },
+  "resonance.explain.holdExpr": { en: "Hold = Resonance",
+                                  "zh-CN": "持有 = 共振" },
+  "resonance.explain.holdRule": { en: "resonance stays TRUE — no new trigger, but no reason to exit yet either.",
+                                  "zh-CN": "共振持续为真——无新触发，但也无退出理由。" },
+  "resonance.explain.disclaimer": { en: "Moomoo / TDX platforms colour red = bull and green = bear (Chinese convention). This card uses green = bull and red = bear to stay consistent with the rest of the dashboard.",
+                                    "zh-CN": "moomoo / 通达信平台的颜色约定为「红涨绿跌」；本卡片沿用仪表板其他部分的「绿涨红跌」西方约定。" },
+
+  // -------- Master verdict card (Overview page hero) --------
+  //
+  // The single consolidated "should I buy or sell?" answer that fuses
+  // the technical signal, resonance strategy, fundamentals, news
+  // sentiment, and Fear & Greed backdrop into one score + verdict.
+  // Verdict labels themselves reuse `ts.verdict.*` for consistency.
+
+  "master.title":              { en: "Master Verdict",                       "zh-CN": "综合结论" },
+  "master.subtitle":           { en: "One consolidated buy/sell baseline — weighted average of the technical signal, 6-signal resonance, fundamentals, news sentiment, and market mood.",
+                                 "zh-CN": "一个综合的买卖基线——对技术面信号、六指标共振、基本面、新闻情绪与市场情绪进行加权综合。" },
+  "master.scoreLabel":         { en: "Master Score",                         "zh-CN": "综合得分" },
+  "master.coverageLabel":      { en: "Coverage",                             "zh-CN": "覆盖度" },
+  "master.agreementLabel":     { en: "Agreement",                            "zh-CN": "一致性" },
+  "master.coverage.tooltip":   { en: "Share of the total weight that had data to vote today. Low coverage = the read is thin (e.g. missing news feed or F&G).",
+                                 "zh-CN": "今日实际参与投票的权重占总权重的比例。覆盖度低说明依据不足（如缺少新闻或 F&G 数据）。" },
+  "master.agreement.tooltip": { en: "How one-directional the voting sources are. 100% = every voter agreed on direction; 0% = perfectly split.",
+                                 "zh-CN": "各来源方向的一致程度。100% = 所有来源方向完全一致；0% = 完全对立。" },
+  "master.contribution.tooltip": { en: "Signed contribution to the master score (source score × effective weight, ×100).",
+                                    "zh-CN": "该来源对综合得分的带符号贡献（来源得分 × 有效权重 × 100）。" },
+  "master.noData":             { en: "Not enough data yet — every source is warming up or unavailable.",
+                                 "zh-CN": "数据不足——所有来源均在预热或不可用。" },
+
+  // Regime chip (bull / bear / flat).
+  "master.regime.bull":        { en: "Uptrend",   "zh-CN": "上升趋势" },
+  "master.regime.bear":        { en: "Downtrend", "zh-CN": "下降趋势" },
+  "master.regime.flat":        { en: "No trend",  "zh-CN": "无明显趋势" },
+  "master.regime.tooltip":     { en: "Trend regime derived from SMA-50 vs SMA-200 and price vs SMA-50. Used to arbitrate signals that fight the trend (e.g. sentiment discount).",
+                                 "zh-CN": "根据 SMA-50 与 SMA-200、以及价格与 SMA-50 的关系判定的趋势状态，用于抑制逆势信号（如新闻情绪减权）。" },
+
+  // Top drivers section.
+  "master.reasons.title":      { en: "Top drivers ({n})", "zh-CN": "主要驱动 ({n})" },
+  "master.reasons.empty":      { en: "No meaningful drivers today — every source is close to neutral.",
+                                 "zh-CN": "今日无显著驱动——所有来源均接近中性。" },
+
+  // Deep-link buttons.
+  "master.deep.technical":     { en: "Technical detail →",  "zh-CN": "技术面详情 →"   },
+  "master.deep.resonance":     { en: "Resonance detail →",  "zh-CN": "共振策略详情 →" },
+  "master.deep.news":          { en: "News detail →",       "zh-CN": "新闻详情 →"     },
+  "master.deep.mood":          { en: "Market mood →",       "zh-CN": "市场情绪 →"     },
+
+  // Source labels (used across the top-drivers list and the breakdown table).
+  "master.src.technical.label":    { en: "Technical",    "zh-CN": "技术面"   },
+  "master.src.resonance.label":    { en: "Resonance",    "zh-CN": "共振策略" },
+  "master.src.fundamentals.label": { en: "Fundamentals", "zh-CN": "基本面"   },
+  "master.src.sentiment.label":    { en: "News",         "zh-CN": "新闻"     },
+  "master.src.mood.label":         { en: "Market mood",  "zh-CN": "市场情绪" },
+
+  // Source rationales. These are one-line explanations of what each
+  // sub-scorer is saying today, interpolated with per-source parameters.
+  "master.src.technical.rationale":
+    { en: "Technical score {score} ({bull} bullish / {bear} bearish signals).",
+      "zh-CN": "技术面得分 {score}（{bull} 项看多 / {bear} 项看空）。" },
+  "master.src.technical.rationale.downgraded":
+    { en: "Technical raw score {rawScore} clamped to {score} (low conviction — {bull} bullish / {bear} bearish).",
+      "zh-CN": "技术面原始得分 {rawScore}，因可信度不足调整为 {score}（{bull} 项看多 / {bear} 项看空）。" },
+  "master.src.resonance.rationale.buy":
+    { en: "Fresh 6/6 bullish alignment — rare high-conviction trigger.",
+      "zh-CN": "六指标同时看多——罕见的高确定性触发。" },
+  "master.src.resonance.rationale.holding":
+    { en: "6/6 bullish alignment holding for {streak} bar(s).",
+      "zh-CN": "六指标已连续看多对齐 {streak} 根 K 线。" },
+  "master.src.resonance.rationale.sell":
+    { en: "Fresh 6/6 bearish alignment — rare high-conviction exit signal.",
+      "zh-CN": "六指标同时看空——罕见的高确定性退出信号。" },
+  "master.src.resonance.rationale.avoid":
+    { en: "6/6 bearish alignment holding for {streak} bar(s).",
+      "zh-CN": "六指标已连续看空对齐 {streak} 根 K 线。" },
+  "master.src.resonance.rationale.out":
+    { en: "Resonance {aligned}/6 bullish, {bearAligned}/6 bearish — no trigger.",
+      "zh-CN": "共振 {aligned}/6 看多，{bearAligned}/6 看空——未触发。" },
+  "master.src.fundamentals.rationale":
+    { en: "Fundamentals overall {overall}/100 ({positives} positives / {negatives} concerns).",
+      "zh-CN": "基本面综合 {overall}/100（{positives} 项利好 / {negatives} 项关注）。" },
+  "master.src.fundamentals.rationale.value":
+    { en: "Fundamentals overall {overall}/100 ({positives} positives / {negatives} concerns).",
+      "zh-CN": "基本面综合 {overall}/100（{positives} 项利好 / {negatives} 项关注）。" },
+  "master.src.sentiment.rationale":
+    { en: "No recent news to score.",
+      "zh-CN": "近期无可评分新闻。" },
+  "master.src.sentiment.rationale.bullish":
+    { en: "News is bullish (score {score}, {bull}↑ / {bear}↓ / {neutral}·).",
+      "zh-CN": "新闻偏多头（得分 {score}，{bull}↑ / {bear}↓ / {neutral}·）。" },
+  "master.src.sentiment.rationale.bearish":
+    { en: "News is bearish (score {score}, {bull}↑ / {bear}↓ / {neutral}·).",
+      "zh-CN": "新闻偏空头（得分 {score}，{bull}↑ / {bear}↓ / {neutral}·）。" },
+  "master.src.sentiment.rationale.neutral":
+    { en: "News is neutral (score {score}, {bull}↑ / {bear}↓ / {neutral}·).",
+      "zh-CN": "新闻中性（得分 {score}，{bull}↑ / {bear}↓ / {neutral}·）。" },
+  "master.src.sentiment.rationale.unavailable":
+    { en: "News feed unavailable — the sentiment source didn't respond.",
+      "zh-CN": "新闻源不可用——本次未取得情绪评分。" },
+  "master.src.sentiment.rationale.empty":
+    { en: "No recent headlines to score today.",
+      "zh-CN": "今日暂无可评分的最新新闻。" },
+  "master.src.mood.rationale":
+    { en: "Market mood is between the extremes — no contrarian vote.",
+      "zh-CN": "市场情绪处于中性区间——不产生逆向投票。" },
+  "master.src.mood.rationale.extremeFear":
+    { en: "Extreme Fear (F&G {fg}) — contrarian buy backdrop.",
+      "zh-CN": "极度恐惧（恐惧与贪婪 {fg}）——逆向买入背景。" },
+  "master.src.mood.rationale.extremeGreed":
+    { en: "Extreme Greed (F&G {fg}) — contrarian sell backdrop.",
+      "zh-CN": "极度贪婪（恐惧与贪婪 {fg}）——逆向卖出背景。" },
+  "master.src.mood.rationale.fear":
+    { en: "F&G at {fg} (fear) — not extreme enough to trigger a contrarian buy vote.",
+      "zh-CN": "恐惧与贪婪 {fg}（恐惧区）——尚未极端到触发逆向买入投票。" },
+  "master.src.mood.rationale.neutral":
+    { en: "F&G at {fg} (neutral) — market mood balanced, no contrarian vote today.",
+      "zh-CN": "恐惧与贪婪 {fg}（中性）——市场情绪平衡，今日无逆向投票。" },
+  "master.src.mood.rationale.greed":
+    { en: "F&G at {fg} (greed) — not extreme enough to trigger a contrarian sell vote.",
+      "zh-CN": "恐惧与贪婪 {fg}（贪婪区）——尚未极端到触发逆向卖出投票。" },
+  "master.src.mood.rationale.unavailable":
+    { en: "Fear & Greed Index unavailable — CNN's data source didn't respond.",
+      "zh-CN": "恐惧与贪婪指数不可用——CNN 数据源未响应。" },
+
+  // Breakdown table.
+  "master.breakdown.title":         { en: "Full source breakdown",   "zh-CN": "各来源详情" },
+  "master.breakdown.source":        { en: "Source",                  "zh-CN": "来源"       },
+  "master.breakdown.score":         { en: "Score",                   "zh-CN": "得分"       },
+  "master.breakdown.weight":        { en: "Weight",                  "zh-CN": "权重"       },
+  "master.breakdown.contribution":  { en: "Contribution",            "zh-CN": "贡献"       },
+  "master.breakdown.unavailable":   { en: "n/a",                     "zh-CN": "无数据"     },
+  "master.breakdown.noVote":        { en: "no vote",                 "zh-CN": "未投票"     },
+  "master.breakdown.regimeDiscounted": { en: "Discounted",           "zh-CN": "已减权"     },
+  "master.breakdown.regimeDiscountedTooltip":
+    { en: "This source's weight is halved on this bar because it disagrees with the trend regime (e.g. bullish news in a confirmed downtrend).",
+      "zh-CN": "该来源在本根 K 线的权重减半，因为其方向与当前趋势相反（如：确立的下降趋势中出现看多新闻）。" },
+  "master.breakdown.baseWeight":    { en: "base {pct}%",             "zh-CN": "原始 {pct}%" },
+
+  // Beginner-mode explainer.
+  "master.explain.title":        { en: "How this baseline is calculated",
+                                    "zh-CN": "综合基线的计算方式" },
+  "master.explain.intro":        { en: "We ask each of the five sources for a score between −1 and +1, then take a weighted average. Sources missing data are dropped from the average (and lower the Coverage). Sentiment gets a half-weight when it disagrees strongly with the trend regime.",
+                                    "zh-CN": "让五个来源分别给出 −1 到 +1 的分数，再按权重取平均。缺数据的来源会被剔除（导致覆盖度下降）。若新闻情绪明显与趋势相反，其权重减半。" },
+  "master.explain.stepsLabel":   { en: "Today's read",             "zh-CN": "今日读数" },
+  "master.explain.stepCoverage": { en: "Coverage",                 "zh-CN": "覆盖度"   },
+  "master.explain.stepAgreement":{ en: "Agreement",                "zh-CN": "一致性"   },
+  "master.explain.stepScore":    { en: "Master score",             "zh-CN": "综合得分" },
+  "master.explain.formula":      { en: "score = Σ(source_score × effective_weight) ÷ Σ effective_weight, scaled to −100…+100.",
+                                    "zh-CN": "得分 = Σ(来源得分 × 有效权重) ÷ Σ 有效权重，映射到 −100…+100。" },
+  "master.explain.weightsLabel": { en: "Source weights",           "zh-CN": "各来源权重" },
+  "master.explain.bandsLabel":   { en: "Verdict bands",            "zh-CN": "判断区间"  },
+  "master.explain.disclaimer":   { en: "This is an educational aggregation of what today's numbers say — not investment advice. Coverage and Agreement are as important as the headline verdict: a high-coverage, low-agreement read means the market is arguing with itself, and users should treat the verdict with correspondingly less conviction.",
+                                    "zh-CN": "本卡片仅将今日数据做透明聚合，并非投资建议。覆盖度与一致性同样重要——覆盖度高但一致性低，说明市场自相矛盾，此时应对结论保持更多怀疑。" },
+
+  // Disclaimer.
+  "master.disclaimer.label":     { en: "About the master verdict",  "zh-CN": "关于综合结论" },
+  "master.disclaimer.title":     { en: "Educational — not advice",  "zh-CN": "仅供学习 · 非投资建议" },
+  "master.disclaimer.body":      { en: "The master verdict blends the technical signal, 6-signal resonance, fundamentals, news sentiment, and market mood using fixed weights. It is a transparent summary of what today's numbers say and does not know your position size, tax situation, or investment horizon. Always do your own research.",
+                                    "zh-CN": "综合结论按固定权重将技术面信号、六指标共振、基本面、新闻情绪与市场情绪加权汇总，是对今日数据的透明总结，并不知道您的仓位、税务与投资期限。交易前请自行研究。" },
 
   // -------- Indicators page --------
   "indicators.title":               { en: "Technical Indicators", "zh-CN": "技术指标" },
@@ -484,6 +1626,163 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "paper.last":               { en: "Last",          "zh-CN": "最新" },
   "paper.noTrades":           { en: "No trades yet.", "zh-CN": "暂无交易记录。" },
   "paper.cashAfter":          { en: "Cash →",        "zh-CN": "现金 →" },
+  "paper.targets.stopLoss":   { en: "Stop-loss",     "zh-CN": "止损价" },
+  "paper.targets.takeProfit": { en: "Take-profit",   "zh-CN": "止盈价" },
+  "paper.targets.slChip":     { en: "SL",            "zh-CN": "止损" },
+  "paper.targets.tpChip":     { en: "TP",            "zh-CN": "止盈" },
+  "paper.targets.set":        { en: "Set SL / TP",   "zh-CN": "设置止损/止盈" },
+  "paper.targets.edit":       { en: "Edit SL / TP",  "zh-CN": "修改止损/止盈" },
+  "paper.targets.none":       { en: "No SL / TP set", "zh-CN": "未设置止损/止盈" },
+  "paper.targets.off":        { en: "Leave blank to disable", "zh-CN": "留空以关闭" },
+  "paper.targets.hint":       { en: "Stop-loss auto-sells the whole position when the live price ≤ the level. Take-profit auto-sells when the live price ≥ the level. Leave blank to keep either guard off.", "zh-CN": "当最新价 ≤ 止损价时，全仓自动卖出；当最新价 ≥ 止盈价时，全仓自动卖出。留空即关闭该守护。" },
+  "paper.targets.presetsLabel":   { en: "Quick presets",                     "zh-CN": "快速预设" },
+  "paper.targets.presetsHint":    { en: "Percentages are relative to your average cost ({avg}). Adjust the fields below if you want a custom level.", "zh-CN": "百分比基于你的平均成本 {avg} 计算。如需自定义可修改下方数值。" },
+  "paper.targets.preset.conservative": { en: "Conservative", "zh-CN": "保守" },
+  "paper.targets.preset.moderate":     { en: "Moderate",     "zh-CN": "均衡" },
+  "paper.targets.preset.aggressive":   { en: "Aggressive",   "zh-CN": "激进" },
+  "paper.targets.invalid":    { en: "Prices must be positive numbers.", "zh-CN": "价格必须为正数。" },
+  "paper.targets.triggeredTitle": { en: "{n} guard(s) fired since your last visit", "zh-CN": "自上次访问以来 {n} 个守护已触发" },
+  "paper.targets.triggeredSL":    { en: "stop-loss at {level} filled at {price} — position closed.", "zh-CN": "止损 {level} 已在 {price} 触发——已全仓卖出。" },
+  "paper.targets.triggeredTP":    { en: "take-profit at {level} filled at {price} — position closed.", "zh-CN": "止盈 {level} 已在 {price} 触发——已全仓卖出。" },
+
+  // -------- Smart (data-driven) SL/TP recommendation --------
+  "paper.targets.smart.title":     { en: "Smart pick",
+                                      "zh-CN": "智能建议" },
+  "paper.targets.smart.blurb": {
+    en: "Suggest stop-loss and take-profit levels based on this stock's volatility, trend, and nearby support/resistance.",
+    "zh-CN": "根据本股的波动率、趋势以及附近的支撑/阻力，为你推荐止损与止盈价位。",
+  },
+  "paper.targets.smart.suggest":   { en: "Suggest levels",     "zh-CN": "获取建议" },
+  "paper.targets.smart.refresh":   { en: "Refresh",            "zh-CN": "刷新建议" },
+  "paper.targets.smart.analyzing": { en: "Analysing recent price action…",
+                                      "zh-CN": "正在分析近期价格与走势…" },
+  "paper.targets.smart.errorTitle":{ en: "Couldn't compute a recommendation",
+                                      "zh-CN": "无法计算智能建议" },
+  "paper.targets.smart.apply":     { en: "Apply",              "zh-CN": "应用" },
+  "paper.targets.smart.forSymbol": {
+    en: "For {symbol}, anchored to your average cost {avg}.",
+    "zh-CN": "针对 {symbol}，基于你的平均成本 {avg}。",
+  },
+  "paper.targets.smart.riskReward":{ en: "Risk : Reward",      "zh-CN": "风险 : 回报" },
+  "paper.targets.smart.rrHint": {
+    en: "You risk $1 for every $X of upside.",
+    "zh-CN": "每承担 1 美元风险，可获取 X 美元潜在回报。",
+  },
+  "paper.targets.smart.whyHeading":{ en: "Why these levels",   "zh-CN": "推荐依据" },
+  "paper.targets.smart.disclaimer": {
+    en: "Guidance only — not investment advice.",
+    "zh-CN": "仅供参考，不构成投资建议。",
+  },
+  "paper.targets.smart.fallbackBadge": { en: "Estimated",      "zh-CN": "估算" },
+
+  // -------- Bracket order (SL/TP attached at buy time) --------
+  "paper.bracket.title":    { en: "Attach protective levels", "zh-CN": "同时设置保护价位" },
+  "paper.bracket.attach":   { en: "Set stop-loss / take-profit with this buy", "zh-CN": "在本次买入时同步设置止损 / 止盈" },
+  "paper.bracket.hint": {
+    en: "Levels apply to the whole resulting position and auto-sell when the live price crosses them. Leave either blank to skip that guard.",
+    "zh-CN": "止损 / 止盈将作用于合并后的整张仓位，触发后自动全仓卖出。留空即不启用该守护。",
+  },
+  "paper.bracket.invalid":  { en: "Stop-loss and take-profit must be positive numbers.", "zh-CN": "止损与止盈必须为正数。" },
+  "paper.bracket.needPrice":{ en: "Enter a price before choosing a preset.", "zh-CN": "选择预设前请先填写价格。" },
+
+  // -------- Portfolio-wide analytics --------
+  "paper.card.analytics":       { en: "Trading analytics",       "zh-CN": "交易分析" },
+  "paper.card.perSymbol":       { en: "Earnings per stock",       "zh-CN": "每只股票盈亏" },
+  "paper.stat.realizedPnl":     { en: "Realised P&L",             "zh-CN": "已实现盈亏" },
+  "paper.stat.commissions":     { en: "Commissions paid",         "zh-CN": "已付佣金" },
+  "paper.analytics.emptyHint":  { en: "Once you close a position, win rate and per-trade averages will show up here.", "zh-CN": "完成一次卖出后，胜率与平均盈亏将显示在这里。" },
+  "paper.analytics.winRate":    { en: "Win rate",                 "zh-CN": "胜率" },
+  "paper.analytics.avgWin":     { en: "Avg win",                  "zh-CN": "平均盈利" },
+  "paper.analytics.avgLoss":    { en: "Avg loss",                 "zh-CN": "平均亏损" },
+  "paper.analytics.payoff":     { en: "Payoff ratio",             "zh-CN": "盈亏比" },
+  "paper.analytics.payoffHint": { en: "Avg win ÷ |avg loss|. > 1 means winners bigger than losers.", "zh-CN": "平均盈利 ÷ |平均亏损|。大于 1 表示单笔盈利大于亏损。" },
+  "paper.analytics.winsOverSells": { en: "{wins} of {total} sells", "zh-CN": "共 {total} 次卖出中 {wins} 次盈利" },
+  "paper.analytics.bestSymbol": { en: "Best symbol",              "zh-CN": "最佳标的" },
+  "paper.analytics.worstSymbol":{ en: "Worst symbol",             "zh-CN": "最差标的" },
+  "paper.analytics.tradesTotal":{ en: "{n} trades",               "zh-CN": "共 {n} 笔交易" },
+  "paper.analytics.symbolsTraded":{ en: "{n} symbols traded",     "zh-CN": "涉及 {n} 只标的" },
+  "paper.analytics.openSymbols":{ en: "{n} still open",           "zh-CN": "{n} 只仍在持仓" },
+
+  // -------- Per-symbol earnings table --------
+  "paper.perSymbol.empty":         { en: "No completed trades yet.",   "zh-CN": "暂无已完成交易。" },
+  "paper.perSymbol.flat":          { en: "closed",                    "zh-CN": "已平仓" },
+  "paper.perSymbol.col.symbol":    { en: "Symbol",                    "zh-CN": "代码" },
+  "paper.perSymbol.col.realizedPnl":{ en: "Realised",                 "zh-CN": "已实现" },
+  "paper.perSymbol.col.roundTrips":{ en: "Round trips",               "zh-CN": "完成回合" },
+  "paper.perSymbol.col.wl":        { en: "W / L",                     "zh-CN": "胜/负" },
+  "paper.perSymbol.col.bestWorst": { en: "Best / worst",              "zh-CN": "最佳/最差" },
+  "paper.perSymbol.col.open":      { en: "Open",                      "zh-CN": "持仓" },
+  "paper.perSymbol.col.last":      { en: "Last trade",                "zh-CN": "最近交易" },
+
+  // -------- Trades table --------
+  "paper.trades.col.when":     { en: "When",     "zh-CN": "时间" },
+  "paper.trades.col.symbol":   { en: "Symbol",   "zh-CN": "代码" },
+  "paper.trades.col.side":     { en: "Side",     "zh-CN": "方向" },
+  "paper.trades.col.shares":   { en: "Shares",   "zh-CN": "股数" },
+  "paper.trades.col.price":    { en: "Price",    "zh-CN": "价格" },
+  "paper.trades.col.notional": { en: "Notional", "zh-CN": "金额" },
+  "paper.trades.col.pnl":      { en: "P&L",      "zh-CN": "盈亏" },
+  "paper.trades.col.note":     { en: "Note",     "zh-CN": "备注" },
+  "paper.trades.filter.symbol":     { en: "Filter by symbol",   "zh-CN": "按代码筛选" },
+  "paper.trades.filter.side":       { en: "Filter by side",     "zh-CN": "按方向筛选" },
+  "paper.trades.filter.pnl":        { en: "Filter by P&L",      "zh-CN": "按盈亏筛选" },
+  "paper.trades.filter.allSymbols": { en: "All symbols",        "zh-CN": "全部代码" },
+  "paper.trades.filter.allSides":   { en: "All sides",          "zh-CN": "全部方向" },
+  "paper.trades.filter.allPnl":     { en: "All P&L",            "zh-CN": "全部盈亏" },
+  "paper.trades.filter.winsOnly":   { en: "Wins only",          "zh-CN": "仅盈利" },
+  "paper.trades.filter.lossesOnly": { en: "Losses only",        "zh-CN": "仅亏损" },
+  "paper.trades.filter.clear":      { en: "Clear filters",      "zh-CN": "清除筛选" },
+  "paper.trades.filter.noMatch":    { en: "No trades match the current filters.", "zh-CN": "没有符合当前筛选条件的交易。" },
+  "paper.trades.showing":           { en: "Showing {visible} of {total}", "zh-CN": "显示 {visible} / {total}" },
+  "paper.trades.expandHint":        { en: "Click to edit stop-loss / take-profit", "zh-CN": "点击可编辑止损 / 止盈" },
+  "paper.trades.hasTargets":        { en: "Stop-loss / take-profit set on this symbol", "zh-CN": "该标的已设置止损 / 止盈" },
+  "paper.trades.expanded.open":     { en: "You hold {n} shares @ avg {avg}", "zh-CN": "持仓 {n} 股，均价 {avg}" },
+  "paper.trades.expanded.flatTitle":{ en: "You no longer hold {symbol}", "zh-CN": "已无 {symbol} 持仓" },
+  "paper.trades.expanded.flatHint": { en: "Stop-loss and take-profit only apply to open positions. Buy again to re-open a position you can protect.", "zh-CN": "止损 / 止盈仅作用于在持仓位。请重新买入以建立可保护的仓位。" },
+  "paper.trades.expanded.tradeAgain":{ en: "Trade {symbol} again", "zh-CN": "再次交易 {symbol}" },
+
+  // Reason bullets emitted by the recommender. Values (in braces) match
+  // the `Reason.values` keys in lib/target-recommender.ts.
+  "paper.targets.reason.atr": {
+    en: "This stock moves ~{atr} per day (about {atrPct}). A {mult}× ATR buffer stops you out only on a real break, not on normal noise.",
+    "zh-CN": "该股票每日平均波动约 {atr}（约 {atrPct}）。使用 {mult} 倍 ATR 作为缓冲，只有真正跌破时才会触发止损，避免被日常波动扫出。",
+  },
+  "paper.targets.reason.trend.bullish": {
+    en: "Trend reads {label} — we widen the profit target so winners have room to run.",
+    "zh-CN": "当前趋势为「{label}」——适当放宽止盈，让盈利有空间继续奔跑。",
+  },
+  "paper.targets.reason.trend.bearish": {
+    en: "Trend reads {label} — we tighten both sides, since counter-trend trades are lower-probability.",
+    "zh-CN": "当前趋势为「{label}」——逆势交易概率较低，止损与止盈都相应收紧。",
+  },
+  "paper.targets.reason.trend.sideways": {
+    en: "Trend reads {label} — a balanced 2:1 reward-to-risk is realistic in a range.",
+    "zh-CN": "当前趋势为「{label}」——震荡市中 2:1 的回报/风险比更实际。",
+  },
+  "paper.targets.reason.support": {
+    en: "Nearest support sits at {support}; stop parked just below at {price} so a break of the level really means the thesis is wrong.",
+    "zh-CN": "最近的支撑位在 {support}；将止损设在其下方 {price}，一旦跌破即视为判断错误。",
+  },
+  "paper.targets.reason.resistance": {
+    en: "Nearest resistance sits at {resistance}; profit target parked just under it at {price} — take money before the wall.",
+    "zh-CN": "最近的阻力位在 {resistance}；将止盈设在其下方 {price}，在触及阻力前锁定盈利。",
+  },
+  "paper.targets.reason.clampMinRisk": {
+    en: "Raw stop was tighter than {limit}; widened to survive spread + normal wiggles.",
+    "zh-CN": "初步计算的止损距离小于 {limit}，已放宽以覆盖点差与正常波动。",
+  },
+  "paper.targets.reason.clampMaxRisk": {
+    en: "Raw stop was wider than {limit}; capped so no single position risks too much.",
+    "zh-CN": "初步计算的止损距离大于 {limit}，已压缩以避免单一持仓风险过大。",
+  },
+  "paper.targets.reason.rewardMultiple": {
+    en: "Targeting {mult}× reward-to-risk: {risk} risk → {reward} target.",
+    "zh-CN": "按 {mult} 倍回报/风险目标：{risk} 风险 → {reward} 收益空间。",
+  },
+  "paper.targets.reason.fallback": {
+    en: "Not enough price history to be data-driven yet — falling back to a moderate 5% / 15% preset.",
+    "zh-CN": "历史数据不足，暂时无法给出数据驱动的建议，采用「均衡」预设 -5% / +15%。",
+  },
 
   // -------- Bot page --------
   "bot.title":              { en: "Alert Bot",    "zh-CN": "提醒机器人" },
@@ -512,6 +1811,112 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "bot.signal.buy":         { en: "BUY",  "zh-CN": "买入" },
   "bot.signal.sell":        { en: "SELL", "zh-CN": "卖出" },
   "bot.signal.hold":        { en: "HOLD", "zh-CN": "持有" },
+
+  // -------- Signal & Resonance alerts summary (on /bot) --------
+  "bot.signalAlerts.title": {
+    en: "Signal alerts",
+    "zh-CN": "信号通知",
+  },
+  "bot.signalAlerts.subtitle": {
+    en: "Every ticker you've enabled a Technical or Resonance alert on. Delete here to stop notifications — open the ticker to change the schedule or strength gate.",
+    "zh-CN": "所有你已启用技术信号或共振通知的代码。在此处删除可停止通知——打开代码可更改时间或过滤强度。",
+  },
+  "bot.signalAlerts.technical.title": {
+    en: "Technical signal alerts",
+    "zh-CN": "技术信号通知",
+  },
+  "bot.signalAlerts.technical.hint": {
+    en: "Fire when the Technical Signal verdict changes and/or as a daily digest.",
+    "zh-CN": "当技术信号判断变化时触发，或按每日摘要发送。",
+  },
+  "bot.signalAlerts.technical.emptyBefore": {
+    en: "None yet. Open a ticker's",
+    "zh-CN": "尚无。打开某个代码的",
+  },
+  "bot.signalAlerts.technical.emptyLink": {
+    en: "Technical Signal card",
+    "zh-CN": "技术信号卡片",
+  },
+  "bot.signalAlerts.technical.emptyAfter": {
+    en: "and click the bell icon to configure notifications.",
+    "zh-CN": "并点击铃铛图标配置通知。",
+  },
+  "bot.signalAlerts.resonance.title": {
+    en: "6-Signal Resonance alerts",
+    "zh-CN": "6 信号共振通知",
+  },
+  "bot.signalAlerts.resonance.hint": {
+    en: "Fire when a fresh 6-signal alignment triggers and/or as a daily digest.",
+    "zh-CN": "当出现新的 6 信号共振时触发，或按每日摘要发送。",
+  },
+  "bot.signalAlerts.resonance.emptyBefore": {
+    en: "None yet. Open a ticker's",
+    "zh-CN": "尚无。打开某个代码的",
+  },
+  "bot.signalAlerts.resonance.emptyLink": {
+    en: "6-Signal Resonance card",
+    "zh-CN": "6 信号共振卡片",
+  },
+  "bot.signalAlerts.resonance.emptyAfter": {
+    en: "and click the bell icon to configure notifications.",
+    "zh-CN": "并点击铃铛图标配置通知。",
+  },
+  "bot.signalAlerts.onChange": {
+    en: "On change",
+    "zh-CN": "变化时",
+  },
+  "bot.signalAlerts.digestTitle": {
+    en: "Daily digest at {time} ({tz})",
+    "zh-CN": "每日 {time} ({tz}) 发送摘要",
+  },
+  "bot.signalAlerts.lastNotified": {
+    en: "last fired {when}",
+    "zh-CN": "上次触发 {when}",
+  },
+  "bot.signalAlerts.open": {
+    en: "Open {ticker} in analysis",
+    "zh-CN": "在分析页面打开 {ticker}",
+  },
+  "bot.signalAlerts.test": {
+    en: "Send a test alert for {ticker}",
+    "zh-CN": "为 {ticker} 发送测试通知",
+  },
+  "bot.signalAlerts.remove": {
+    en: "Stop alerting on {ticker}",
+    "zh-CN": "停止 {ticker} 的通知",
+  },
+  "bot.signalAlerts.confirmRemoveTechnical": {
+    en: "Stop the Technical Signal alert on {ticker}?",
+    "zh-CN": "停止 {ticker} 的技术信号通知？",
+  },
+  "bot.signalAlerts.confirmRemoveResonance": {
+    en: "Stop the 6-Signal Resonance alert on {ticker}?",
+    "zh-CN": "停止 {ticker} 的 6 信号共振通知？",
+  },
+  "bot.signalAlerts.removed": {
+    en: "Alert removed for {ticker}.",
+    "zh-CN": "已移除 {ticker} 的通知。",
+  },
+  "bot.signalAlerts.testSent": {
+    en: "Test alert sent for {ticker}.",
+    "zh-CN": "已为 {ticker} 发送测试通知。",
+  },
+  "bot.signalAlerts.strength.all": {
+    en: "All changes",
+    "zh-CN": "所有变化",
+  },
+  "bot.signalAlerts.strength.buySell": {
+    en: "Buy / sell only",
+    "zh-CN": "仅买入/卖出",
+  },
+  "bot.signalAlerts.strength.strongOnly": {
+    en: "Strong only",
+    "zh-CN": "仅强信号",
+  },
+  "bot.signalAlerts.strength.triggerOnly": {
+    en: "Fresh triggers only",
+    "zh-CN": "仅新触发",
+  },
 
   // -------- Portfolios page --------
   "portfolios.title":            { en: "Portfolios", "zh-CN": "投资组合" },
@@ -596,6 +2001,18 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "watchlist.remove":  { en: "Remove {symbol} from watchlist", "zh-CN": "将 {symbol} 从关注列表移除" },
   "watchlist.inList":  { en: "In watchlist",                    "zh-CN": "已在关注列表" },
   "watchlist.inListTitle":{ en: "{symbol} is in your watchlist","zh-CN": "{symbol} 已在你的关注列表中" },
+  "watchlist.addIssuer": {
+    en: "Add to watchlist",
+    "zh-CN": "添加到关注列表",
+  },
+  "watchlist.tickerHint": {
+    en: "Enter the ticker for {name}. Use the Look up link if you're not sure.",
+    "zh-CN": "输入 {name} 的股票代码。如不确定，请使用旁边的“查询”链接。",
+  },
+  "watchlist.tickerRequired": {
+    en: "Please enter a ticker symbol.",
+    "zh-CN": "请输入股票代码。",
+  },
 };
 
 /**

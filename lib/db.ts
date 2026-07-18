@@ -328,6 +328,146 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
         ON push_subscriptions(created_at DESC);
     `);
   },
+  // v3: per-position stop-loss / take-profit targets on paper positions.
+  // Both nullable — an unset target means the guard is off. Evaluation
+  // happens on every paper-trading GET (see paper-trading.ts). SQLite
+  // ALTER TABLE only supports single-column adds, and we can't easily
+  // detect a partially-migrated schema, so guard each add with a
+  // pragma_table_info() check that no-ops when the column exists.
+  (db) => {
+    const cols = db
+      .prepare("PRAGMA table_info(paper_positions)")
+      .all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("stop_loss")) {
+      db.exec("ALTER TABLE paper_positions ADD COLUMN stop_loss REAL");
+    }
+    if (!names.has("take_profit")) {
+      db.exec("ALTER TABLE paper_positions ADD COLUMN take_profit REAL");
+    }
+  },
+  // v4: per-ticker technical-signal alert rules. Each row is a single
+  // alert configuration keyed by ticker (only one rule per symbol);
+  // the worker's `runTechnicalTick()` reads them on every loop.
+  //
+  //   * `daily_time` — HH:MM (24-hour) in `timezone`; null = no digest.
+  //     The engine fires a "here's today's verdict" push once per local
+  //     day when the current time has passed this instant.
+  //   * `notify_on_change` — boolean; when true the engine ALSO fires
+  //     whenever the verdict band crosses (e.g. hold → buy), subject to
+  //     `min_strength`.
+  //   * `min_strength` — 'all' | 'buy_sell' | 'strong_only'; gates the
+  //     change alerts so a user who only wants Strong Buy / Strong Sell
+  //     isn't buried under HOLD ↔ BUY chatter.
+  //   * `last_digest_local_date` — YYYY-MM-DD (in `timezone`) of the
+  //     last digest fired, so we never send two digests in the same
+  //     local day even when the worker's tick cadence is much shorter.
+  //   * `last_verdict` / `last_score` — snapshot from the previous
+  //     evaluation, used to detect band crossings for the on-change
+  //     path.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS technical_alerts (
+        ticker TEXT PRIMARY KEY,
+        daily_time TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        notify_on_change INTEGER NOT NULL DEFAULT 1,
+        min_strength TEXT NOT NULL DEFAULT 'buy_sell',
+        last_verdict TEXT,
+        last_score REAL,
+        last_digest_local_date TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_technical_alerts_created
+        ON technical_alerts(created_at DESC);
+    `);
+  },
+  // v5: per-ticker 6-Signal Resonance alerts. Parallel to
+  // `technical_alerts` — a user might want a daily digest on the
+  // Technical Signal but only *event-driven* pings on the Resonance
+  // (fresh buy/sell trigger). Keeping the tables separate rather than
+  // reusing `technical_alerts` avoids overloading the `last_verdict`
+  // column with two different verdict enums, and lets the two engines
+  // evolve their schemas independently.
+  //
+  //   * `daily_time` — HH:MM in `timezone`; null = no digest.
+  //   * `notify_on_change` — when true, fires whenever the resonance
+  //     verdict crosses (out → buy, holding → out, buy → sell, …).
+  //     Gated by `min_strength`.
+  //   * `min_strength` — 'all' | 'trigger_only' | 'strong_only':
+  //       - 'all'          → every state change fires
+  //       - 'trigger_only' → only fresh `buy` / `sell` triggers fire
+  //         (default; skips the frequent holding ↔ out transitions)
+  //       - 'strong_only'  → only fresh `buy` / `sell` AND at 6/6
+  //         alignment (i.e. real resonance, not just early signal)
+  //   * `last_verdict` — snapshot of `ResonanceVerdict` for change
+  //     detection (`buy` | `holding` | `sell` | `avoid` | `out` |
+  //     `warmup`).
+  //   * `last_aligned_count` — snapshot of the bullish 0-6 alignment
+  //     count for the digest's "was 4↑, now 6↑" delta.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS resonance_alerts (
+        ticker TEXT PRIMARY KEY,
+        daily_time TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        notify_on_change INTEGER NOT NULL DEFAULT 1,
+        min_strength TEXT NOT NULL DEFAULT 'trigger_only',
+        last_verdict TEXT,
+        last_aligned_count INTEGER,
+        last_bearish_count INTEGER,
+        last_digest_local_date TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_resonance_alerts_created
+        ON resonance_alerts(created_at DESC);
+    `);
+  },
+  // v6: portfolio delisting / bankruptcy risk watches. The user's
+  // holdings live only in the browser (see `lib/holdings-state.ts`),
+  // so the server side maintains just a tiny list of symbols the
+  // client has asked to monitor for immediate-action risks. The
+  // client bulk-replaces this list whenever the imported CSV
+  // changes; the worker walks the list every tick and pushes a
+  // notification when a fresh CRITICAL/HIGH signal appears.
+  //
+  //   * `min_severity` — 'high' or 'critical'. Gates notifications so
+  //     the "medium" bucket (single sub-$1 day, moderate drawdown)
+  //     doesn't page the user unnecessarily.
+  //   * `last_severity` / `last_fingerprint` — snapshot of the
+  //     previous evaluation. A fingerprint change is what triggers a
+  //     push; storing the severity too keeps the read side cheap for
+  //     "how many tickers are risky right now" queries.
+  //   * `last_signals_json` — JSON-encoded list of signal IDs from
+  //     the most recent evaluation. Not used for decisions, but
+  //     useful for /bot debugging + future "show me what changed"
+  //     diffs.
+  //   * `last_notified_at` — throttling: no more than one push per
+  //     ticker per hour even if the fingerprint keeps flipping (rare
+  //     but possible when news headlines get pulled/reposted).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS portfolio_risk_watches (
+        ticker TEXT PRIMARY KEY,
+        min_severity TEXT NOT NULL DEFAULT 'high',
+        last_severity TEXT,
+        last_fingerprint TEXT,
+        last_signals_json TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_risk_watches_created
+        ON portfolio_risk_watches(created_at DESC);
+    `);
+  },
 ];
 
 /** Testing / cleanup helper. */

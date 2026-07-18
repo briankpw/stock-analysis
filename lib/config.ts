@@ -126,6 +126,12 @@ export const settings = {
     dbPath: _env("BOT_DB_PATH", "./data/bot.db"),
     telegramBotToken: _envOrFile("TELEGRAM_BOT_TOKEN"),
     telegramChatId: _envOrFile("TELEGRAM_CHAT_ID"),
+    // Rolling age floor for news / trade / insider alerts (days). Events
+    // older than this are silently skipped by every engine — see
+    // `lib/bot/recency.ts` for the rationale (Yahoo re-syndication, late
+    // Form 4 amendments, lagged PTRs). Default is 2 days = today + the
+    // previous UTC day. Set to 0 to disable the gate.
+    notifyMaxAgeDays: Math.max(0, Number(_env("BOT_NOTIFY_MAX_AGE_DAYS", "2"))),
   },
   portfolios: {
     // Politician trades (STOCK Act) update daily-ish; 13F filings are quarterly.

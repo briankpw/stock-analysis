@@ -75,14 +75,56 @@ export async function POST(req: Request) {
       );
     }
 
-    const isHttps = new URL(req.url).protocol === "https:";
+    // Cookie `Secure` decision — this is trickier than it looks behind
+    // a reverse proxy.
+    //
+    // `req.url` shows the URL the *Next server* received, not what the
+    // browser typed. A typical production topology (Traefik / nginx
+    // terminates TLS, forwards `http://internal:3000` to the
+    // container) means `req.url` starts with `http:` even though the
+    // *actual* client connection is HTTPS — so the naive
+    // `req.url.startsWith("https:")` heuristic silently strips the
+    // `Secure` flag from every session cookie, letting a passive
+    // network attacker replay the cookie over HTTP.
+    //
+    // Prefer the (proxy-controlled) `x-forwarded-proto` header when
+    // present. As a belt-and-braces measure we also force `secure=true`
+    // in production regardless, because a production deployment
+    // serving HTTP is an operator misconfiguration that should surface
+    // as "cookie won't stick over plain HTTP" rather than "cookie
+    // works but leaks on the wire".
+    const forwardedProto =
+      req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase() ??
+      "";
+    const urlProto = (() => {
+      try {
+        return new URL(req.url).protocol;
+      } catch {
+        return "";
+      }
+    })();
+    const isHttps = forwardedProto === "https" || urlProto === "https:";
+    const isProd = process.env.NODE_ENV === "production";
+    if (isProd && !isHttps) {
+      // Surface the misconfiguration in operator logs (the response is
+      // still 200 so the login flow doesn't break silently — but the
+      // cookie WILL still carry `Secure`, so a plain-HTTP client will
+      // fail to persist it on the very next request, which is exactly
+      // the signal the operator needs to fix their proxy chain).
+      console.warn(
+        "[auth/login] production request over non-HTTPS transport — " +
+          "forcing Secure cookie anyway; check your reverse-proxy " +
+          "x-forwarded-proto configuration.",
+      );
+    }
+    const secure = isHttps || isProd;
     const res = NextResponse.json({ ok: true });
     res.cookies.set({
       name: "app_token",
       value: expectedSecret(),
       httpOnly: true,
       sameSite: "lax",
-      secure: isHttps,
+      secure,
       path: "/",
       maxAge: COOKIE_MAX_AGE_SECONDS,
     });

@@ -13,6 +13,11 @@ import { useT } from "@/lib/i18n";
  * Right now it hosts CNN's Fear & Greed Index; leaving the page open-ended
  * so future broadcasts (VIX standalone card, sector heatmap, etc.) can
  * drop in next to it.
+ *
+ * The segment-analysis surface has its own top-level sidebar entry
+ * (`Market → Segments`), so we don't duplicate a discoverability nudge
+ * for it here — that just added a redundant tap target on a page whose
+ * job is to focus on market-wide mood.
  */
 export default function MarketPage() {
   const t = useT();

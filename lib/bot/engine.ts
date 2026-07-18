@@ -24,6 +24,9 @@ import { notifySignalsBatch } from "./notifier";
 import { runPortfolioTick } from "../portfolio-watch/engine";
 import { runStockTick } from "../stock-watch/engine";
 import { runNewsTick } from "../news-watch/engine";
+import { runTechnicalTick } from "../technical-watch/engine";
+import { runResonanceTick } from "../resonance-watch/engine";
+import { runPortfolioRiskTick } from "../portfolio-risk/engine";
 
 export interface TickReport {
   ok: boolean;
@@ -226,6 +229,53 @@ export async function runForever(ticker: string): Promise<void> {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[worker] news-tick threw:", err);
+      }
+      // Technical-signal alerts — per-ticker rules for scheduled
+      // daily digests and on-change notifications. Independent of the
+      // strategy/insider/news ticks so a bad rule can't stall them.
+      try {
+        const tt = await runTechnicalTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] technical-tick ${tt.ranAt} — ` +
+            `alerts=${tt.alertCount} evaluated=${tt.tickersEvaluated} ` +
+            `digests=${tt.digestsSent} changes=${tt.changesSent} errors=${tt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] technical-tick threw:", err);
+      }
+      // 6-Signal Resonance alerts — parallel to the technical-signal
+      // path but driven off the resonance strategy. Isolated in its
+      // own try so a bad rule doesn't cascade into either preceding
+      // channel.
+      try {
+        const rt = await runResonanceTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] resonance-tick ${rt.ranAt} — ` +
+            `alerts=${rt.alertCount} evaluated=${rt.tickersEvaluated} ` +
+            `digests=${rt.digestsSent} changes=${rt.changesSent} errors=${rt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] resonance-tick threw:", err);
+      }
+      // Portfolio delisting / bankruptcy risk — walks every symbol
+      // the client asked to monitor and fires a push when a fresh
+      // critical/high signal emerges. Isolated so a Yahoo Finance
+      // hiccup or bad ticker doesn't stall the other channels.
+      try {
+        const prt = await runPortfolioRiskTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] portfolio-risk-tick ${prt.ranAt} — ` +
+            `watches=${prt.watchCount} evaluated=${prt.tickersEvaluated} ` +
+            `risky=${prt.riskyCount} sent=${prt.notifiesSent} errors=${prt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] portfolio-risk-tick threw:", err);
       }
     } else {
       // eslint-disable-next-line no-console

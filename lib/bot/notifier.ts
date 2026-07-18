@@ -23,6 +23,13 @@ import type { Signal } from "./strategy";
 import type { PortfolioEvent } from "../portfolio-watch/events";
 import type { IssuerInsiderTransaction } from "../stock-watch/sec-issuer";
 import type { NewsItemInput } from "../news-watch/store";
+import type { TechnicalSignal, Verdict } from "../technical-signal";
+import type { ResonanceResult, ResonanceVerdict } from "../resonance";
+import type {
+  RiskAssessment,
+  RiskSeverity,
+  RiskSignalId,
+} from "../portfolio-risk/signals";
 import {
   sendWebPushBatch,
   webPushConfigured,
@@ -452,6 +459,430 @@ export async function notifyNewsBatch(
     tag: `news:${ticker}`,
     url: "/news",
     data: { kind: "news-batch", ticker, count: items.length },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- Technical-signal alerts -----------------------------------------------
+
+/** English verdict labels used in Telegram/push copy. */
+const TS_VERDICT_LABEL: Record<Verdict, string> = {
+  strong_buy: "STRONG BUY",
+  buy: "BUY",
+  hold: "HOLD",
+  sell: "SELL",
+  strong_sell: "STRONG SELL",
+};
+
+/** Emoji per verdict — same palette the UI uses so notifications feel consistent. */
+function emojiForVerdict(verdict: Verdict): string {
+  if (verdict === "strong_buy") return "🟢";
+  if (verdict === "buy") return "🟢";
+  if (verdict === "sell") return "🔴";
+  if (verdict === "strong_sell") return "🔴";
+  return "⚪️";
+}
+
+/** Format the [-1, +1] score into the same +42 / -18 shape the card shows. */
+function formatScorePct(score: number): string {
+  const pct = Math.round(score * 100);
+  return `${pct >= 0 ? "+" : ""}${pct}`;
+}
+
+/** Compact top-3 rows for the notification body. */
+function topContribLine(signal: TechnicalSignal): string {
+  if (signal.rows.length === 0) return "no contributing signals";
+  const top = signal.rows
+    .slice()
+    .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
+    .slice(0, 3);
+  return top
+    .map((r) => `${r.weight > 0 ? "+" : ""}${r.weight}·${r.key.split(".").pop()}`)
+    .join(", ");
+}
+
+/**
+ * Daily digest — the user asked "at 09:30 send me the current verdict".
+ * `context` describes when the digest was fired (the user's local wall
+ * clock + timezone) so they can immediately verify it's the right one.
+ */
+export async function notifyTechnicalDigest(
+  ticker: string,
+  signal: TechnicalSignal,
+  context: { localDate: string; localTime: string; timezone: string },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(signal.verdict);
+  const label = TS_VERDICT_LABEL[signal.verdict];
+  const scoreStr = formatScorePct(signal.score);
+  const coveragePct = Math.round(signal.coverage * 100);
+  const agreementPct =
+    signal.agreement === null ? null : Math.round(signal.agreement * 100);
+
+  const meta =
+    `Score: *${scoreStr}* / 100\n` +
+    `Coverage: ${coveragePct}% · Agreement: ${agreementPct === null ? "—" : `${agreementPct}%`}\n` +
+    `Regime: ${signal.regime} · ${signal.bullishCount}↑ / ${signal.bearishCount}↓`;
+
+  const contribs = topContribLine(signal);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}*\n` +
+    `_daily digest ${escapeMd(context.localDate)} ${escapeMd(context.localTime)} (${escapeMd(context.timezone)})_\n\n` +
+    `${meta}\n\n` +
+    `Top signals: ${escapeMd(contribs)}\n` +
+    `\n_Open the app for the full breakdown._`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker} (${scoreStr})`,
+    body: `Daily technical digest · ${contribs}`,
+    tag: `technical:${ticker}`,
+    url: "/signal#technical",
+    data: {
+      kind: "technical-digest",
+      ticker,
+      verdict: signal.verdict,
+      score: signal.score,
+      localTime: context.localTime,
+      timezone: context.timezone,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+/**
+ * On-change alert. Fires when the verdict band crosses since the last
+ * evaluation, e.g. hold → buy or buy → strong_sell. Includes the delta
+ * so users can gauge how big the shift was.
+ */
+export async function notifyTechnicalChange(
+  ticker: string,
+  signal: TechnicalSignal,
+  context: { previousVerdict: Verdict; previousScore: number | null },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(signal.verdict);
+  const label = TS_VERDICT_LABEL[signal.verdict];
+  const prevLabel = TS_VERDICT_LABEL[context.previousVerdict];
+  const scoreStr = formatScorePct(signal.score);
+  const prevScoreStr =
+    context.previousScore === null
+      ? "?"
+      : formatScorePct(context.previousScore);
+  const contribs = topContribLine(signal);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}*\n` +
+    `_verdict changed: ${escapeMd(prevLabel)} → ${escapeMd(label)}_\n\n` +
+    `Score: *${scoreStr}* / 100 (was ${prevScoreStr})\n` +
+    `Regime: ${signal.regime} · ${signal.bullishCount}↑ / ${signal.bearishCount}↓\n\n` +
+    `Top signals: ${escapeMd(contribs)}`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker}`,
+    body: `Verdict changed: ${prevLabel} → ${label} (${scoreStr})`,
+    tag: `technical:${ticker}`,
+    url: "/signal#technical",
+    data: {
+      kind: "technical-change",
+      ticker,
+      previous: context.previousVerdict,
+      verdict: signal.verdict,
+      score: signal.score,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- 6-Signal Resonance alerts ---------------------------------------------
+//
+// Structural mirror of the technical-signal helpers above. Verdicts
+// come from a different enum (`ResonanceVerdict`), and the payload
+// leans on alignment counts (0-6 bullish, 0-6 bearish) rather than a
+// normalised score, but the two-channel (digest + on-change) shape is
+// identical so users learn one mental model.
+
+const RS_VERDICT_LABEL: Record<ResonanceVerdict, string> = {
+  buy: "BUY (6-Signal)",
+  holding: "HOLDING",
+  sell: "SELL (6-Signal)",
+  avoid: "AVOID",
+  out: "OUT",
+  warmup: "WARMUP",
+};
+
+function emojiForResonance(verdict: ResonanceVerdict): string {
+  if (verdict === "buy") return "🟡"; // TDX-yellow ("买入信号 COLORYELLOW")
+  if (verdict === "holding") return "🟣"; // magenta ("持有 COLORMAGENTA")
+  if (verdict === "sell") return "🔴";
+  if (verdict === "avoid") return "🟠";
+  return "⚪️";
+}
+
+/**
+ * Human-readable line summarising which checks are currently aligned.
+ * Renders the 6 short indicator IDs (MACD/KDJ/RSI/LWR/BBI/MTM) with a
+ * `↑` / `↓` / `·` per check so users can eyeball the composition
+ * without opening the app.
+ */
+function resonanceComposition(result: ResonanceResult): string {
+  if (result.checks.length === 0) return "no checks ready";
+  return result.checks
+    .map((c) => {
+      const glyph = !c.ready ? "·" : c.bullish ? "↑" : "↓";
+      return `${c.id}${glyph}`;
+    })
+    .join(" ");
+}
+
+/**
+ * Daily digest for the 6-Signal Resonance. Fires at the user's
+ * configured `daily_time` in their timezone. Content emphasises the
+ * *composition* of the six checks rather than the verdict alone —
+ * users of this strategy tend to want to see "5 aligned, MACD is
+ * dragging" rather than a single word.
+ */
+export async function notifyResonanceDigest(
+  ticker: string,
+  result: ResonanceResult,
+  context: { localDate: string; localTime: string; timezone: string },
+): Promise<NotifyResult> {
+  const emoji = emojiForResonance(result.verdict);
+  const label = RS_VERDICT_LABEL[result.verdict];
+  const composition = resonanceComposition(result);
+
+  const streakLine =
+    result.streak > 0
+      ? `Bullish streak: ${result.streak} bar${result.streak === 1 ? "" : "s"}`
+      : result.streak < 0
+        ? `Bearish streak: ${-result.streak} bar${result.streak === -1 ? "" : "s"}`
+        : "No active alignment";
+
+  const meta =
+    `Alignment: *${result.alignedCount}/6↑* · *${result.bearishAlignedCount}/6↓*\n` +
+    `${streakLine}\n` +
+    (result.freshBuy
+      ? "✨ *Fresh BUY trigger on this bar*\n"
+      : result.freshSell
+        ? "✨ *Fresh SELL trigger on this bar*\n"
+        : "");
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}*\n` +
+    `_6-Signal Resonance daily digest ${escapeMd(context.localDate)} ${escapeMd(context.localTime)} (${escapeMd(context.timezone)})_\n\n` +
+    `${meta}\n` +
+    `Checks: \`${escapeMd(composition)}\`\n` +
+    `\n_Open the Signal page for the full check-by-check breakdown._`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker}`,
+    body: `${result.alignedCount}↑ / ${result.bearishAlignedCount}↓ · ${composition}`,
+    tag: `resonance:${ticker}`,
+    url: "/signal#resonance",
+    data: {
+      kind: "resonance-digest",
+      ticker,
+      verdict: result.verdict,
+      alignedCount: result.alignedCount,
+      bearishCount: result.bearishAlignedCount,
+      freshBuy: result.freshBuy,
+      freshSell: result.freshSell,
+      localTime: context.localTime,
+      timezone: context.timezone,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+/**
+ * On-change alert for the 6-Signal Resonance. Fires when the verdict
+ * crosses since the previous evaluation. Includes both the old and
+ * new alignment counts so users can gauge the size of the shift.
+ */
+export async function notifyResonanceChange(
+  ticker: string,
+  result: ResonanceResult,
+  context: {
+    previousVerdict: ResonanceVerdict;
+    previousAlignedCount: number | null;
+    previousBearishCount: number | null;
+  },
+): Promise<NotifyResult> {
+  const emoji = emojiForResonance(result.verdict);
+  const label = RS_VERDICT_LABEL[result.verdict];
+  const prevLabel = RS_VERDICT_LABEL[context.previousVerdict];
+  const composition = resonanceComposition(result);
+
+  const prevAligned =
+    context.previousAlignedCount === null ? "?" : String(context.previousAlignedCount);
+  const prevBearish =
+    context.previousBearishCount === null ? "?" : String(context.previousBearishCount);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}*\n` +
+    `_6-Signal Resonance: ${escapeMd(prevLabel)} → ${escapeMd(label)}_\n\n` +
+    `Alignment: *${result.alignedCount}/6↑* (was ${prevAligned}) · ` +
+    `*${result.bearishAlignedCount}/6↓* (was ${prevBearish})\n` +
+    (result.freshBuy
+      ? "✨ *Fresh BUY trigger on this bar*\n"
+      : result.freshSell
+        ? "✨ *Fresh SELL trigger on this bar*\n"
+        : "") +
+    `\nChecks: \`${escapeMd(composition)}\``;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker}`,
+    body: `Resonance ${prevLabel} → ${label} · ${result.alignedCount}↑/${result.bearishAlignedCount}↓`,
+    tag: `resonance:${ticker}`,
+    url: "/signal#resonance",
+    data: {
+      kind: "resonance-change",
+      ticker,
+      previous: context.previousVerdict,
+      verdict: result.verdict,
+      alignedCount: result.alignedCount,
+      bearishCount: result.bearishAlignedCount,
+      freshBuy: result.freshBuy,
+      freshSell: result.freshSell,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- Portfolio delisting / bankruptcy risk alerts --------------------------
+//
+// Fires when the risk analyser detects a NEW critical/high signal for
+// a symbol under monitoring. The push body leads with the strongest
+// signal so the user knows the takeaway at a glance; the Telegram
+// markdown carries the full list plus the freshest news deep-link.
+//
+// See `lib/portfolio-risk/engine.ts` for the change-detection rules
+// (fingerprint diff + severity gate + hourly throttle).
+
+const RISK_SEVERITY_LABEL: Record<RiskSeverity, string> = {
+  critical: "CRITICAL",
+  high: "HIGH",
+  medium: "MEDIUM",
+};
+
+function emojiForRiskSeverity(sev: RiskSeverity): string {
+  if (sev === "critical") return "🚨";
+  if (sev === "high") return "⚠️";
+  return "🟡";
+}
+
+/**
+ * Short, human-readable label for a `RiskSignalId`. Duplicated with
+ * the i18n dictionary intentionally — the notifier runs server-side
+ * with no i18n context, and users of an English-first Telegram bot
+ * expect English copy anyway. The tab UI reads the i18n strings.
+ */
+function labelForSignal(id: RiskSignalId): string {
+  switch (id) {
+    case "news.bankruptcy": return "Bankruptcy filing";
+    case "news.delisting": return "Delisting notice";
+    case "news.goingConcern": return "Going-concern / audit issue";
+    case "news.sec": return "SEC action";
+    case "news.tradingHalt": return "Trading halt";
+    case "data.noBars": return "No price data";
+    case "bars.stale": return "Stale price data";
+    case "price.collapse90d": return "Price collapse (90d)";
+    case "price.drawdown60d": return "Severe drawdown";
+    case "price.drawdown40d": return "Elevated drawdown";
+    case "price.subOneExtended": return "Sub-$1 for extended period";
+    case "price.subOne": return "Sub-$1 close";
+    case "volume.collapse": return "Volume collapse";
+  }
+}
+
+export async function notifyPortfolioRisk(
+  ticker: string,
+  assessment: RiskAssessment,
+  context: {
+    previousSeverity: RiskSeverity | null;
+    previousSignals: RiskSignalId[];
+  },
+): Promise<NotifyResult> {
+  const sev = assessment.overallSeverity;
+  if (sev === null || assessment.signals.length === 0) {
+    // Shouldn't happen — the engine only calls us when a signal
+    // fired — but guard so we never send an empty payload.
+    return { ok: false, detail: "no signals to notify about" };
+  }
+  const emoji = emojiForRiskSeverity(sev);
+  const sevLabel = RISK_SEVERITY_LABEL[sev];
+
+  // "New" signals = present now, absent last time. Highlighted so the
+  // user can see what actually changed vs. what's still true from
+  // yesterday.
+  const prevSet = new Set(context.previousSignals);
+  const newSignals = assessment.signals.filter((s) => !prevSet.has(s.id));
+
+  const priceLine =
+    assessment.latestClose !== null
+      ? `Latest close: $${assessment.latestClose.toFixed(assessment.latestClose < 1 ? 3 : 2)}` +
+        (assessment.drawdown90d !== null
+          ? ` · 90d drawdown ${Math.round(assessment.drawdown90d * 100)}%`
+          : "")
+      : "No price data available";
+
+  const bulletFor = (id: RiskSignalId) =>
+    `• ${escapeMd(labelForSignal(id))}`;
+
+  const highlighted =
+    newSignals.length > 0
+      ? `*New signals*:\n${newSignals.map((s) => bulletFor(s.id)).join("\n")}`
+      : `*Signals*:\n${assessment.signals.map((s) => bulletFor(s.id)).join("\n")}`;
+
+  // The freshest news signal — if any — gets a "Read more" deep-link
+  // so users can immediately see the source article that tripped the
+  // alert. Prefer critical over high when multiple news signals fired.
+  const newsSignal = assessment.signals
+    .filter((s) => s.id.startsWith("news."))
+    .sort((a, b) => {
+      const sev = (x: RiskSeverity) => (x === "critical" ? 2 : x === "high" ? 1 : 0);
+      const bySev = sev(b.severity) - sev(a.severity);
+      if (bySev !== 0) return bySev;
+      const ta = a.sourcePublishedAt ? Date.parse(a.sourcePublishedAt) : 0;
+      const tb = b.sourcePublishedAt ? Date.parse(b.sourcePublishedAt) : 0;
+      return tb - ta;
+    })[0];
+  const newsLink =
+    newsSignal && newsSignal.sourceUrl && newsSignal.sourceTitle
+      ? `\n\n[${escapeMd(truncate(newsSignal.sourceTitle, 80))}](${newsSignal.sourceUrl})`
+      : "";
+
+  const transitionLine =
+    context.previousSeverity && context.previousSeverity !== sev
+      ? `\n_${RISK_SEVERITY_LABEL[context.previousSeverity]} → ${sevLabel}_`
+      : "";
+
+  const markdown =
+    `${emoji} *Portfolio risk — ${sevLabel}* — *${escapeMd(ticker)}*` +
+    `${transitionLine}\n\n` +
+    `${priceLine}\n\n` +
+    `${highlighted}` +
+    newsLink +
+    `\n\n_Open the app → My Portfolio → Risks tab for the full breakdown._`;
+
+  // Push body: lead with the top signal so users see the takeaway on
+  // the notification tray without opening.
+  const topLabel = labelForSignal(assessment.signals[0]!.id);
+  const bodyExtra =
+    assessment.signals.length > 1
+      ? ` · +${assessment.signals.length - 1} more`
+      : "";
+  const push: WebPushPayload = {
+    title: `${emoji} ${sevLabel} risk — ${ticker}`,
+    body: `${topLabel}${bodyExtra}`,
+    tag: `portfolio-risk:${ticker}`,
+    // Deep-link to the Risks tab.
+    url: `/my-portfolio?tab=risks&ticker=${encodeURIComponent(ticker)}`,
+    data: {
+      kind: "portfolio-risk",
+      ticker,
+      severity: sev,
+      signals: assessment.signals.map((s) => s.id),
+      fingerprint: assessment.fingerprint,
+    },
   };
   return dispatchAlert({ markdown, push });
 }

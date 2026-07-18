@@ -41,14 +41,34 @@ const nextConfig = {
     //  * img-src 'self' data: blob:   — allow inline SVG data URIs and
     //    canvas exports used by lightweight-charts
     //  * frame-ancestors 'none'  — this app is never meant to be iframed
+    //
+    // Dev-only relaxations (`npm run dev` == `NODE_ENV === "development"`):
+    //  * script-src adds 'unsafe-eval' because Next.js's Fast Refresh
+    //    runtime uses `eval()` to swap components on save. Without it,
+    //    the *first* client script throws EvalError, React never hydrates,
+    //    and every `useEffect`/data fetch is silently dead — the page
+    //    looks stuck on the loading spinner and no /api/* calls fire.
+    //  * connect-src adds `ws:` and `wss:` for the HMR websocket
+    //    (`ws://localhost:5001/_next/webpack-hmr`), otherwise Fast Refresh
+    //    disconnects and you have to full-reload after every save.
+    // Neither concession applies to `next start` / prod, where React
+    // Refresh is stripped from the bundle.
+    const isDev = process.env.NODE_ENV !== "production";
+    const scriptSrc = isDev
+      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      : "script-src 'self' 'unsafe-inline'";
+    const connectSrc = isDev
+      ? "connect-src 'self' ws: wss:"
+      : "connect-src 'self'";
+
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      scriptSrc,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      "connect-src 'self'",
+      connectSrc,
       "worker-src 'self' blob:",
       "manifest-src 'self'",
       "frame-ancestors 'none'",

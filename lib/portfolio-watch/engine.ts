@@ -29,7 +29,9 @@ import {
 } from "@/lib/portfolios";
 import { listPresets } from "@/lib/portfolios";
 import { notifyPortfolioBatch } from "@/lib/bot/notifier";
-import { getState, setState, tryLockTick } from "@/lib/bot/store";
+import { isEventRecent, portfolioEventDate } from "@/lib/bot/recency";
+import { getState, setState } from "@/lib/bot/store";
+import { withTickLock } from "@/lib/watch/tick-lock";
 import type {
   EventAction,
   EventCategory,
@@ -180,20 +182,12 @@ export async function runPortfolioTick(): Promise<PortfolioTickReport> {
     notifiesSent: 0,
     errors: [],
   };
-
   // Refuse overlapping ticks so the worker's cadence + a UI "Run now"
-  // click don't compete for the same SEC/House-Clerk quota.
-  const release = tryLockTick("portfolio");
-  if (!release) {
-    report.ok = false;
-    report.errors.push("Another portfolio tick is already running.");
-    return report;
-  }
-  try {
-    return await runPortfolioTickBody(ranAt, report);
-  } finally {
-    release();
-  }
+  // click don't compete for the same SEC/House-Clerk quota. The lock
+  // scaffolding + finally-release is centralised in `withTickLock`.
+  return withTickLock("portfolio", report, () =>
+    runPortfolioTickBody(ranAt, report),
+  );
 }
 
 async function runPortfolioTickBody(
@@ -236,7 +230,14 @@ async function runPortfolioTickBody(
   const matches: Match[] = [];
   for (const evt of allEvents) {
     const hit = matchWatches(evt, watches);
-    if (hit.length > 0) matches.push({ event: evt, watches: hit });
+    if (hit.length === 0) continue;
+    // Recency floor — skip lagged PTRs / stale 13F republishings. For
+    // 13F rows we key on filing date because `tradeDate` there is the
+    // quarter-end (always months old); for insider + politician trades
+    // we prefer `tradeDate` since that's the actual event. See
+    // `lib/bot/recency.ts`.
+    if (!isEventRecent(portfolioEventDate(evt))) continue;
+    matches.push({ event: evt, watches: hit });
   }
   report.eventsMatched = matches.length;
 

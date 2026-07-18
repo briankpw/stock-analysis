@@ -20,7 +20,7 @@
 import YahooFinance from "yahoo-finance2";
 import { settings } from "./config";
 import type { Bar } from "./indicators";
-import { createTtlCache } from "./utils";
+import { createTtlCache, withDeadline } from "./utils";
 
 // -------- yahoo-finance2 instance --------------------------------------------
 // v3.x requires an explicit `new YahooFinance()` — the default export is a
@@ -46,6 +46,37 @@ export class RateLimitedError extends Error {
     super(message);
     this.name = "RateLimitedError";
   }
+}
+
+/**
+ * Hard deadline for every outbound Yahoo Finance call.
+ *
+ * yahoo-finance2 uses Node's global `fetch` under the hood and exposes no
+ * per-request `AbortSignal`/timeout option we can set globally. A network
+ * hang (TCP connection stalls after Yahoo accepts the connection) will
+ * therefore block the awaiting caller indefinitely — and because the bot
+ * worker's tick engines run *sequentially* (`lib/bot/engine.ts`
+ * `runForever`), one hung ticker would wedge every other watch engine
+ * from making progress for the rest of the process lifetime.
+ *
+ * We defend by racing each call against `withDeadline(...)`. On timeout
+ * the outer `retry()` treats it as a transient failure and re-runs with
+ * exponential backoff, so a real slow-but-alive Yahoo just costs an
+ * extra retry rather than a wedged worker.
+ *
+ * 15s is chosen to be well above Yahoo's typical p99 response time (~1-3s
+ * observed) while still short enough to keep the sequential tick loop
+ * responsive under repeated failure.
+ */
+const YAHOO_TIMEOUT_MS = 15_000;
+
+/**
+ * Wrap a `yahoo-finance2` call in the module-wide deadline. `label` is
+ * used purely for error messages so a timeout tells the operator which
+ * endpoint hung, not just "operation timed out".
+ */
+function callYahoo<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  return withDeadline(fn(), YAHOO_TIMEOUT_MS, `yahoo.${label}`);
 }
 
 const RATE_LIMIT_MARKERS = [
@@ -178,6 +209,13 @@ export interface Quote {
   previousClose: number | null;
   change: number | null;
   changePercent: number | null;
+  /** Regular-session share volume (best-effort; null if Yahoo omitted it). */
+  volume: number | null;
+  /** 3-month average daily volume — used for "unusual volume" callouts. */
+  avgVolume3M: number | null;
+  /** Market cap in the security's own currency. Null for indices/ETFs
+   * that Yahoo doesn't report a cap for. */
+  marketCap: number | null;
   currency: string;
   marketState: string;
   fetchedAt: string; // ISO
@@ -295,11 +333,13 @@ export async function fetchHistory(
     // yahoo-finance2's `chart` covers what yfinance's `history` does.
     // yahoo-finance2's return type is a discriminated union based on the
     // `return` option; we always ask for the array form and cast down.
-    const raw = await yahooFinance.chart(ticker, {
-      period1: periodToStart(period),
-      period2: new Date(),
-      interval: interval as "1d" | "1wk" | "1mo",
-    });
+    const raw = await callYahoo("chart", () =>
+      yahooFinance.chart(ticker, {
+        period1: periodToStart(period),
+        period2: new Date(),
+        interval: interval as "1d" | "1wk" | "1mo",
+      }),
+    );
     const res = raw as unknown as { quotes: Array<Record<string, unknown>> };
     const quotes = res?.quotes ?? [];
     if (quotes.length === 0) {
@@ -338,7 +378,7 @@ export async function fetchQuote(ticker: string): Promise<Quote> {
   if (cached) return cached;
 
   const quote = await retry(async () => {
-    const q = await yahooFinance.quote(ticker);
+    const q = await callYahoo("quote", () => yahooFinance.quote(ticker));
     // `yahoo-finance2` narrows differently across versions; be defensive.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyQ = q as any;
@@ -346,6 +386,22 @@ export async function fetchQuote(ticker: string): Promise<Quote> {
     const previousClose = anyQ.regularMarketPreviousClose ?? null;
     const change = anyQ.regularMarketChange ?? null;
     const changePercent = anyQ.regularMarketChangePercent ?? null;
+    // Volume + market cap: needed by the segment heatmap to size boxes
+    // proportionally. Yahoo omits `marketCap` for ETFs/indices and
+    // sometimes `regularMarketVolume` after hours — treat both as
+    // best-effort and default to `null` on absence.
+    const volume =
+      typeof anyQ.regularMarketVolume === "number"
+        ? anyQ.regularMarketVolume
+        : null;
+    const avgVolume3M =
+      typeof anyQ.averageDailyVolume3Month === "number"
+        ? anyQ.averageDailyVolume3Month
+        : typeof anyQ.averageDailyVolume10Day === "number"
+          ? anyQ.averageDailyVolume10Day
+          : null;
+    const marketCap =
+      typeof anyQ.marketCap === "number" ? anyQ.marketCap : null;
     return {
       ticker: ticker.toUpperCase(),
       price,
@@ -355,6 +411,9 @@ export async function fetchQuote(ticker: string): Promise<Quote> {
         // yahoo returns the percent as a whole number (1.35 = 1.35%); the
         // rest of the app expects a fraction (0.0135), so scale here.
         typeof changePercent === "number" ? changePercent / 100 : null,
+      volume,
+      avgVolume3M,
+      marketCap,
       currency: anyQ.currency ?? "USD",
       marketState: anyQ.marketState ?? "UNKNOWN",
       fetchedAt: new Date().toISOString(),
@@ -371,15 +430,17 @@ export async function fetchInfo(ticker: string): Promise<Info> {
   if (cached) return cached;
 
   const info = await retry(async () => {
-    const summary = await yahooFinance.quoteSummary(ticker, {
-      modules: [
-        "summaryDetail",
-        "defaultKeyStatistics",
-        "financialData",
-        "assetProfile",
-        "price",
-      ],
-    });
+    const summary = await callYahoo("quoteSummary.info", () =>
+      yahooFinance.quoteSummary(ticker, {
+        modules: [
+          "summaryDetail",
+          "defaultKeyStatistics",
+          "financialData",
+          "assetProfile",
+          "price",
+        ],
+      }),
+    );
     // Flatten into a single dict keyed by the fields the ratios page reads,
     // aligning with the shape the Python `info` blob has.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -416,11 +477,12 @@ export async function fetchNews(
 
   const items = await retry(async () => {
     // `yahooFinance.search` returns a wide union; we only ever use `.news`.
-    const res = (await yahooFinance.search(ticker, {
-      newsCount: limit,
-      quotesCount: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    })) as { news?: Array<Record<string, unknown>> };
+    const res = (await callYahoo("search.news", () =>
+      yahooFinance.search(ticker, {
+        newsCount: limit,
+        quotesCount: 0,
+      }),
+    )) as { news?: Array<Record<string, unknown>> };
     const raw = res?.news ?? [];
     const out: NewsItem[] = [];
     for (const n of raw) {
@@ -477,6 +539,9 @@ export async function fetchBundle(
     previousClose: bars.length > 1 ? bars[bars.length - 2]!.close : null,
     change: null,
     changePercent: null,
+    volume: bars.length ? bars[bars.length - 1]!.volume : null,
+    avgVolume3M: null,
+    marketCap: null,
     currency: "USD",
     marketState: "UNKNOWN",
     fetchedAt: new Date().toISOString(),
@@ -535,16 +600,18 @@ export async function fetchHolders(ticker: string): Promise<Holders> {
   if (cached) return cached;
 
   const result = await retry(async () => {
-    const summary = await yahooFinance.quoteSummary(ticker, {
-      modules: [
-        "majorHoldersBreakdown",
-        "insiderHolders",
-        "insiderTransactions",
-        "institutionOwnership",
-        "fundOwnership",
-        "netSharePurchaseActivity",
-      ],
-    });
+    const summary = await callYahoo("quoteSummary.holders", () =>
+      yahooFinance.quoteSummary(ticker, {
+        modules: [
+          "majorHoldersBreakdown",
+          "insiderHolders",
+          "insiderTransactions",
+          "institutionOwnership",
+          "fundOwnership",
+          "netSharePurchaseActivity",
+        ],
+      }),
+    );
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const s = summary as any;
