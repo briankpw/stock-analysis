@@ -958,10 +958,6 @@ const TECHNICAL_TERMS: Readonly<Record<string, Localized<TermDef>>> = {
     en: { what: "A pooled investment vehicle that buys a basket of stocks on behalf of retail investors." },
     "zh-CN": { label: "共同基金", what: "为零售投资者代持股票篮子的集合投资工具。" },
   },
-  ETF: {
-    en: { what: "Exchange-Traded Fund — a mutual-fund-like basket of stocks that trades on an exchange like a single stock." },
-    "zh-CN": { label: "ETF（交易所交易基金）", what: "类似共同基金的股票篮子，但像单只股票一样在交易所交易。" },
-  },
   Float: {
     en: { what: "The portion of a company's shares that are actually available for the public to trade (excludes insider-locked shares)." },
     "zh-CN": { label: "流通股", what: "公司股份中实际可供公众交易的部分（不含被内部锁定的股份）。" },
