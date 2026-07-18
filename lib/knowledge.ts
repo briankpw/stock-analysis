@@ -1528,7 +1528,6 @@ const TECHNICAL_TERMS: Readonly<Record<string, Localized<TermDef>>> = {
   Change: {
     en: {
       what: "Percentage change in price compared with the previous close. Positive is up, negative is down. In the heatmap, colour intensity scales with the magnitude of the change.",
-      direction: "context",
     },
     "zh-CN": {
       label: "涨跌幅",
