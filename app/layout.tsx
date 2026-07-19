@@ -26,12 +26,29 @@ export const viewport: Viewport = {
   themeColor: "#0f1220",
   width: "device-width",
   initialScale: 1,
-  // Allow the user to pinch-zoom (up to 5x). WCAG 2.1 SC 1.4.4 requires
-  // users to be able to resize text — disabling `userScalable` fails that.
-  // The layout still feels app-like because the CSS handles safe-area
-  // padding and no-horizontal-scroll; blocking scale isn't the win.
-  maximumScale: 5,
-  userScalable: true,
+  // Lock the viewport at 1x — pinch-to-zoom and double-tap-to-zoom
+  // are both disabled so the PWA behaves like a native app instead
+  // of a scalable web page. This is a deliberate product decision:
+  //
+  //   • The layout is already fully responsive down to phone width,
+  //     so no user needs to pinch out to fit a wide chart on screen.
+  //   • Data tables inside `.table-scroll` wrappers scroll
+  //     horizontally on their own — the whole viewport doesn't need
+  //     to rescale to expose the tail columns.
+  //   • The 16px input font-size floor in `globals.css` prevents
+  //     iOS Safari's focus-time auto-zoom (the thing that would
+  //     otherwise leave the layout permanently magnified after
+  //     tapping a search box).
+  //
+  // Trade-off worth being aware of: this fails WCAG 2.1 SC 1.4.4
+  // (Resize Text), which normally requires that users can scale text
+  // up to 200%. Users who need larger type must rely on OS-level
+  // display zoom / dynamic-type settings instead. If a specific
+  // accessibility complaint comes in, revert `userScalable` to
+  // `true` and raise `maximumScale` back to 5.
+  maximumScale: 1,
+  minimumScale: 1,
+  userScalable: false,
   // Extend the background into the iOS safe area (notch / home indicator).
   viewportFit: "cover",
 };

@@ -39,43 +39,166 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Network-first for HTML/API (fresh data), cache-first for static assets.
+// Fetch strategy is tightly scoped so the SW *only* short-circuits things
+// it truly knows are immutable. Everything else is passed through to
+// network — the caching cost of that is negligible for a same-origin
+// app, and the wrong strategy for any Next.js request breaks the
+// entire client-side router.
+//
+// Retro
+// -----
+// A previous version of this handler classified requests as "HTML if
+// Accept includes text/html, otherwise cache-first static asset".
+// That silently broke Next.js App Router client-side navigation:
+//
+//   1. Tap `<Link href="/signal">` in the sidebar.
+//   2. Next.js issues an RSC fetch: GET /signal with
+//      `Accept: text/x-component` (NOT text/html) and RSC=1 header.
+//   3. Old handler: Accept doesn't include text/html → falls through
+//      to cache-first branch → `caches.match(GET /signal)` returns
+//      the previously-cached HTML response for that URL.
+//   4. Client router receives HTML where it expected an RSC binary
+//      payload → parses garbage → the client-side navigation fails
+//      silently → the browser falls back to a full-page anchor nav.
+//   5. On some Android Chrome PWA versions the fallback anchor nav
+//      is routed to a new browser tab because the router-controlled
+//      scope handoff never happened, which is exactly the "tapping
+//      the sidebar opens a new tab" bug users hit.
+//
+// Additionally, the first RSC fetch for a URL got cached AS IF it
+// were a static asset, so a later full page load for the same URL
+// served the RSC binary instead of the HTML shell.
+//
+// The current handler fixes both by:
+//   * Ignoring EVERY navigation-like request (top-level HTML,
+//     `sec-fetch-mode: navigate`, and any request that carries an
+//     RSC-like `Accept` or the Next.js `RSC` / `Next-Router-Prefetch`
+//     headers). These go straight to the network; failures fall
+//     back to the cached shell only for the outermost HTML case.
+//   * Cache-first only for genuinely immutable Next.js build
+//     artifacts (`/_next/static/*`, `/icons/*`, and the app shell
+//     entries we pre-seed on install). These are content-hashed and
+//     never change under a fixed URL, so aggressive caching is safe.
+//   * Everything else (dynamic fonts, one-off images, misc GETs)
+//     is passed straight through to the network without cache
+//     intermediation — no wrong-shape response can ever be returned.
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
   if (req.method !== "GET") return;
 
-  // Never intercept API calls; they need to hit the server.
+  // Same-origin only. Cross-origin fetches (fonts from Google
+  // Fonts, tracking, etc.) shouldn't even touch this handler — we
+  // couldn't safely cache them under the same-origin CSP anyway.
+  if (url.origin !== self.location.origin) return;
+
+  // Never intercept API calls; they need to hit the server every
+  // time and are already served fresh.
   if (url.pathname.startsWith("/api/")) return;
 
-  // HTML pages: network, fall back to cache.
-  if (req.headers.get("accept")?.includes("text/html")) {
+  // ---- Navigation / RSC — always network, no cache-read ---------
+  //
+  // "Navigation-like" is anything that:
+  //   * The browser flags as a top-level navigation
+  //     (`sec-fetch-mode: navigate`), OR
+  //   * The Next.js client router issues to fetch an RSC payload —
+  //     detected by the `RSC` request header, or the `Accept:
+  //     text/x-component` header, or the prefetch header set by
+  //     `<Link prefetch>`.
+  //
+  // For these we ALWAYS go to the network. If the network fails
+  // AND it's a top-level HTML navigation, we fall back to the
+  // cached "/" shell so the app boots offline. RSC failures are
+  // NOT satisfied from cache — a stale RSC response would still
+  // break routing; instead we let the fetch reject and Next.js
+  // falls back to a full navigation.
+  const acceptHeader = req.headers.get("accept") || "";
+  const isRsc =
+    req.headers.get("rsc") === "1" ||
+    req.headers.get("next-router-prefetch") === "1" ||
+    req.headers.get("next-router-state-tree") !== null ||
+    acceptHeader.includes("text/x-component");
+  const isNavigation =
+    req.mode === "navigate" ||
+    req.headers.get("sec-fetch-mode") === "navigate" ||
+    acceptHeader.includes("text/html");
+
+  if (isRsc) {
+    // Straight passthrough. The whole point is to NOT intercept —
+    // otherwise a cache miss vs. a network response race can hand
+    // the router the wrong payload type. `event.respondWith(fetch(req))`
+    // is functionally identical to letting the event pass through,
+    // but explicit is nicer to grep for.
+    event.respondWith(fetch(req));
+    return;
+  }
+
+  if (isNavigation) {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
+          // Cache the fresh navigation response so offline reloads
+          // still boot the app. Restrict to opaque-safe responses —
+          // a redirect or 3xx `res.type === "opaqueredirect"`
+          // shouldn't poison the cache.
+          if (res.ok && res.type === "basic") {
+            const clone = res.clone();
+            caches
+              .open(CACHE_NAME)
+              .then((cache) => cache.put(req, clone))
+              .catch(() => {});
+          }
           return res;
         })
-        .catch(() => caches.match(req).then((r) => r ?? new Response("Offline", { status: 503 }))),
+        .catch(() =>
+          caches
+            .match(req)
+            .then(
+              (cached) =>
+                cached ??
+                caches.match("/") ??
+                new Response("Offline", { status: 503 }),
+            ),
+        ),
     );
     return;
   }
 
-  // Static asset: cache-first.
-  event.respondWith(
-    caches.match(req).then((cached) =>
-      cached ??
-      fetch(req).then((res) => {
-        if (res.ok && res.type === "basic") {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
-        }
-        return res;
-      }),
-    ),
-  );
+  // ---- Immutable build artifacts — cache-first -----------------
+  //
+  // These are the ONLY paths where cache-first is safe: their
+  // filenames are content-hashed (`/_next/static/…`) or otherwise
+  // known-immutable (icons pinned by the manifest). A stale copy
+  // is either byte-identical to the fresh one, or the URL has
+  // rotated on the deploy so no request matches the stale key.
+  const isImmutable =
+    url.pathname.startsWith("/_next/static/") ||
+    url.pathname.startsWith("/icons/") ||
+    url.pathname === "/manifest.webmanifest";
+  if (isImmutable) {
+    event.respondWith(
+      caches.match(req).then(
+        (cached) =>
+          cached ??
+          fetch(req).then((res) => {
+            if (res.ok && res.type === "basic") {
+              const clone = res.clone();
+              caches
+                .open(CACHE_NAME)
+                .then((cache) => cache.put(req, clone))
+                .catch(() => {});
+            }
+            return res;
+          }),
+      ),
+    );
+    return;
+  }
+
+  // Everything else (dynamic images, misc GETs) — passthrough. No
+  // cache read, no cache write. Prevents the "wrong-shape cached
+  // response" class of bug we hit above.
 });
 
 // ---------------------------------------------------------------------------

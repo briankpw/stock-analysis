@@ -267,6 +267,87 @@ async function _readSwRegisterStatus(): Promise<ServiceWorkerRegistrationStatus 
   }
 }
 
+/**
+ * Best-effort human-readable "why is the SW stuck" summary. Called
+ * when `navigator.serviceWorker.ready` blows past its 10s deadline in
+ * `enable()`. Combines two independent signals so the caller can craft
+ * a single actionable error message instead of the historical "check
+ * the console yourself":
+ *
+ *  1. The status blob written by `public/sw-register.js` into
+ *     `caches.open('sw-diag')` — reveals whether register() itself
+ *     failed and, if so, with what browser error.
+ *  2. `navigator.serviceWorker.getRegistrations()` — reveals whether
+ *     a registration exists at all and, if so, which lifecycle phase
+ *     each of `installing` / `waiting` / `active` is in (a common
+ *     stuck state is "installing forever" behind a slow `addAll`).
+ *
+ * Returns a short sentence starting with a capital letter and ending
+ * with a period so the caller can concatenate it into the outer error
+ * message without any grammar juggling. Never throws — every failure
+ * path collapses to a generic hint.
+ */
+async function describeSwFailure(): Promise<string> {
+  // Registrar-reported status. This is the most useful signal when
+  // `register()` itself rejected — the reason string tells the user
+  // exactly what the browser said.
+  const swReg = await _readSwRegisterStatus();
+  if (swReg?.state === "failed") {
+    return `SW registration was rejected by the browser: ${swReg.reason ?? "unknown reason"}.`;
+  }
+  if (swReg?.state === "unsupported") {
+    return "This browser doesn't expose navigator.serviceWorker at all — try Chrome/Edge/Firefox/Safari in a real browser tab (not an in-app webview).";
+  }
+
+  // Live registration list. When register() succeeded but the SW is
+  // stuck mid-lifecycle, this tells us which phase it's in.
+  try {
+    if (
+      typeof navigator !== "undefined" &&
+      "serviceWorker" in navigator &&
+      typeof navigator.serviceWorker.getRegistrations === "function"
+    ) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      if (regs.length === 0) {
+        // register() may still be pending, but 10s in it's almost
+        // always "the register call in sw-register.js hasn't run" —
+        // typically because the load event never fired (the page is
+        // still fetching a slow subresource) or the CSP blocked
+        // /sw-register.js from loading.
+        return "No SW registrations found for this origin — /sw-register.js may not have run yet (check the browser console for [sw-register] messages, and verify /sw-register.js is loading successfully in the Network tab).";
+      }
+      // Report the phase of the first registration in scope. Most
+      // apps only have one; if there are more, the first is the one
+      // controlling the current page.
+      const first = regs[0]!;
+      const phase =
+        (first.active && "active") ||
+        (first.installing && "installing") ||
+        (first.waiting && "waiting") ||
+        "unknown";
+      if (phase === "installing") {
+        return "The SW is stuck in the installing phase — usually a slow or hung network fetch inside the install handler (check the SW console under DevTools → Application → Service Workers).";
+      }
+      if (phase === "waiting") {
+        return "A new SW is waiting to activate but an old one still controls the page — reload the tab to activate it.";
+      }
+      if (phase === "active") {
+        // This branch is weird: the SW says it's active but
+        // `navigator.serviceWorker.ready` didn't resolve. Usually a
+        // race between the SW claiming clients and the promise
+        // resolving; reloading fixes it.
+        return "The SW reports as active but the browser hasn't linked it to this page yet — reload the tab to complete the handshake.";
+      }
+      return `SW is registered but in an unexpected phase (${phase}).`;
+    }
+  } catch (err) {
+    // getRegistrations rejected — surface the raw message so the
+    // operator has SOMETHING to search for.
+    return `Couldn't inspect the SW registrations (${err instanceof Error ? err.message : String(err)}).`;
+  }
+  return "SW registration state couldn't be determined.";
+}
+
 /** URL-safe base64 (VAPID public key) → raw bytes for PushManager. */
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -472,18 +553,26 @@ export function usePushNotifications() {
     // spin forever with no error message. 10s is well above the
     // wall-time even a cold register+install+activate takes; longer
     // than that means the SW isn't coming.
+    //
+    // On timeout, cross-reference the sw-diag cache written by
+    // `/sw-register.js` and the live registration list so the error
+    // spells out the specific stuck state ("registration failed with
+    // reason X" vs "SW is still installing" vs "no registrations at
+    // all") — that turns a generic "check the console yourself" into
+    // an actionable one-line diagnosis for the user.
     const reg = await Promise.race<ServiceWorkerRegistration>([
       navigator.serviceWorker.ready,
       new Promise<ServiceWorkerRegistration>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                "Service worker didn't become active within 10s. Reload this page — if it persists, the browser blocked SW registration (check the console for CSP / storage / quota errors, then try clearing site data and reloading).",
-              ),
+        setTimeout(async () => {
+          const detail = await describeSwFailure();
+          reject(
+            new Error(
+              `Service worker didn't become active within 10s. ${detail} ` +
+                `Reload this page — if it persists, unregister the SW via DevTools → ` +
+                `Application → Service Workers → Unregister, then reload.`,
             ),
-          10_000,
-        ),
+          );
+        }, 10_000),
       ),
     ]);
 
