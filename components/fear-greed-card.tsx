@@ -7,7 +7,7 @@ import { TermTip } from "@/components/term-tip";
 import { useFearGreed } from "@/hooks/use-fear-greed";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import type { FearGreedRating } from "@/app/api/fear-greed/route";
+import type { FearGreedRating } from "@/lib/fear-greed";
 
 // ---------------------------------------------------------------------------
 // Colour + label utilities
