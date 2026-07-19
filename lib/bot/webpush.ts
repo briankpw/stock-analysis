@@ -32,6 +32,12 @@ const STATE_KEYS = {
 
 const DEFAULT_SUBJECT = "mailto:noreply@stock-analysis.local";
 
+// Guard so the "Web Push ready" boot line only prints once per process,
+// no matter how many times `getVapidKeys()` is called. This also makes
+// it safe to invoke eagerly at worker startup (see `worker.ts`) without
+// double-logging when the first user request later hits `/api/push`.
+let _readyLogged = false;
+
 export interface VapidKeys {
   publicKey: string;
   privateKey: string;
@@ -53,12 +59,14 @@ export async function getVapidKeys(): Promise<VapidKeys> {
   const envSubject = process.env.VAPID_SUBJECT?.trim() || DEFAULT_SUBJECT;
 
   if (envPub && envPriv) {
+    logReadyOnce();
     return { publicKey: envPub, privateKey: envPriv, subject: envSubject };
   }
 
   const storedPub = getState<string | null>(STATE_KEYS.VAPID_PUBLIC, null);
   const storedPriv = getState<string | null>(STATE_KEYS.VAPID_PRIVATE, null);
   if (storedPub && storedPriv) {
+    logReadyOnce();
     return { publicKey: storedPub, privateKey: storedPriv, subject: envSubject };
   }
 
@@ -81,11 +89,31 @@ export async function getVapidKeys(): Promise<VapidKeys> {
     publicKey: setStateIfAbsent(STATE_KEYS.VAPID_PUBLIC, candidate.publicKey),
     privateKey: setStateIfAbsent(STATE_KEYS.VAPID_PRIVATE, candidate.privateKey),
   }));
+  logReadyOnce();
   return {
     publicKey: canonical.publicKey,
     privateKey: canonical.privateKey,
     subject: envSubject,
   };
+}
+
+/**
+ * One-shot "Web Push ready" boot log. Emitted the first time any caller
+ * successfully resolves a VAPID keypair (from env, from persisted state,
+ * or from a fresh first-boot generation). Subsequent calls in the same
+ * process are silent so the log line doesn't get repeated on every
+ * `/api/push` GET or every `sendWebPushBatch` invocation.
+ *
+ * The `_readyLogged` guard is process-scoped, so both the worker
+ * process and the Next.js UI process each print the line exactly once
+ * at their own boot — which is what an operator watching `docker logs`
+ * expects to see (one line per container process).
+ */
+function logReadyOnce(): void {
+  if (_readyLogged) return;
+  _readyLogged = true;
+  // eslint-disable-next-line no-console
+  console.log("[webpush] Web Push ready (keys loaded)");
 }
 
 /** True whenever we can sign a push — always, after first boot. */

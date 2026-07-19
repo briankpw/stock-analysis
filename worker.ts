@@ -15,11 +15,23 @@
  */
 
 import { runForever } from "./lib/bot/engine";
+import { getVapidKeys } from "./lib/bot/webpush";
 
 const legacyTickerLabel = (process.env.STOCK_TICKER || "KEYS").toUpperCase();
 
 // eslint-disable-next-line no-console
 console.log(`[worker] starting alert loop (legacy label=${legacyTickerLabel})`);
+
+// Eagerly resolve VAPID keys so the "[webpush] Web Push ready" line
+// appears at worker boot rather than waiting for the first tick that
+// actually needs to send a push. Fire-and-forget — a failure here just
+// means the log line is delayed, not that push is broken (the actual
+// send path re-resolves lazily and surfaces its own errors).
+void getVapidKeys().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.warn("[webpush] key resolution at boot failed:", err);
+});
+
 runForever()
   .then(() => {
     // eslint-disable-next-line no-console

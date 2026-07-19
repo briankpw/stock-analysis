@@ -286,14 +286,32 @@ function redirectToLogin(req: NextRequest, nonce: string): NextResponse {
 /**
  * Attach the CSP+HSTS headers to a pass-through response. Used at
  * every "request looks fine, forward it" branch of `middleware()`
- * so no navigation escapes the security-header layer. Also copies
- * the nonce onto the *request* headers so Server Components can
- * pick it up via `headers()`.
+ * so no navigation escapes the security-header layer.
+ *
+ * The nonce is copied onto the *request* headers alongside a
+ * `Content-Security-Policy` mirror so:
+ *   * Server Components can pick the nonce up via `headers()`.
+ *   * Next.js's framework renderer can parse the `'nonce-<n>'` out
+ *     of the CSP directive and auto-attach it to its own hydration
+ *     inline scripts (`__next_f.push(...)`, etc.). Without the CSP
+ *     header on the *request*, Next.js falls back to nonce-less
+ *     framework scripts, strict-dynamic blocks them in production,
+ *     hydration silently fails, and every `<Link>` click degrades to
+ *     a full-page anchor navigation — which on some Android Chrome
+ *     PWAs then opens the destination in a new browser tab because
+ *     the router-controlled scope handoff never happened. Setting
+ *     the header on both sides matches the pattern documented in
+ *     the Next.js CSP guide and is the only reliable way to keep
+ *     client-side navigation working under a strict CSP.
  */
 function passThrough(req: NextRequest, nonce: string): NextResponse {
+  const csp = buildCsp(nonce);
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
   const res = NextResponse.next({ request: { headers: requestHeaders } });
+  // `applySecurityHeaders` sets the CSP on the response too — same
+  // policy value, so browser and Next.js renderer agree.
   return applySecurityHeaders(res, nonce);
 }
 
