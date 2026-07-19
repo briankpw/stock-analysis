@@ -302,21 +302,43 @@ export async function sendWebPushBatch(
 
   // Fan out in parallel — most push services accept POSTs concurrently
   // and this keeps a tick with N subscribers roughly O(1) in wall time.
+  //
+  // Per-subscriber hard deadline: `web-push` uses raw `https.request`
+  // under the hood with no default timeout, so a single push service
+  // that accepts our TCP connection but never sends a response body
+  // (real observed failure mode on FCM edge nodes during regional
+  // outages) would otherwise wedge the entire notifier tick for the
+  // Node default idle-timeout, which is effectively forever from a
+  // bot-worker perspective. Racing each send against a 15 s deadline
+  // caps the worst case at "one send timed out" rather than "no ticks
+  // for the next hour". Timeouts are treated as `failed` but NOT as
+  // `stale` — the subscription might be fine on the next tick.
+  const PER_SUBSCRIBER_TIMEOUT_MS = 15_000;
   const results = await Promise.all(
     subs.map(async (s) => {
       const target: WebPushSubscription = {
         endpoint: s.endpoint,
         keys: { p256dh: s.p256dh, auth: s.auth },
       };
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error("webpush: send timed out")),
+          PER_SUBSCRIBER_TIMEOUT_MS,
+        );
+      });
       try {
-        await webpush.sendNotification(target, body, {
-          TTL: 3600,
-          // `high` is what interactive alerts (chat, mail) use; it tells
-          // the push service (FCM / APNs / Mozilla) to deliver the payload
-          // immediately rather than deferring for battery. Required for
-          // iOS PWA pushes to actually pop as a banner.
-          urgency: "high",
-        });
+        await Promise.race([
+          webpush.sendNotification(target, body, {
+            TTL: 3600,
+            // `high` is what interactive alerts (chat, mail) use; it tells
+            // the push service (FCM / APNs / Mozilla) to deliver the payload
+            // immediately rather than deferring for battery. Required for
+            // iOS PWA pushes to actually pop as a banner.
+            urgency: "high",
+          }),
+          timeoutPromise,
+        ]);
         return { ok: true as const, endpoint: s.endpoint };
       } catch (err) {
         const status =
@@ -331,7 +353,10 @@ export async function sendWebPushBatch(
               : String(err);
         // 404 (Not Found) and 410 (Gone) are permanent — the browser
         // uninstalled the SW or the user revoked permission. Drop the
-        // row so we don't waste a POST every tick.
+        // row so we don't waste a POST every tick. Timeouts (status
+        // stays 0, message includes "timed out") are treated as
+        // transient — we keep the subscription so the next tick can
+        // retry once the push service recovers.
         const stale = status === 404 || status === 410;
         return {
           ok: false as const,
@@ -340,6 +365,8 @@ export async function sendWebPushBatch(
           message,
           stale,
         };
+      } finally {
+        if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       }
     }),
   );

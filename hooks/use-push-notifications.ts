@@ -62,6 +62,15 @@ export interface PushSupportDiagnostics {
   isIosSafariNotPwa: boolean;
 }
 
+export interface PushResubscribeFailure {
+  /** Wall-clock millis when the SW's `pushsubscriptionchange` handler
+   *  gave up. */
+  at: number;
+  /** Short human-readable reason ("keyFetch:401", "upload:403",
+   *  network error message). Truncated at 200 chars by the SW. */
+  reason: string;
+}
+
 export interface PushStatus {
   /** True when the browser/environment can register a push subscription. */
   supported: boolean;
@@ -81,6 +90,17 @@ export interface PushStatus {
   devices: RegisteredDevice[];
   /** Number of active subscribers server-side. */
   subscriberCount: number;
+  /**
+   * Populated when the SW's `pushsubscriptionchange` handler ran and
+   * couldn't complete the resubscribe (usually because a fresh SW
+   * request to `/api/push` had no auth cookie). When set, the UI
+   * should nudge the user to re-open the app and click "Enable
+   * notifications" again — otherwise they'll silently stop getting
+   * pushes. Written to the SW's `sw-diag` cache by
+   * `public/service-worker.js`; cleared when we detect an active
+   * subscription on refresh.
+   */
+  resubscribeFailure: PushResubscribeFailure | null;
 }
 
 interface PushApiResponse {
@@ -150,6 +170,45 @@ function readPermission(): PermissionState {
   return Notification.permission;
 }
 
+/**
+ * Read the service worker's `pushsubscriptionchange` failure marker
+ * from the `sw-diag` cache. Written by
+ * `public/service-worker.js` when a background resubscribe fails,
+ * consumed by `refresh()` above so the UI can raise a "re-enable
+ * notifications" banner. Returns `null` if there's no marker, if the
+ * cache isn't available (older browsers / SW disabled), or if the
+ * stored blob is malformed.
+ */
+async function _readPushResubDiagnostic(): Promise<PushResubscribeFailure | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open("sw-diag");
+    const res = await cache.match("/__push-resub-failed");
+    if (!res) return null;
+    const parsed = (await res.json()) as PushResubscribeFailure;
+    if (
+      parsed &&
+      typeof parsed.at === "number" &&
+      typeof parsed.reason === "string"
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function _clearPushResubDiagnostic(): Promise<void> {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open("sw-diag");
+    await cache.delete("/__push-resub-failed");
+  } catch {
+    /* ignore — cache API isn't available or the entry is already gone */
+  }
+}
+
 /** URL-safe base64 (VAPID public key) → raw bytes for PushManager. */
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -181,6 +240,7 @@ export function usePushNotifications() {
     error: null,
     devices: [],
     subscriberCount: 0,
+    resubscribeFailure: null,
   });
 
   const diagnostics = React.useMemo(() => detectDiagnostics(), []);
@@ -212,6 +272,17 @@ export function usePushNotifications() {
       }
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
+      // Read the SW's resubscribe-failed marker, if any. Cleared as
+      // soon as the client sees an active subscription again so the
+      // banner disappears the moment the user re-enables.
+      const resubscribeFailure = await _readPushResubDiagnostic();
+      if (sub !== null && resubscribeFailure !== null) {
+        // Best-effort cleanup — the browser is subscribed, so
+        // whatever the SW hit last time is now moot. Don't await;
+        // failure to delete just means the banner shows one extra
+        // page load until the user reloads.
+        void _clearPushResubDiagnostic();
+      }
 
       setStatus({
         supported: true,
@@ -223,6 +294,7 @@ export function usePushNotifications() {
         error: null,
         devices: body.subscriptions,
         subscriberCount: body.subscriberCount,
+        resubscribeFailure: sub !== null ? null : resubscribeFailure,
       });
     } catch (err) {
       setStatus((s) => ({

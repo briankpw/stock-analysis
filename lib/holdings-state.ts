@@ -340,57 +340,85 @@ export const useHoldings = create<HoldingsState>()((set, get) => ({
 
   hydrateFromServer: async () => {
     if (get().hydrated) return;
-    try {
-      const snapshot = await apiGet();
-      // ---- Legacy migration ------------------------------------------
-      // If the server has nothing but the browser still holds a
-      // pre-v7 offline blob, upload it exactly once, then wipe the
-      // legacy entry. This is what makes upgrading users' data
-      // "just appear" on their other devices — no manual re-upload.
-      if (snapshot.rows.length === 0) {
-        const legacy = readLegacyLocalStorage();
-        if (legacy) {
-          try {
-            const { snapshot: uploaded } = await apiPut({
-              action: "replace",
-              rows: legacy.rows,
-              meta: {
-                sourceFilename: legacy.meta.sourceFilename,
-                importedAt: legacy.meta.importedAt,
-              },
-            });
-            clearLegacyLocalStorage();
-            set({
-              rows: uploaded.rows,
-              meta: metaFromSnapshot(uploaded.meta),
-              hydrated: true,
-              syncError: null,
-            });
-            return;
-          } catch {
-            // Legacy upload failed — leave the local blob alone so
-            // the next hydration can retry, and fall through to the
-            // (empty) server state.
+    // In-flight guard — React 18 strict-mode double-mount and manual
+    // retry callers could otherwise fire two GET /api/holdings calls
+    // in parallel and the second's result would clobber the first's
+    // (or vice versa). Attach the promise to the module-scoped
+    // `_hydrateInflight` so any concurrent caller awaits the same
+    // pending fetch.
+    if (_hydrateInflight) {
+      await _hydrateInflight;
+      return;
+    }
+    const p = (async () => {
+      try {
+        const snapshot = await apiGet();
+        // ---- Legacy migration ------------------------------------------
+        // If the server has nothing but the browser still holds a
+        // pre-v7 offline blob, upload it exactly once, then wipe the
+        // legacy entry. This is what makes upgrading users' data
+        // "just appear" on their other devices — no manual re-upload.
+        if (snapshot.rows.length === 0) {
+          const legacy = readLegacyLocalStorage();
+          if (legacy) {
+            try {
+              const { snapshot: uploaded } = await apiPut({
+                action: "replace",
+                rows: legacy.rows,
+                meta: {
+                  sourceFilename: legacy.meta.sourceFilename,
+                  importedAt: legacy.meta.importedAt,
+                },
+              });
+              clearLegacyLocalStorage();
+              set({
+                rows: uploaded.rows,
+                meta: metaFromSnapshot(uploaded.meta),
+                hydrated: true,
+                syncError: null,
+              });
+              return;
+            } catch {
+              // Legacy upload failed — leave the local blob alone so
+              // the next hydration can retry, and fall through to the
+              // (empty) server state.
+            }
           }
         }
+        set({
+          rows: snapshot.rows,
+          meta: metaFromSnapshot(snapshot.meta),
+          hydrated: true,
+          syncError: null,
+        });
+      } catch (e) {
+        // Hydration failure leaves the store empty + `hydrated=false`
+        // so consumers keep showing the loading state instead of
+        // silently flipping to "you have no portfolio". `syncError`
+        // gives them a way to surface the failure so
+        // `useHydrateHoldings` can schedule a retry.
+        set({
+          syncError: e instanceof Error ? e.message : String(e),
+        });
       }
-      set({
-        rows: snapshot.rows,
-        meta: metaFromSnapshot(snapshot.meta),
-        hydrated: true,
-        syncError: null,
-      });
-    } catch (e) {
-      // Hydration failure leaves the store empty + `hydrated=false`
-      // so consumers keep showing the loading state instead of
-      // silently flipping to "you have no portfolio". `syncError`
-      // gives them a way to surface the failure.
-      set({
-        syncError: e instanceof Error ? e.message : String(e),
-      });
+    })();
+    _hydrateInflight = p;
+    try {
+      await p;
+    } finally {
+      // Clear the in-flight slot when we're the current owner. A
+      // subsequent retry (after failure) can then acquire fresh.
+      if (_hydrateInflight === p) _hydrateInflight = null;
     }
   },
 }));
+
+/**
+ * Module-scoped in-flight promise for the first successful
+ * `hydrateFromServer`. `null` when no fetch is in progress. See the
+ * comment in `hydrateFromServer` above for the concurrency rationale.
+ */
+let _hydrateInflight: Promise<void> | null = null;
 
 // ---------------------------------------------------------------------------
 // Convenience hooks
@@ -406,21 +434,55 @@ export const useHasHoldings = () =>
   useHoldings((s) => s.rows.length > 0 && s.meta !== null);
 
 /**
- * Fires the initial `GET /api/holdings` exactly once for the whole
- * app session — mount from the top of any page that reads holdings
- * data, or from the app shell if you'd rather warm the cache
- * regardless of route.
+ * Fires the initial `GET /api/holdings` for the whole app session,
+ * with automatic retry on transient failures.
  *
- * Safe to mount multiple times; internal `hydrated` flag makes
- * repeated calls a no-op.
+ * Behaviour:
+ *   * On mount: attempt hydration once.
+ *   * On failure (`syncError` set + `hydrated=false`): schedule a
+ *     backoff retry (3 s, then 6 s, then 12 s — capped at 30 s).
+ *     Continues until the initial hydration succeeds, or the
+ *     component unmounts.
+ *   * On success: stops retrying.
+ *
+ * The previous implementation had `[hydrated, hydrateFromServer]` as
+ * deps and no retry — a transient 500 (cold DB, timeout during a
+ * container restart) would leave every page reading holdings stuck
+ * at "loading" until the user hard-refreshed. This version handles
+ * that automatically.
+ *
+ * Safe to mount multiple times; the store's `hydrated` flag makes
+ * repeated calls into no-ops.
  */
 export function useHydrateHoldings(): void {
   const hydrateFromServer = useHoldings((s) => s.hydrateFromServer);
   const hydrated = useHoldings((s) => s.hydrated);
+  const syncError = useHoldings((s) => s.syncError);
+  const attemptRef = React.useRef(0);
+
   React.useEffect(() => {
-    if (hydrated) return;
-    void hydrateFromServer();
-  }, [hydrated, hydrateFromServer]);
+    if (hydrated) {
+      attemptRef.current = 0;
+      return;
+    }
+    // First attempt fires immediately; subsequent attempts are
+    // scheduled from the previous failure via `syncError`.
+    if (attemptRef.current === 0 && !syncError) {
+      attemptRef.current = 1;
+      void hydrateFromServer();
+      return;
+    }
+    if (syncError) {
+      const attempt = attemptRef.current;
+      // 3 s, 6 s, 12 s, 24 s, then cap at 30 s.
+      const delayMs = Math.min(30_000, 3_000 * 2 ** Math.max(0, attempt - 1));
+      const id = setTimeout(() => {
+        attemptRef.current = attempt + 1;
+        void hydrateFromServer();
+      }, delayMs);
+      return () => clearTimeout(id);
+    }
+  }, [hydrated, syncError, hydrateFromServer]);
 }
 
 // ---------------------------------------------------------------------------

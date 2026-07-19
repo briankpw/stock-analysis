@@ -73,6 +73,9 @@ export function setStateIfAbsent<T>(key: string, value: T): T {
 export const STATE_KEYS = {
   ENABLED: "bot.enabled",
   LAST_TICK_AT: "bot.last_tick_at",
+  /** ISO timestamp of the last successful retention prune. Used by
+   *  `lib/bot/retention.ts` to enforce the once-per-day gate. */
+  LAST_RETENTION_PRUNE_AT: "bot.last_retention_prune_at",
 } as const;
 
 
@@ -80,15 +83,38 @@ export const STATE_KEYS = {
 //
 // Multiple in-flight ticks (worker loop + UI "Run now" button + another
 // browser tab hammering the same endpoint) would double-fetch external
-// APIs and can send duplicate Telegram alerts. We serialize them via a
-// per-process mutex map. It's intentionally *in-memory* so a crashed
-// process doesn't leave a stale DB lock behind that has to be cleared
-// manually; the trade-off is that concurrency between UI and worker
-// processes isn't prevented (they don't share memory). For this app's
-// scale that's acceptable — the DB-level dedup rows keep behaviour
-// correct even if two ticks somehow overlap.
+// APIs and can send duplicate Telegram alerts. Backed by the SQLite
+// `bot_locks` table (v12 migration) so the guard survives across
+// processes — the worker container and the UI container are two
+// separate Node processes and the previous in-memory mutex only
+// serialised WITHIN one of them.
+//
+// An in-memory `Set` still tracks locks acquired by THIS process so a
+// crashed acquire path can't leak. On process crash the DB row is
+// abandoned but auto-expires (`expires_at`); the next caller reads
+// the expired row and takes it, avoiding the "manual DB cleanup"
+// footgun.
+//
+// Concurrency contract:
+//   * `INSERT` uses `OR IGNORE` — the SQLite writer lock makes this
+//     an atomic compare-and-swap on the primary key.
+//   * On lock acquisition we first purge any expired rows for the
+//     same name, then attempt the insert. If insert returns
+//     `changes: 0`, someone else holds a live lock and we return
+//     null.
+//   * Release deletes the row so the next tick can grab it
+//     immediately (no waiting for the TTL to expire).
 
-const _tickLocks = new Set<string>();
+/**
+ * How long a tick lock is valid before it's considered stale and
+ * eligible for takeover. 15 minutes covers even the slowest
+ * portfolios tick (a full politician-catalogue scan across dozens
+ * of PDFs), and is short enough that a crashed worker recovers
+ * within one poll cycle rather than requiring a restart.
+ */
+const TICK_LOCK_TTL_MS = 15 * 60 * 1000;
+
+const _localTickLocks = new Set<string>();
 
 /**
  * Try to acquire an exclusive lock for `name`. Returns a release function
@@ -101,12 +127,43 @@ const _tickLocks = new Set<string>();
  *   try { await runBody(); } finally { release(); }
  */
 export function tryLockTick(name: string): (() => void) | null {
-  if (_tickLocks.has(name)) return null;
-  _tickLocks.add(name);
+  // Fast local-cache check — a process already holding this lock
+  // shouldn't re-enter the DB round-trip.
+  if (_localTickLocks.has(name)) return null;
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresIso = new Date(now.getTime() + TICK_LOCK_TTL_MS).toISOString();
+  const db = getDb();
+
+  // Purge any expired lock for this name so a crashed peer doesn't
+  // block us forever. Same statement is safe when there's nothing to
+  // delete.
+  db.prepare("DELETE FROM bot_locks WHERE name = ? AND expires_at <= ?")
+    .run(name, nowIso);
+
+  // Atomic acquire — succeeds ONLY if the row didn't already exist.
+  const info = db
+    .prepare(
+      "INSERT OR IGNORE INTO bot_locks (name, acquired_at, expires_at) VALUES (?, ?, ?)",
+    )
+    .run(name, nowIso, expiresIso);
+  if (info.changes === 0) return null;
+
+  _localTickLocks.add(name);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    _tickLocks.delete(name);
+    _localTickLocks.delete(name);
+    try {
+      db.prepare("DELETE FROM bot_locks WHERE name = ?").run(name);
+    } catch (err) {
+      // Don't throw from a release callback — a failed unlock will
+      // auto-expire after TICK_LOCK_TTL_MS anyway. Log so ops
+      // notice a chronic issue.
+      // eslint-disable-next-line no-console
+      console.error(`[bot.store] failed to release tick lock '${name}':`, err);
+    }
   };
 }

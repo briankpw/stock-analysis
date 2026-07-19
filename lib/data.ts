@@ -168,17 +168,69 @@ function cacheSet<T>(key: string, value: T): void {
 }
 
 /**
+ * In-flight request registry. Complementary to the TTL cache above:
+ * once a request for a given key is *cached*, we serve from memory;
+ * but during the (potentially several-second) window between "call
+ * started" and "response cached" a burst of concurrent callers would
+ * otherwise all fan out to Yahoo. Registering the promise here means
+ * every subsequent caller in that window `.then`s onto the same
+ * upstream call and Yahoo sees exactly one request.
+ *
+ * The promise is deleted from the registry as soon as it settles
+ * (success OR failure) — a failed call must not permanently poison
+ * the key, and the TTL cache above is the sole source of truth for
+ * successful results. Failure suppresses caching entirely so the
+ * next attempt hits Yahoo fresh.
+ *
+ * Keys use the same `endpoint:TICKER` shape as the TTL cache so a
+ * single grep can trace the full request lifecycle.
+ */
+const _inflight = new Map<string, Promise<unknown>>();
+
+/**
+ * Wrap a compute function in the in-flight registry. If a call for
+ * `key` is already running, return its promise; otherwise register
+ * a new one and clean up when it settles.
+ *
+ * Kept `<T>` generic (rather than typed on the whole cache) because
+ * different endpoints return different shapes and TypeScript's map
+ * value covariance would force casts everywhere otherwise.
+ */
+function withInflight<T>(key: string, compute: () => Promise<T>): Promise<T> {
+  const existing = _inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const p = compute().finally(() => {
+    // Only clear if we're still the recorded promise — protects
+    // against a slow settle racing with a subsequent identical call
+    // that already registered a fresh promise.
+    if (_inflight.get(key) === p) _inflight.delete(key);
+  });
+  _inflight.set(key, p);
+  return p;
+}
+
+/**
  * Wipe every cache entry that includes `ticker` — called by the UI's
- * "Refresh data" button so the next call goes back to Yahoo.
+ * "Refresh data" button so the next call goes back to Yahoo. Also
+ * drops any in-flight promises for that ticker so a mid-refresh
+ * request can't hand back stale data after the user clicked "clear".
  */
 export function invalidateCache(ticker?: string): void {
   if (!ticker) {
     cache.clear();
+    _inflight.clear();
     return;
   }
   const marker = `:${ticker.toUpperCase()}:`;
   for (const key of cache.keys()) {
     if (key.includes(marker)) cache.delete(key);
+  }
+  const upper = ticker.toUpperCase();
+  for (const key of _inflight.keys()) {
+    // Match both `endpoint:TICKER` and `endpoint:TICKER:...` variants.
+    if (key.endsWith(`:${upper}`) || key.includes(`:${upper}:`)) {
+      _inflight.delete(key);
+    }
   }
 }
 
@@ -329,6 +381,15 @@ export async function fetchHistory(
   const cached = cacheGet<Bar[]>(key);
   if (cached) return cached;
 
+  return withInflight(key, () => _fetchHistoryUncached(ticker, period, interval, key));
+}
+
+async function _fetchHistoryUncached(
+  ticker: string,
+  period: string,
+  interval: string,
+  key: string,
+): Promise<Bar[]> {
   const bars = await retry(async () => {
     // yahoo-finance2's `chart` covers what yfinance's `history` does.
     // yahoo-finance2's return type is a discriminated union based on the
@@ -372,55 +433,151 @@ export async function fetchHistory(
 }
 
 
+/**
+ * Turn one raw yahoo-finance2 quote row into our internal `Quote`
+ * shape. Extracted so `fetchQuote` and the batched `fetchQuotes`
+ * below share exactly the same field-mapping logic — a schema drift
+ * (Yahoo renames a field) touches one place, not two.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeQuoteRow(anyQ: any, tickerUpper: string): Quote {
+  const price = anyQ.regularMarketPrice ?? null;
+  const previousClose = anyQ.regularMarketPreviousClose ?? null;
+  const change = anyQ.regularMarketChange ?? null;
+  const changePercent = anyQ.regularMarketChangePercent ?? null;
+  // Volume + market cap: needed by the segment heatmap to size boxes
+  // proportionally. Yahoo omits `marketCap` for ETFs/indices and
+  // sometimes `regularMarketVolume` after hours — treat both as
+  // best-effort and default to `null` on absence.
+  const volume =
+    typeof anyQ.regularMarketVolume === "number"
+      ? anyQ.regularMarketVolume
+      : null;
+  const avgVolume3M =
+    typeof anyQ.averageDailyVolume3Month === "number"
+      ? anyQ.averageDailyVolume3Month
+      : typeof anyQ.averageDailyVolume10Day === "number"
+        ? anyQ.averageDailyVolume10Day
+        : null;
+  const marketCap =
+    typeof anyQ.marketCap === "number" ? anyQ.marketCap : null;
+  return {
+    ticker: tickerUpper,
+    price,
+    previousClose,
+    change,
+    changePercent:
+      // yahoo returns the percent as a whole number (1.35 = 1.35%); the
+      // rest of the app expects a fraction (0.0135), so scale here.
+      typeof changePercent === "number" ? changePercent / 100 : null,
+    volume,
+    avgVolume3M,
+    marketCap,
+    currency: anyQ.currency ?? "USD",
+    marketState: anyQ.marketState ?? "UNKNOWN",
+    fetchedAt: new Date().toISOString(),
+  } satisfies Quote;
+}
+
 export async function fetchQuote(ticker: string): Promise<Quote> {
   const key = `quote:${ticker.toUpperCase()}`;
   const cached = cacheGet<Quote>(key);
   if (cached) return cached;
 
-  const quote = await retry(async () => {
-    const q = await callYahoo("quote", () => yahooFinance.quote(ticker));
-    // `yahoo-finance2` narrows differently across versions; be defensive.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyQ = q as any;
-    const price = anyQ.regularMarketPrice ?? null;
-    const previousClose = anyQ.regularMarketPreviousClose ?? null;
-    const change = anyQ.regularMarketChange ?? null;
-    const changePercent = anyQ.regularMarketChangePercent ?? null;
-    // Volume + market cap: needed by the segment heatmap to size boxes
-    // proportionally. Yahoo omits `marketCap` for ETFs/indices and
-    // sometimes `regularMarketVolume` after hours — treat both as
-    // best-effort and default to `null` on absence.
-    const volume =
-      typeof anyQ.regularMarketVolume === "number"
-        ? anyQ.regularMarketVolume
-        : null;
-    const avgVolume3M =
-      typeof anyQ.averageDailyVolume3Month === "number"
-        ? anyQ.averageDailyVolume3Month
-        : typeof anyQ.averageDailyVolume10Day === "number"
-          ? anyQ.averageDailyVolume10Day
-          : null;
-    const marketCap =
-      typeof anyQ.marketCap === "number" ? anyQ.marketCap : null;
-    return {
-      ticker: ticker.toUpperCase(),
-      price,
-      previousClose,
-      change,
-      changePercent:
-        // yahoo returns the percent as a whole number (1.35 = 1.35%); the
-        // rest of the app expects a fraction (0.0135), so scale here.
-        typeof changePercent === "number" ? changePercent / 100 : null,
-      volume,
-      avgVolume3M,
-      marketCap,
-      currency: anyQ.currency ?? "USD",
-      marketState: anyQ.marketState ?? "UNKNOWN",
-      fetchedAt: new Date().toISOString(),
-    } satisfies Quote;
+  return withInflight(key, async () => {
+    const quote = await retry(async () => {
+      const q = await callYahoo("quote", () => yahooFinance.quote(ticker));
+      // `yahoo-finance2` narrows differently across versions; be defensive.
+      return normalizeQuoteRow(q, ticker.toUpperCase());
+    });
+    cacheSet(key, quote);
+    return quote;
   });
-  cacheSet(key, quote);
-  return quote;
+}
+
+/**
+ * Batch-fetch quotes for multiple tickers in a single Yahoo call.
+ *
+ * `yahoo-finance2` natively accepts a `string[]` for its `quote()`
+ * function and Yahoo responds with a single JSON payload containing
+ * every requested symbol — so this is 1 HTTP round-trip regardless of
+ * how many tickers we ask for (up to Yahoo's implicit ~200-symbol
+ * ceiling). Compare with mapping `fetchQuote` over the list, which
+ * fires N parallel requests and reliably trips Yahoo's rate limiter
+ * once N is above ~15.
+ *
+ * Results are returned in a `Map` keyed by upper-cased ticker.
+ * Symbols Yahoo returns but that fail to normalize (missing every
+ * expected field) are omitted from the map — the caller decides
+ * whether to render "—" or fall back to the per-symbol
+ * `fetchQuote()`.
+ *
+ * TTL cache is honoured: any ticker already cached is served from
+ * memory and *not* included in the upstream request. This is what
+ * makes the batch endpoint idempotent under a page-refresh burst
+ * without re-querying Yahoo.
+ *
+ * If ALL requested tickers are already in-cache, no upstream call is
+ * made at all.
+ */
+export async function fetchQuotes(
+  tickers: readonly string[],
+): Promise<Map<string, Quote>> {
+  const out = new Map<string, Quote>();
+  const uppers = tickers.map((t) => t.toUpperCase());
+
+  // Partition: served-from-cache vs. needs-upstream-fetch. Preserves
+  // insertion order so the caller's iteration order is stable.
+  const toFetch: string[] = [];
+  for (const upper of uppers) {
+    const cached = cacheGet<Quote>(`quote:${upper}`);
+    if (cached) {
+      out.set(upper, cached);
+    } else if (!toFetch.includes(upper)) {
+      toFetch.push(upper);
+    }
+  }
+
+  if (toFetch.length === 0) return out;
+
+  // One batched call. `yahoo-finance2` accepts an array and returns
+  // an array of quote rows — same normalisation path as `fetchQuote`.
+  const rows = await retry(async () => {
+    // Cast because the yahoo-finance2 type overloads narrow to a
+    // single-symbol return when the arg looks like a string literal
+    // to TS; passing `string[]` gets us the array shape at runtime.
+    const q = await callYahoo("quote.batch", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      yahooFinance.quote(toFetch as any),
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (Array.isArray(q) ? q : q ? [q] : []) as any[];
+  });
+
+  // Map by returned symbol so we tolerate Yahoo re-ordering or
+  // silently dropping symbols we don't have data for.
+  for (const raw of rows) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyQ = raw as any;
+    const sym =
+      typeof anyQ?.symbol === "string" ? anyQ.symbol.toUpperCase() : null;
+    if (!sym) continue;
+    const normalized = normalizeQuoteRow(anyQ, sym);
+    // Only cache + return rows that got at least one meaningful price
+    // field back — Yahoo occasionally returns a symbol row with every
+    // field null when a ticker is delisted, and we'd rather serve a
+    // "no data" state per-symbol than poison the 15-min TTL cache
+    // with an empty quote.
+    if (
+      normalized.price != null ||
+      normalized.previousClose != null ||
+      normalized.marketCap != null
+    ) {
+      cacheSet(`quote:${sym}`, normalized);
+      out.set(sym, normalized);
+    }
+  }
+  return out;
 }
 
 
@@ -429,41 +586,43 @@ export async function fetchInfo(ticker: string): Promise<Info> {
   const cached = cacheGet<Info>(key);
   if (cached) return cached;
 
-  const info = await retry(async () => {
-    const summary = await callYahoo("quoteSummary.info", () =>
-      yahooFinance.quoteSummary(ticker, {
-        modules: [
-          "summaryDetail",
-          "defaultKeyStatistics",
-          "financialData",
-          "assetProfile",
-          "price",
-        ],
-      }),
-    );
-    // Flatten into a single dict keyed by the fields the ratios page reads,
-    // aligning with the shape the Python `info` blob has.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const flat: Record<string, any> = {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const modules = summary as any;
-    for (const [_module, obj] of Object.entries(modules)) {
-      if (obj && typeof obj === "object") {
-        for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-          // Some yahoo-finance2 fields are wrapped `{ raw, fmt }`; unwrap.
-          if (v && typeof v === "object" && "raw" in (v as object)) {
-            flat[k] = (v as { raw: unknown }).raw;
-          } else {
-            flat[k] = v;
+  return withInflight(key, async () => {
+    const info = await retry(async () => {
+      const summary = await callYahoo("quoteSummary.info", () =>
+        yahooFinance.quoteSummary(ticker, {
+          modules: [
+            "summaryDetail",
+            "defaultKeyStatistics",
+            "financialData",
+            "assetProfile",
+            "price",
+          ],
+        }),
+      );
+      // Flatten into a single dict keyed by the fields the ratios page reads,
+      // aligning with the shape the Python `info` blob has.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const flat: Record<string, any> = {};
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const modules = summary as any;
+      for (const [_module, obj] of Object.entries(modules)) {
+        if (obj && typeof obj === "object") {
+          for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+            // Some yahoo-finance2 fields are wrapped `{ raw, fmt }`; unwrap.
+            if (v && typeof v === "object" && "raw" in (v as object)) {
+              flat[k] = (v as { raw: unknown }).raw;
+            } else {
+              flat[k] = v;
+            }
           }
         }
       }
-    }
-    return flat as Info;
-  }, { attempts: 3 });
+      return flat as Info;
+    }, { attempts: 3 });
 
-  cacheSet(key, info);
-  return info;
+    cacheSet(key, info);
+    return info;
+  });
 }
 
 
@@ -475,35 +634,37 @@ export async function fetchNews(
   const cached = cacheGet<NewsItem[]>(key);
   if (cached) return cached;
 
-  const items = await retry(async () => {
-    // `yahooFinance.search` returns a wide union; we only ever use `.news`.
-    const res = (await callYahoo("search.news", () =>
-      yahooFinance.search(ticker, {
-        newsCount: limit,
-        quotesCount: 0,
-      }),
-    )) as { news?: Array<Record<string, unknown>> };
-    const raw = res?.news ?? [];
-    const out: NewsItem[] = [];
-    for (const n of raw) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const anyN = n as any;
-      if (!anyN.title) continue;
-      out.push({
-        title: String(anyN.title),
-        publisher: String(anyN.publisher ?? "Unknown source"),
-        link: String(anyN.link ?? ""),
-        publishedAt: anyN.providerPublishTime
-          ? new Date(anyN.providerPublishTime).toISOString()
-          : new Date().toISOString(),
-        summary: String(anyN.summary ?? ""),
-      });
-    }
-    return out;
-  }, { attempts: 3 });
+  return withInflight(key, async () => {
+    const items = await retry(async () => {
+      // `yahooFinance.search` returns a wide union; we only ever use `.news`.
+      const res = (await callYahoo("search.news", () =>
+        yahooFinance.search(ticker, {
+          newsCount: limit,
+          quotesCount: 0,
+        }),
+      )) as { news?: Array<Record<string, unknown>> };
+      const raw = res?.news ?? [];
+      const out: NewsItem[] = [];
+      for (const n of raw) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const anyN = n as any;
+        if (!anyN.title) continue;
+        out.push({
+          title: String(anyN.title),
+          publisher: String(anyN.publisher ?? "Unknown source"),
+          link: String(anyN.link ?? ""),
+          publishedAt: anyN.providerPublishTime
+            ? new Date(anyN.providerPublishTime).toISOString()
+            : new Date().toISOString(),
+          summary: String(anyN.summary ?? ""),
+        });
+      }
+      return out;
+    }, { attempts: 3 });
 
-  cacheSet(key, items);
-  return items;
+    cacheSet(key, items);
+    return items;
+  });
 }
 
 
@@ -599,6 +760,13 @@ export async function fetchHolders(ticker: string): Promise<Holders> {
   const cached = cacheGet<Holders>(key);
   if (cached) return cached;
 
+  return withInflight(key, () => _fetchHoldersUncached(ticker, key));
+}
+
+async function _fetchHoldersUncached(
+  ticker: string,
+  key: string,
+): Promise<Holders> {
   const result = await retry(async () => {
     const summary = await callYahoo("quoteSummary.holders", () =>
       yahooFinance.quoteSummary(ticker, {

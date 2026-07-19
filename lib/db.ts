@@ -720,6 +720,56 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
         ON sector_technical_alerts(created_at DESC);
     `);
   },
+  // v12: cross-process tick lock table.
+  //
+  // Replaces the previous in-memory `Set<string>` in
+  // `lib/bot/store.ts` which only prevented overlap WITHIN a single
+  // Node process. In a real deployment the UI container and the
+  // worker container are two distinct processes; both call the same
+  // tick engines (worker on a schedule, UI via /api/*/test), and
+  // both used to freely re-enter the same tick body. That in turn
+  // meant two processes could:
+  //   1. Both read `technical_alerts.last_verdict = 'hold'`.
+  //   2. Both compute `verdict = 'buy'`.
+  //   3. Both push a "verdict changed" notification.
+  //   4. Both write `'buy'` back — one becomes a no-op UPDATE.
+  //
+  // A DB-backed lock closes that race because SQLite serialises
+  // writes at the file lock level. `expires_at` provides a stale-
+  // lock recovery path — if a process crashes mid-tick without
+  // releasing, the next tick will see the expired lock and take it.
+  //
+  //   * `name` — tick identity ("technical", "resonance", …), same
+  //     as the string passed to `tryLockTick` today.
+  //   * `acquired_at` / `expires_at` — timestamps in ISO 8601. The
+  //     lock is considered valid only when `expires_at > now`.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bot_locks (
+        name        TEXT PRIMARY KEY,
+        acquired_at TEXT NOT NULL,
+        expires_at  TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_bot_locks_expires
+        ON bot_locks(expires_at);
+    `);
+  },
+  // v13: drop the legacy `signals` and `strategy_last_bar` tables.
+  //
+  // These were owned by the removed SMA/RSI/MACD strategy tick (see
+  // the `lib/bot/store.ts` header comment). Every write and read
+  // path was deleted in July 2026, so the tables just accumulated
+  // orphaned rows on existing installations and confused new devs
+  // reading `.schema` output. Safe to drop unconditionally — no
+  // remaining code references them.
+  (db) => {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_signals_ticker_ts;
+      DROP TABLE IF EXISTS signals;
+      DROP TABLE IF EXISTS strategy_last_bar;
+    `);
+  },
 ];
 
 /** Testing / cleanup helper. */

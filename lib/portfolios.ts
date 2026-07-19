@@ -753,6 +753,28 @@ interface PtrCacheEntry {
 const _ptrTextCache = new Map<string, PtrCacheEntry>();
 const PTR_FAILURE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Fetch and text-extract a House Clerk PTR PDF, with a 3-attempt
+ * retry loop for transient upstream failures.
+ *
+ * Retry policy mirrors `secFetchXmlWithRetry` below:
+ *   * `429` — honour `Retry-After` (up to 15 s), then retry.
+ *   * `5xx` — exponential backoff (500 ms × 2^attempt), then retry.
+ *   * Network / timeout errors — same exponential backoff.
+ *   * `404` / `403` — permanent (form isn't there). No retry, cache
+ *     the failure for `PTR_FAILURE_TTL_MS` so we don't hammer.
+ *   * Any other 4xx — permanent, same failure caching.
+ *
+ * Before the retry loop was added, one bad tick from the House Clerk
+ * (a routine 502 during their deploy windows) would flag every
+ * politician's filings as `fetch_failed` for the full 10-minute
+ * failure-cache window — even though the ZIP itself came through
+ * fine. The retry loop absorbs those transients so the failure cache
+ * is now reserved for genuine "the form isn't there" cases.
+ */
+const PTR_MAX_ATTEMPTS = 3;
+const PTR_MAX_RETRY_AFTER_MS = 15_000;
+
 async function fetchPtrPdfText(pdfUrl: string): Promise<string | null> {
   const cached = _ptrTextCache.get(pdfUrl);
   if (cached) {
@@ -769,18 +791,48 @@ async function fetchPtrPdfText(pdfUrl: string): Promise<string | null> {
     });
   };
 
-  let res: Response;
-  try {
-    res = await timedFetch(pdfUrl, {
-      cache: "no-store",
-      headers: { "User-Agent": settings.portfolios.secUserAgent },
-      timeoutMs: 30_000,
-    });
-  } catch {
+  // ---- fetch loop with backoff --------------------------------------
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= PTR_MAX_ATTEMPTS; attempt++) {
+    try {
+      res = await timedFetch(pdfUrl, {
+        cache: "no-store",
+        headers: { "User-Agent": settings.portfolios.secUserAgent },
+        timeoutMs: 30_000,
+      });
+    } catch {
+      // Network error / timeout — treat as transient.
+      if (attempt < PTR_MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+        continue;
+      }
+      rememberFailure();
+      return null;
+    }
+    if (res.ok) break;
+    // Permanent — form simply isn't there. Cache and give up.
+    if (res.status === 404 || res.status === 403) {
+      rememberFailure();
+      return null;
+    }
+    // Transient — retry with `Retry-After` (429) or exponential
+    // backoff (5xx).
+    if (
+      (res.status === 429 || res.status >= 500) &&
+      attempt < PTR_MAX_ATTEMPTS
+    ) {
+      const hdr = Number(res.headers.get("retry-after") ?? "") * 1000;
+      const wait = Number.isFinite(hdr) && hdr > 0
+        ? Math.min(PTR_MAX_RETRY_AFTER_MS, hdr)
+        : 500 * 2 ** (attempt - 1);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    // Any other 4xx / final retry exhaustion → permanent for now.
     rememberFailure();
     return null;
   }
-  if (!res.ok) {
+  if (!res || !res.ok) {
     rememberFailure();
     return null;
   }

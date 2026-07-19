@@ -1,8 +1,9 @@
 /**
  * Bot orchestration — one worker loop that fans out into every alert
- * channel we support (technical signals, 6-signal resonance,
- * sector-level 6-signal resonance, portfolio insiders, insider stock
- * watches, news subscriptions, portfolio-risk).
+ * channel we support (technical signals, 6-signal resonance, master
+ * verdict, sector-level 6-signal resonance, sector technical signals,
+ * portfolio insiders, insider stock watches, news subscriptions,
+ * portfolio-risk).
  *
  * Historically this module also ran a per-tick "strategy" pass (SMA
  * crossover / RSI reversion / MACD cross) against the sticky sidebar
@@ -30,10 +31,12 @@ import { runStockTick } from "../stock-watch/engine";
 import { runNewsTick } from "../news-watch/engine";
 import { runTechnicalTick } from "../technical-watch/engine";
 import { runResonanceTick } from "../resonance-watch/engine";
+import { runMasterTick } from "../master-watch/engine";
 import { runSectorResonanceTick } from "../sector-resonance-watch/engine";
 import { runSectorTechnicalTick } from "../sector-technical-watch/engine";
 import { runPortfolioRiskTick } from "../portfolio-risk/engine";
 import { runPortfolioSnapshotTick } from "../portfolios-cache/engine";
+import { runRetentionTick } from "./retention";
 
 /**
  * Long-running worker loop. Fires every enabled sub-tick in isolation
@@ -66,150 +69,71 @@ export async function runForever(_ticker?: string): Promise<void> {
   while (!stopping) {
     const enabled = getState<boolean>(STATE_KEYS.ENABLED, true);
     if (enabled) {
-      // Portfolio-watch tick — followed politicians / insiders /
-      // fund-manager filings. Underlying report fetches are cached
-      // (portfolios TTL ~6h), so this is cheap when nothing has
-      // changed.
-      try {
-        const pt = await runPortfolioTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] portfolio-tick ${pt.ranAt} — ` +
-            `watches=${pt.watchCount} probed=${pt.presetsProbed} events=${pt.eventsSeen} ` +
-            `matched=${pt.eventsMatched} notified=${pt.notifiesSent} errors=${pt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] portfolio-tick threw:", err);
-      }
-      // Stock-watch tick — per-ticker insider transaction alerts.
-      try {
-        const st = await runStockTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] stock-tick ${st.ranAt} — ` +
-            `watches=${st.watchCount} probed=${st.tickersProbed} tx=${st.transactionsSeen} ` +
-            `matched=${st.transactionsMatched} notified=${st.notifiesSent} errors=${st.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] stock-tick threw:", err);
-      }
-      // News-watch tick — subscribed tickers get Telegram on any new
-      // headline. Also silently accumulates the DB history that the
-      // News page reads back to the user.
-      try {
-        const nt = await runNewsTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] news-tick ${nt.ranAt} — ` +
-            `subs=${nt.subscriptionCount} probed=${nt.tickersProbed} items=${nt.itemsSeen} ` +
-            `new=${nt.itemsNew} notified=${nt.notifiesSent} errors=${nt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] news-tick threw:", err);
-      }
-      // Technical-signal alerts — per-ticker rules for scheduled
-      // daily digests and on-change notifications.
-      try {
-        const tt = await runTechnicalTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] technical-tick ${tt.ranAt} — ` +
-            `alerts=${tt.alertCount} evaluated=${tt.tickersEvaluated} ` +
-            `digests=${tt.digestsSent} changes=${tt.changesSent} errors=${tt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] technical-tick threw:", err);
-      }
-      // 6-Signal Resonance alerts — parallel to the technical-signal
-      // path but driven off the resonance strategy.
-      try {
-        const rt = await runResonanceTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] resonance-tick ${rt.ranAt} — ` +
-            `alerts=${rt.alertCount} evaluated=${rt.tickersEvaluated} ` +
-            `digests=${rt.digestsSent} changes=${rt.changesSent} errors=${rt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] resonance-tick threw:", err);
-      }
-      // Sector 6-Signal Resonance alerts — identical shape to the
-      // per-ticker resonance tick above, but keyed by market
-      // segment. Each rule resolves its segment slug to a proxy
-      // ETF at evaluation time so the resonance math itself is
-      // reused. Kept as its own tick (rather than merged into the
-      // ticker one) so a stale sector row can't mask ticker
-      // errors and vice versa.
-      try {
-        const srt = await runSectorResonanceTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] sector-resonance-tick ${srt.ranAt} — ` +
-            `alerts=${srt.alertCount} evaluated=${srt.segmentsEvaluated} ` +
-            `digests=${srt.digestsSent} changes=${srt.changesSent} errors=${srt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] sector-resonance-tick threw:", err);
-      }
-      // Sector Technical Signal alerts — identical architecture to
-      // the sector-resonance tick above but drives the multi-
-      // indicator Technical Signal scorer instead of the 6-signal
-      // resonance strategy. Kept as its own tick so a stale sector
-      // row can't mask ticker errors and vice versa, and so a
-      // failure in one scorer's proxy fetch doesn't block the other.
-      try {
-        const stt = await runSectorTechnicalTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] sector-technical-tick ${stt.ranAt} — ` +
-            `alerts=${stt.alertCount} evaluated=${stt.segmentsEvaluated} ` +
-            `digests=${stt.digestsSent} changes=${stt.changesSent} errors=${stt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] sector-technical-tick threw:", err);
-      }
-      // Portfolio delisting / bankruptcy risk — walks every symbol
-      // the client asked to monitor and fires a push when a fresh
-      // critical/high signal emerges.
-      try {
-        const prt = await runPortfolioRiskTick();
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] portfolio-risk-tick ${prt.ranAt} — ` +
-            `watches=${prt.watchCount} evaluated=${prt.tickersEvaluated} ` +
-            `risky=${prt.riskyCount} sent=${prt.notifiesSent} errors=${prt.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] portfolio-risk-tick threw:", err);
-      }
-      // Portfolios snapshot cache — walks user-visited politician /
-      // fund / insider snapshots whose freshness window has expired
-      // and re-fetches them, so /portfolios pages open instantly on
-      // the next visit. See `lib/portfolios-cache/engine.ts` for the
-      // batching + concurrency policy (kept small so we don't
-      // starve the more time-sensitive alert ticks above).
-      try {
-        const pst = await runPortfolioSnapshotTick();
-        if (!pst.skipped) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[worker] portfolios-snapshot-tick ${pst.ranAt} — ` +
-              `due=${pst.dueCount} attempted=${pst.attempted} refreshed=${pst.refreshed} ` +
-              `upstreamDown=${pst.upstreamUnavailable} errors=${pst.errors.length}`,
-          );
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] portfolios-snapshot-tick threw:", err);
-      }
+      // Every sub-tick runs in parallel. They share no in-memory
+      // state and every DB write goes through `INSERT OR IGNORE` on a
+      // unique key (see the per-channel notification tables in
+      // `lib/db.ts`), so concurrent execution is safe. Total wall
+      // time is now `max(tick_i)` instead of `sum(tick_i)` — a hung
+      // Yahoo response on one channel no longer stalls the eight
+      // others. Each `runTick` helper wraps its channel in its own
+      // try/catch + structured log line so a failure in one channel
+      // never surfaces as an unhandled rejection at the
+      // `Promise.allSettled` boundary.
+      await Promise.allSettled([
+        runTick("portfolio-tick", runPortfolioTick, (r) =>
+          `watches=${r.watchCount} probed=${r.presetsProbed} events=${r.eventsSeen} ` +
+          `matched=${r.eventsMatched} notified=${r.notifiesSent} errors=${r.errors.length}`,
+        ),
+        runTick("stock-tick", runStockTick, (r) =>
+          `watches=${r.watchCount} probed=${r.tickersProbed} tx=${r.transactionsSeen} ` +
+          `matched=${r.transactionsMatched} notified=${r.notifiesSent} errors=${r.errors.length}`,
+        ),
+        runTick("news-tick", runNewsTick, (r) =>
+          `subs=${r.subscriptionCount} probed=${r.tickersProbed} items=${r.itemsSeen} ` +
+          `new=${r.itemsNew} notified=${r.notifiesSent} errors=${r.errors.length}`,
+        ),
+        runTick("technical-tick", runTechnicalTick, (r) =>
+          `alerts=${r.alertCount} evaluated=${r.tickersEvaluated} ` +
+          `digests=${r.digestsSent} changes=${r.changesSent} errors=${r.errors.length}`,
+        ),
+        runTick("resonance-tick", runResonanceTick, (r) =>
+          `alerts=${r.alertCount} evaluated=${r.tickersEvaluated} ` +
+          `digests=${r.digestsSent} changes=${r.changesSent} errors=${r.errors.length}`,
+        ),
+        runTick("master-tick", runMasterTick, (r) =>
+          `alerts=${r.alertCount} evaluated=${r.tickersEvaluated} ` +
+          `digests=${r.digestsSent} changes=${r.changesSent} errors=${r.errors.length}`,
+        ),
+        runTick("sector-resonance-tick", runSectorResonanceTick, (r) =>
+          `alerts=${r.alertCount} evaluated=${r.segmentsEvaluated} ` +
+          `digests=${r.digestsSent} changes=${r.changesSent} errors=${r.errors.length}`,
+        ),
+        runTick("sector-technical-tick", runSectorTechnicalTick, (r) =>
+          `alerts=${r.alertCount} evaluated=${r.segmentsEvaluated} ` +
+          `digests=${r.digestsSent} changes=${r.changesSent} errors=${r.errors.length}`,
+        ),
+        runTick("portfolio-risk-tick", runPortfolioRiskTick, (r) =>
+          `watches=${r.watchCount} evaluated=${r.tickersEvaluated} ` +
+          `risky=${r.riskyCount} sent=${r.notifiesSent} errors=${r.errors.length}`,
+        ),
+        runTick("portfolios-snapshot-tick", runPortfolioSnapshotTick, (r) =>
+          r.skipped
+            ? null // suppress noisy "another tick running" log lines
+            : `due=${r.dueCount} attempted=${r.attempted} refreshed=${r.refreshed} ` +
+              `upstreamDown=${r.upstreamUnavailable} errors=${r.errors.length}`,
+        ),
+        runTick("retention-prune", runRetentionTick, (r) => {
+          // The prune runs at most once per 24 h; on non-due ticks
+          // stay quiet so the worker log doesn't scroll with
+          // "skipped" lines every minute.
+          if (r.skippedNotDue || r.skippedLocked) return null;
+          const total = Object.values(r.deleted).reduce((a, b) => a + b, 0);
+          const perTable = Object.entries(r.deleted)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" ");
+          return `deleted=${total} (${perTable}) errors=${r.errors.length}`;
+        }),
+      ]);
       // Worker heartbeat. Written *after* every sub-tick so the UI's
       // "Last tick" indicator reflects a real completed cycle rather
       // than a start-of-cycle marker. Historically this key was
@@ -230,5 +154,36 @@ export async function runForever(_ticker?: string): Promise<void> {
     while (!stopping && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 500));
     }
+  }
+}
+
+/**
+ * One-shot tick runner used by the `Promise.allSettled` fan-out
+ * above. Runs the tick, formats a per-channel log line via the
+ * caller-supplied summariser, and swallows any thrown error into a
+ * structured console.error so a failure in one channel can't reject
+ * the whole `allSettled` (defence in depth — `allSettled` already
+ * absorbs rejections, but this keeps the log message shape
+ * consistent with the pre-parallel implementation).
+ *
+ * `summarise` returning `null` suppresses the log line — used by
+ * the portfolios-snapshot channel to skip the "another tick already
+ * running" noise on every worker cycle.
+ */
+async function runTick<T extends { ranAt: string }>(
+  label: string,
+  fn: () => Promise<T>,
+  summarise: (r: T) => string | null,
+): Promise<void> {
+  try {
+    const r = await fn();
+    const line = summarise(r);
+    if (line !== null) {
+      // eslint-disable-next-line no-console
+      console.log(`[worker] ${label} ${r.ranAt} — ${line}`);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[worker] ${label} threw:`, err);
   }
 }

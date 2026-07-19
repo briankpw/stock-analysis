@@ -49,30 +49,109 @@ export interface NotifyResult {
 const TG_API = (token: string, method: string) =>
   `https://api.telegram.org/bot${token}/${method}`;
 
+/**
+ * Send a message via the Telegram Bot API with proper handling of
+ * flood-wait (429), permanent-block (403), and transient-5xx errors.
+ *
+ * Telegram's contract:
+ *   * 200 → sent.
+ *   * 403 → the chat has blocked the bot (or the bot was removed from
+ *           the group). Permanent — retrying just burns quota. We
+ *           report this as a distinct failure detail so the alert
+ *           engine can log it clearly; ideally a future feature would
+ *           auto-disable the subscription, but the current single-
+ *           chat model doesn't need that yet.
+ *   * 429 → flood-wait. Body includes `parameters.retry_after`
+ *           (seconds). We honour it, capped at 30 s so a bug on
+ *           Telegram's side can't wedge a tick indefinitely, and
+ *           retry once.
+ *   * 5xx / network errors → transient. Retry with a short backoff
+ *           up to `MAX_ATTEMPTS` times.
+ *   * Other 4xx → permanent (bad chat id, malformed markdown, …).
+ *           Report the body so the operator can fix it; don't retry.
+ */
+const TELEGRAM_MAX_ATTEMPTS = 3;
+const TELEGRAM_MAX_FLOOD_WAIT_MS = 30_000;
+
 async function sendTelegram(text: string): Promise<NotifyResult> {
   if (!telegramConfigured()) {
     return { ok: false, detail: "Telegram not configured" };
   }
-  try {
-    const res = await fetch(TG_API(settings.bot.telegramBotToken, "sendMessage"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: settings.bot.telegramChatId,
-        text,
-        parse_mode: "Markdown",
-        disable_web_page_preview: true,
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return { ok: false, detail: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+  let lastDetail = "unknown error";
+  for (let attempt = 1; attempt <= TELEGRAM_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(
+        TG_API(settings.bot.telegramBotToken, "sendMessage"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            chat_id: settings.bot.telegramChatId,
+            text,
+            parse_mode: "Markdown",
+            disable_web_page_preview: true,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (res.ok) return { ok: true, detail: "sent" };
+
+      // Peek at the body once — Telegram error responses are small
+      // JSON blobs of the shape `{ ok: false, error_code, description,
+      // parameters?: { retry_after?: number } }`.
+      const raw = await res.text().catch(() => "");
+      let parsed: { description?: string; parameters?: { retry_after?: number } } = {};
+      try {
+        parsed = JSON.parse(raw) as typeof parsed;
+      } catch {
+        /* leave parsed empty; description falls back to raw body */
+      }
+      const description = parsed.description ?? raw.slice(0, 200);
+
+      if (res.status === 403) {
+        // Permanent: bot blocked / removed from chat. No point
+        // retrying; surface a distinct detail so ops can diagnose.
+        return {
+          ok: false,
+          detail: `telegram: chat has blocked the bot (403) — ${description}`,
+        };
+      }
+      if (res.status === 429) {
+        const retryAfterSec =
+          Number(parsed.parameters?.retry_after ?? res.headers.get("retry-after") ?? 1) || 1;
+        const waitMs = Math.min(
+          TELEGRAM_MAX_FLOOD_WAIT_MS,
+          Math.max(500, retryAfterSec * 1000),
+        );
+        lastDetail = `HTTP 429 (flood-wait ${retryAfterSec}s): ${description}`;
+        if (attempt < TELEGRAM_MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        return { ok: false, detail: lastDetail };
+      }
+      if (res.status >= 500) {
+        // Transient server-side. Exponential backoff, then retry.
+        lastDetail = `HTTP ${res.status}: ${description}`;
+        if (attempt < TELEGRAM_MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+          continue;
+        }
+        return { ok: false, detail: lastDetail };
+      }
+      // Any other 4xx (bad markdown, bad chat id, …) — permanent.
+      // Don't retry, don't burn quota.
+      return { ok: false, detail: `HTTP ${res.status}: ${description}` };
+    } catch (err) {
+      lastDetail = err instanceof Error ? err.message : String(err);
+      if (attempt < TELEGRAM_MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+        continue;
+      }
+      return { ok: false, detail: lastDetail };
     }
-    return { ok: true, detail: "sent" };
-  } catch (err) {
-    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
+  return { ok: false, detail: lastDetail };
 }
 
 // ---------------------------------------------------------------------------

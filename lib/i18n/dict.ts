@@ -559,6 +559,25 @@ export const DICT: Readonly<Record<string, Entry>> = {
     en: "All P&L on this page uses FIFO (First-In-First-Out) cost basis — sells consume your oldest lots first, and realized P&L is booked against those lots' actual costs. This is what US brokers (MooMoo, Schwab, Fidelity, etc.) report on statements and tax forms, so the numbers here should reconcile with your broker.",
     "zh-CN": "本页面所有盈亏均基于先进先出（FIFO）成本口径——卖出优先消化最早买入的批次，已实现盈亏按被消化批次的实际成本计算。这与美国券商（如 MooMoo、Schwab、Fidelity 等）在账单与税务申报中所用口径一致，因此本页数字可与券商账单对账。",
   },
+  // Data-quality warnings surfaced above the trade timeline when the
+  // fold couldn't settle a row cleanly. See `Position.dataWarnings` in
+  // `lib/portfolio-aggregate.ts` for the two kinds emitted.
+  "myPortfolio.drill.warn.oversell.title": {
+    en: "{shares} shares sold without a matching buy.",
+    "zh-CN": "已卖出 {shares} 股，但找不到匹配的买入记录。",
+  },
+  "myPortfolio.drill.warn.oversell.body": {
+    en: "The cash from these sells is included in \"Cash in (sells)\" and the position's total P&L, but no realized P&L is booked for them (there's no cost basis to net against). Likely a transferred-in position that wasn't imported, a short sale, or a missing Buy row in the CSV.",
+    "zh-CN": "这部分卖出所得已计入\"卖出现金流入\"及总盈亏，但未计入已实现盈亏（缺少成本基础用于对冲）。通常是转入持仓未导入、卖空交易，或 CSV 缺失买入行导致。",
+  },
+  "myPortfolio.drill.warn.zeroShares.title": {
+    en: "{n} buy row(s) skipped.",
+    "zh-CN": "已跳过 {n} 条买入记录。",
+  },
+  "myPortfolio.drill.warn.zeroShares.body": {
+    en: "Rows with 0 or negative shares can't be folded into a cost basis and were dropped. Check the source CSV — this is usually a malformed export.",
+    "zh-CN": "股数为 0 或负数的记录无法计算成本基础，已被忽略。请检查原始 CSV，通常是导出格式异常所致。",
+  },
 
   // -- Grand totals bar (per currency) --------------------------------------
   "myPortfolio.summary.positionsSummary": { en: "{open} open · {closed} closed",

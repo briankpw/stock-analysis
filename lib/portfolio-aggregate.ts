@@ -210,7 +210,53 @@ export interface Position {
    * (booked + on paper)" number. Null when we don't have a live price.
    */
   totalPnl: number | null;
+
+  /**
+   * Machine-readable warnings the folder emitted while chewing on this
+   * position's rows — CSV data problems the user needs to know about
+   * because they cause the summary numbers to disagree with the
+   * broker statement.
+   *
+   * Currently produced:
+   *   * `oversell` — one or more Sell rows tried to drain shares this
+   *     position had never bought (transferred-in position not
+   *     imported, actual short sell, or CSV row order error). The
+   *     unmatched shares are still counted in `soldShares` and their
+   *     proceeds still flow into `totalProceeds`, but no realized P&L
+   *     is booked for them (no cost basis to net against) and
+   *     `netShares` is left negative so the UI can flag the mismatch.
+   *   * `zero_shares_buy` — one or more Buy rows had `shares === 0` or
+   *     a non-positive share count and were skipped entirely (would
+   *     otherwise divide by zero in the cost-per-share formula).
+   *
+   * Empty when the fold ran cleanly — the UI hides the warning strip
+   * on an empty array so this is a zero-cost addition for the happy
+   * path.
+   */
+  dataWarnings: PositionDataWarning[];
 }
+
+/**
+ * Structured warning emitted when the aggregator finds a row it
+ * couldn't fold cleanly. Kept as a discriminated union so the UI can
+ * render a specific message per kind rather than a generic "check
+ * your CSV" toast.
+ */
+export type PositionDataWarning =
+  | {
+      kind: "oversell";
+      /** Total shares that had no matching buy lot to consume. */
+      unmatchedShares: number;
+      /** Total cash the user still received for these shares — kept
+       *  in `totalProceeds` but excluded from `realizedPnl`. */
+      unmatchedProceeds: number;
+    }
+  | {
+      kind: "zero_shares_buy";
+      /** How many Buy rows had a non-positive share count and were
+       *  dropped from the fold. */
+      rowsSkipped: number;
+    };
 
 /**
  * A per-currency grand-total bucket. When a user has USD and HKD trades
@@ -333,6 +379,14 @@ function reducePosition(bucket: HoldingRow[]): Position {
   let totalCommission = 0;
   let realizedPnl = 0;
 
+  // Data-quality trackers — surfaced via `Position.dataWarnings` at the
+  // end of the fold so the UI can flag rows that couldn't be settled
+  // cleanly. Accumulated (not emitted per-row) so we emit at most one
+  // warning of each kind per position rather than a spam list.
+  let unmatchedSellShares = 0;
+  let unmatchedSellProceeds = 0;
+  let zeroSharesBuyRowsSkipped = 0;
+
   // Running weighted-average cost basis. Reset to null when the
   // position goes flat, so a re-entry starts fresh.
   let avgCost: number | null = null;
@@ -376,14 +430,24 @@ function reducePosition(bucket: HoldingRow[]): Position {
     // set the lot's `eventIdx` back-reference on Buys.
     const eventIdx = trades.length;
 
-    if (row.type === "Buy" && row.shares != null && row.costPerShare != null) {
+    if (
+      row.type === "Buy" &&
+      row.shares != null &&
+      row.shares > 0 &&
+      row.costPerShare != null
+    ) {
       const spend = row.shares * row.costPerShare + commission;
       totalInvested += spend;
       cashFlow = -spend;
 
       // Update running average cost: weighted by shares held vs. shares
       // added. Commission is folded into the buy's per-share cost so
-      // the user's real cost basis reflects brokerage.
+      // the user's real cost basis reflects brokerage. The
+      // `row.shares > 0` gate above prevents a divide-by-zero here:
+      // some broker exports emit `shares=0` rows for edge cases like
+      // reinvested-dividend-with-cash-price=0, which would otherwise
+      // produce `Infinity` and poison every downstream weighted-avg
+      // computation with `NaN`.
       const newCostPerShare = (row.shares * row.costPerShare + commission) / row.shares;
       if (netShares <= 0 || avgCost == null) {
         avgCost = newCostPerShare;
@@ -402,6 +466,17 @@ function reducePosition(bucket: HoldingRow[]): Position {
         remainingShares: row.shares,
         attributedRealized: 0,
       });
+    } else if (
+      row.type === "Buy" &&
+      row.shares != null &&
+      row.shares <= 0
+    ) {
+      // Explicitly zero/negative Buy — a malformed row we're refusing
+      // to fold in (would otherwise divide by zero above). Count it
+      // so the UI can surface a "N rows skipped" warning; still push
+      // a TradeEvent below so the drilldown timeline shows the raw
+      // row wasn't invisibly dropped.
+      zeroSharesBuyRowsSkipped += 1;
     } else if (row.type === "Sell" && row.shares != null && row.costPerShare != null) {
       const proceeds = row.shares * row.costPerShare - commission;
       totalProceeds += proceeds;
@@ -437,6 +512,23 @@ function reducePosition(bucket: HoldingRow[]): Position {
         }
         realizedPnl += realizedThisTrade;
       }
+      // Any shares this sell tried to consume but couldn't drain from
+      // an open lot are "oversells" — either bad data (missing prior
+      // Buy row, transferred-in position not in the CSV), a genuine
+      // short sale we don't fully model, or a broker split-lot
+      // reconciliation. Track the residual so the UI can surface a
+      // "N shares sold without a matching buy — check your CSV"
+      // warning; the proceeds themselves still land in `totalProceeds`
+      // above so the cash-flow view stays accurate, but they do NOT
+      // land in `realizedPnl` (there's no cost basis to net against).
+      const unmatched = row.shares - totalConsumed;
+      if (unmatched > 1e-9) {
+        unmatchedSellShares += unmatched;
+        // Proportional share of the sell proceeds that couldn't be
+        // matched to a lot. Kept just for the warning payload — not
+        // used in any subsequent math.
+        unmatchedSellProceeds += proceeds * (unmatched / row.shares);
+      }
 
       netShares -= row.shares;
       soldShares += row.shares;
@@ -462,9 +554,15 @@ function reducePosition(bucket: HoldingRow[]): Position {
         }
         avgCost = sumShares > 1e-9 ? sumCost / sumShares : null;
       } else {
-        // Position fully closed — clear the basis so a subsequent
-        // re-buy establishes a fresh one.
-        netShares = Math.max(netShares, 0);
+        // Position fully closed (`netShares` at 0) OR oversold
+        // (`netShares` negative) — clear the basis either way so a
+        // subsequent re-buy establishes a fresh one. We intentionally
+        // do NOT clamp `netShares` to 0 here anymore: if the fold
+        // ended up short, we want that negative number to survive to
+        // the UI so the mismatch is visible. Historically we clamped
+        // and silently hid the discrepancy; the `unmatchedSellShares`
+        // accumulator above now carries the same information but
+        // surfaces it explicitly via `dataWarnings`.
         avgCost = null;
       }
     }
@@ -514,6 +612,21 @@ function reducePosition(bucket: HoldingRow[]): Position {
 
   const investedNow = avgCost != null ? avgCost * netShares : 0;
 
+  const dataWarnings: PositionDataWarning[] = [];
+  if (unmatchedSellShares > 1e-9) {
+    dataWarnings.push({
+      kind: "oversell",
+      unmatchedShares: unmatchedSellShares,
+      unmatchedProceeds: unmatchedSellProceeds,
+    });
+  }
+  if (zeroSharesBuyRowsSkipped > 0) {
+    dataWarnings.push({
+      kind: "zero_shares_buy",
+      rowsSkipped: zeroSharesBuyRowsSkipped,
+    });
+  }
+
   return {
     portfolio: anchor.portfolio,
     symbol: anchor.symbol,
@@ -543,6 +656,7 @@ function reducePosition(bucket: HoldingRow[]): Position {
     dayChange: null,
     dayChangePct: null,
     totalPnl: null,
+    dataWarnings,
   };
 }
 

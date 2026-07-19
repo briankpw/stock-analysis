@@ -4,7 +4,9 @@
   "private": true,
   "description": "Keysight Technologies (KEYS) stock analysis dashboard — Next.js 15 rewrite.",
   "scripts": {
+    "predev": "node scripts/bump-service-worker.mjs",
     "dev": "next dev -p 5001",
+    "prebuild": "node scripts/bump-service-worker.mjs",
     "build": "next build",
     "start": "next start -p 5001",
     "worker": "tsx worker.ts",
@@ -12,7 +14,8 @@
     "start:all": "concurrently -k -n ui,worker -c blue,magenta \"npm run start\" \"npm run worker\"",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bump-sw": "node scripts/bump-service-worker.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.2",

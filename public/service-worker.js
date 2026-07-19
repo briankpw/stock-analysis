@@ -3,9 +3,16 @@
 // notifications on the OS notification centre and reopens the app when
 // tapped.
 //
-// Bump CACHE_NAME whenever the SW behaviour changes so browsers pick up
-// the new script; the old cache is dropped on activate.
-const CACHE_NAME = "key-stock-v3";
+// CACHE_NAME MUST change whenever the SW behaviour changes so browsers
+// pick up the new script; the old cache is dropped on activate. The
+// version string below is REWRITTEN automatically by
+// `scripts/bump-service-worker.mjs` (invoked as `prebuild` in
+// package.json) to a hash of the rest of this file, so any SW edit
+// forces a fresh cache without an explicit manual bump. Manual edits
+// to CACHE_NAME are still supported (e.g. to force a re-cache when
+// only assets under `/public` change), but the auto-hash keeps
+// happy-path deployments correct.
+const CACHE_NAME = "key-stock-v4"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
 // Fallback rendering used when a push arrives without a JSON payload
@@ -182,21 +189,52 @@ self.addEventListener("notificationclick", (event) => {
 // Some browsers rotate the crypto keys behind an existing subscription
 // (per RFC 8291 §5). When that happens the browser fires this event and
 // the SW is expected to resubscribe + inform the server. If either step
-// fails we drop the whole subscription so the /bot UI's "Enable" button
-// can re-establish it from scratch.
+// fails we drop a marker into the SW cache so `/bot` can surface a
+// re-enable banner on the next page load — otherwise the user just
+// silently stops getting notifications with no way to diagnose it.
+//
+// Special key `sw-diag:/__push-resub-failed` (a synthetic URL — never
+// actually fetched) holds a JSON blob with the timestamp and reason.
+// `hooks/use-push-notifications.ts` reads it and can also delete it
+// once the user has re-subscribed.
+async function _writePushResubDiagnostic(reason) {
+  try {
+    const cache = await caches.open("sw-diag");
+    await cache.put(
+      "/__push-resub-failed",
+      new Response(
+        JSON.stringify({ at: Date.now(), reason: String(reason).slice(0, 200) }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+  } catch (_) {
+    // Cache write itself failed — nothing we can do at this layer.
+  }
+}
+
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil(
     (async () => {
       try {
         const keyRes = await fetch("/api/push", { cache: "no-store" });
-        if (!keyRes.ok) return;
+        if (!keyRes.ok) {
+          // Most common cause: auth is enabled and this SW request
+          // has no session cookie (a fresh SW request bypasses the
+          // normal cookie flow). Drop a marker so the /bot page can
+          // tell the user to re-open the app + click "Enable
+          // notifications" again.
+          await _writePushResubDiagnostic(
+            "keyFetch:" + keyRes.status + " " + keyRes.statusText,
+          );
+          return;
+        }
         const info = await keyRes.json();
         const key = urlBase64ToUint8Array(info.publicKey);
         const sub = await self.registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: key,
         });
-        await fetch("/api/push", {
+        const upRes = await fetch("/api/push", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -204,8 +242,13 @@ self.addEventListener("pushsubscriptionchange", (event) => {
             subscription: sub.toJSON(),
           }),
         });
-      } catch (_) {
-        // Give up quietly — the user can re-enable from the Bot page.
+        if (!upRes.ok) {
+          await _writePushResubDiagnostic(
+            "upload:" + upRes.status + " " + upRes.statusText,
+          );
+        }
+      } catch (err) {
+        await _writePushResubDiagnostic(err && err.message ? err.message : String(err));
       }
     })(),
   );

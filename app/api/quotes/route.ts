@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { fetchQuote, RateLimitedError } from "@/lib/data";
+import { fetchQuotes, RateLimitedError, type Quote } from "@/lib/data";
 import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -102,13 +102,31 @@ export async function GET(req: Request) {
   }
 
   try {
+    // ONE Yahoo call fans out to every ticker — not `tickers.length`
+    // separate requests. See `fetchQuotes` for the shape guarantees.
+    // On rate-limit the whole batch throws; we surface that as
+    // `rateLimited: true` with per-row status=error so the client can
+    // still render the "throttled" state instead of a red screen.
     let rateLimited = false;
-    const results = await Promise.allSettled(tickers.map((t) => fetchQuote(t)));
+    let batchError: string | null = null;
+    const quotesMap: Map<string, Quote> = await fetchQuotes(tickers).catch(
+      (err) => {
+        if (err instanceof RateLimitedError) rateLimited = true;
+        batchError =
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+              ? err
+              : "quote batch failed";
+        return new Map<string, Quote>();
+      },
+    );
 
-    const quotes: QuoteLive[] = results.map((res, i) => {
-      const ticker = tickers[i]!;
-      if (res.status === "fulfilled") {
-        const q = res.value;
+    // Helper — kept inside the try so it closes over the outer types
+    // without needing a forward declaration. Pure mapping.
+    function toQuoteLive(ticker: string): QuoteLive {
+      const q = quotesMap.get(ticker);
+      if (q) {
         return {
           ticker,
           price: q.price,
@@ -120,11 +138,10 @@ export async function GET(req: Request) {
           status: "ok",
         };
       }
-      // Reason side — flag rate-limits so the client can back off.
-      const err = res.reason;
-      if (err instanceof RateLimitedError) rateLimited = true;
-      const message =
-        err instanceof Error ? err.message : typeof err === "string" ? err : "quote failed";
+      // Not returned by the upstream batch — could be a delisted
+      // ticker, a Yahoo omission, or the whole batch threw. Surface
+      // per-row so the UI degrades to "—" rather than blanking out
+      // every position.
       return {
         ticker,
         price: null,
@@ -134,9 +151,11 @@ export async function GET(req: Request) {
         currency: null,
         marketState: null,
         status: "error",
-        error: message,
+        error: batchError ?? "no data",
       };
-    });
+    }
+
+    const quotes: QuoteLive[] = tickers.map(toQuoteLive);
 
     return NextResponse.json(
       {

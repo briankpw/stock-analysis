@@ -743,6 +743,44 @@ function PositionDrilldown({
         );
       })()}
 
+      {/* Data-quality warnings. Rendered right under the snapshot
+          tiles (where the P&L numbers live) because the whole point
+          is to explain why those numbers may look wrong. Empty in
+          the happy path — the surrounding markup is fine with an
+          empty fragment. */}
+      {p.dataWarnings.length > 0 && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs space-y-1">
+          {p.dataWarnings.map((w, i) => {
+            if (w.kind === "oversell") {
+              return (
+                <div key={i} className="text-amber-700 dark:text-amber-300">
+                  <span className="font-semibold">
+                    {t("myPortfolio.drill.warn.oversell.title", {
+                      shares: fmtShares(w.unmatchedShares),
+                    })}
+                  </span>{" "}
+                  <span className="text-muted-foreground">
+                    {t("myPortfolio.drill.warn.oversell.body")}
+                  </span>
+                </div>
+              );
+            }
+            return (
+              <div key={i} className="text-amber-700 dark:text-amber-300">
+                <span className="font-semibold">
+                  {t("myPortfolio.drill.warn.zeroShares.title", {
+                    n: w.rowsSkipped,
+                  })}
+                </span>{" "}
+                <span className="text-muted-foreground">
+                  {t("myPortfolio.drill.warn.zeroShares.body")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Trade timeline — the "trade-by-trade" list, most recent
           first. Renders as a table on md+ (best density for cross-
           column comparison) and stacks into cards on mobile so wide

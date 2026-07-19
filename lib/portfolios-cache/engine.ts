@@ -98,7 +98,12 @@ export async function runPortfolioSnapshotTick(): Promise<PortfolioSnapshotTickR
     let upstreamUnavailable = 0;
     const errors: string[] = [];
 
-    await mapConcurrent(due, BATCH_CONCURRENCY, async ({ kind, id }) => {
+    // `mapConcurrent` from `@/lib/utils` takes `(items, fn, concurrency)`
+    // — do NOT confuse it with the identically-named helper in
+    // `lib/portfolios.ts` which uses `(items, concurrency, fn)`. The
+    // build enforces this via strict TS types now (previously a swapped
+    // signature would silently type-check to `unknown` and pass).
+    await mapConcurrent(due, async ({ kind, id }) => {
       try {
         const payload = await refreshSnapshot(kind, id);
         if (payload !== null) {
@@ -119,7 +124,7 @@ export async function runPortfolioSnapshotTick(): Promise<PortfolioSnapshotTickR
           );
         }
       }
-    });
+    }, BATCH_CONCURRENCY);
 
     return {
       ranAt,
