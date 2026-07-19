@@ -347,44 +347,65 @@ export async function getCachedFund(
   // legitimately means the manager doesn't file 13Fs; the empty payload
   // is the correct answer and re-fetching wouldn't change it.
   const looksPoisoned =
-    cached.payload.accessionNumber !== null &&
-    cached.payload.positionCount === 0 &&
-    !_fundHealAttempted.has(id);
+    cached.payload.accessionNumber !== null && cached.payload.positionCount === 0;
 
   if (looksPoisoned) {
-    // Record the attempt BEFORE awaiting the refresh so a burst of
-    // concurrent requests can't all queue their own refresh (the
-    // `withInflight` dedup inside `refreshSnapshot` already coalesces
-    // in-flight fetches, but that state clears the moment the fetch
-    // resolves — this flag stays set for the life of the process).
-    _fundHealAttempted.add(id);
-    // `throwOnCold: true` deliberately propagates DataSourceUnavailableError
-    // so the API returns a 503 and the fund page renders the "SEC EDGAR
-    // is throttling us" banner instead of the misleading empty-state
-    // ("manager doesn't file 13Fs"). This is the actionable UX: the user
-    // knows to try again, and the operator can check server logs to see
-    // whether it's a User-Agent issue, an IP throttle, or a network egress
-    // problem.
-    const fresh = await refreshSnapshot<FundReport>("fund", id, {
-      throwOnCold: true,
-    });
-    if (fresh) {
-      return {
-        payload: fresh,
-        meta: {
-          fetchedAt: new Date().toISOString(),
-          nextRefreshAt: new Date(
-            Date.now() + REFRESH_TTL_SECONDS.fund * 1000,
-          ).toISOString(),
-          stale: false,
-          lastError: null,
-          lastErrorAt: null,
-        },
-      };
+    // Priority 1 — the last refresh already errored (SEC 429/403/5xx).
+    // Surface that exact error to the caller without another SEC
+    // round-trip. This is the steady-state answer for the entire
+    // 15-minute error backoff window: every request in that window gets
+    // the same 503 with the same lastStatus, and the fund page renders
+    // the friendly "SEC EDGAR is throttling us" banner. Once the
+    // backoff expires, `getCached`'s fire-and-forget refresh path takes
+    // over and either clears `lastError` (SEC recovered) or updates it
+    // with a fresh timestamp (still throttled).
+    if (cached.meta.lastError !== null) {
+      // Extract the numeric HTTP status from the standard error message
+      // "Data source X is currently unreachable (last status N)". Falling
+      // back to 0 for other error shapes is fine — the client only uses
+      // `sourceUnavailable: true` to trigger the banner branch.
+      const statusMatch = /last status (\d+)/.exec(cached.meta.lastError);
+      const lastStatus = statusMatch ? Number(statusMatch[1]) : 0;
+      throw new DataSourceUnavailableError(
+        "sec-edgar-archive",
+        lastStatus,
+        cached.meta.lastError,
+      );
     }
-    // `throwOnCold: true` should make `fresh === null` unreachable, but
-    // fall through to the stale payload just in case — better to render
-    // the empty state than 500 the caller.
+
+    // Priority 2 — payload is poisoned-shaped but we have no error
+    // record (typical of pre-fix snapshots written by the old
+    // silent-swallow path). Try a blocking heal at most once per preset
+    // per process boot; on failure, refreshSnapshot marks the row with
+    // a fresh lastError so every subsequent read follows Priority 1
+    // above instead of hitting SEC again.
+    if (!_fundHealAttempted.has(id)) {
+      _fundHealAttempted.add(id);
+      const fresh = await refreshSnapshot<FundReport>("fund", id, {
+        throwOnCold: true,
+      });
+      if (fresh) {
+        return {
+          payload: fresh,
+          meta: {
+            fetchedAt: new Date().toISOString(),
+            nextRefreshAt: new Date(
+              Date.now() + REFRESH_TTL_SECONDS.fund * 1000,
+            ).toISOString(),
+            stale: false,
+            lastError: null,
+            lastErrorAt: null,
+          },
+        };
+      }
+      // `throwOnCold: true` makes `fresh === null` unreachable in
+      // practice; the fall-through below still serves the stale empty
+      // payload if it ever happens (never 500 the caller).
+    }
+    // Heal already attempted and it returned another empty payload
+    // (either legitimately-empty 13F or a race where the refresh
+    // succeeded and wrote the same empty shape). Fall through to serve
+    // the cached empty state — same as pre-fix behavior for that case.
   } else if (needsUpgrade) {
     try {
       const fresh = await refreshSnapshot<FundReport>("fund", id, {
