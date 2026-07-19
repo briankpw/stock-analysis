@@ -49,6 +49,7 @@ import {
   listCustomPoliticians,
 } from "./portfolio-presets";
 import { timedFetch } from "./http";
+import { secTimedFetch } from "./sec-limiter";
 import { createTtlCache } from "./utils";
 import { resolveTickersForIssuers } from "./sec-ticker-map";
 
@@ -1189,7 +1190,7 @@ export async function secFetchXmlWithRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const res = await timedFetch(url, {
+      const res = await secTimedFetch(url, {
         headers: secHeaders(),
         cache: "no-store",
         timeoutMs,
@@ -1260,7 +1261,7 @@ async function findLatest13F(cik: string): Promise<{
   filingDate: string;
 } | null> {
   const url = `${SEC_BASE}/submissions/CIK${cik}.json`;
-  const res = await timedFetch(url, {
+  const res = await secTimedFetch(url, {
     headers: secHeaders(),
     cache: "no-store",
     timeoutMs: 20_000,
@@ -1309,7 +1310,7 @@ async function findInfoTableXml(
   accessionDashless: string,
 ): Promise<string | null> {
   const indexUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/index.json`;
-  const res = await timedFetch(indexUrl, {
+  const res = await secTimedFetch(indexUrl, {
     headers: secHeaders(),
     cache: "no-store",
     timeoutMs: 20_000,
@@ -1783,7 +1784,7 @@ export async function fetchPersonInsiderReport(
 
   // Step 1 — pull the submissions index and pluck all insider filings.
   const submissionsUrl = `${SEC_BASE}/submissions/CIK${preset.cik}.json`;
-  const subRes = await timedFetch(submissionsUrl, {
+  const subRes = await secTimedFetch(submissionsUrl, {
     headers: secHeaders(),
     cache: "no-store",
     timeoutMs: 20_000,
@@ -2080,7 +2081,7 @@ async function fetchFtsPage(
   url.searchParams.set("entityName", entityName);
   url.searchParams.set("forms", forms);
   url.searchParams.set("hits", "100");
-  const res = await timedFetch(url.toString(), {
+  const res = await secTimedFetch(url.toString(), {
     cache: "no-store",
     headers: {
       "User-Agent": settings.portfolios.secUserAgent,

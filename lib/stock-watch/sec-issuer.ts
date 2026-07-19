@@ -21,7 +21,7 @@ import {
   secHeaders,
   type SubmissionsResponse,
 } from "@/lib/portfolios";
-import { timedFetch } from "@/lib/http";
+import { secTimedFetch } from "@/lib/sec-limiter";
 
 const INSIDER_FORMS = new Set(["3", "4", "5", "3/A", "4/A", "5/A"]);
 
@@ -125,7 +125,7 @@ export async function fetchIssuerInsiderTransactions(
   limit = 20,
 ): Promise<IssuerInsiderReport> {
   const submissionsUrl = `${SEC_BASE}/submissions/CIK${cik}.json`;
-  const subRes = await timedFetch(submissionsUrl, {
+  const subRes = await secTimedFetch(submissionsUrl, {
     headers: secHeaders(),
     cache: "no-store",
     timeoutMs: 20_000,
@@ -184,7 +184,7 @@ export async function fetchIssuerInsiderTransactions(
       const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${xmlFilename}`;
       const filingUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}&type=${f.form.replace("/A", "")}&dateb=&owner=include&count=40`;
       try {
-        const res = await timedFetch(xmlUrl, {
+        const res = await secTimedFetch(xmlUrl, {
           headers: secHeaders(),
           cache: "no-store",
           timeoutMs: 20_000,

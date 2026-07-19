@@ -12,7 +12,7 @@
 // to CACHE_NAME are still supported (e.g. to force a re-cache when
 // only assets under `/public` change), but the auto-hash keeps
 // happy-path deployments correct.
-const CACHE_NAME = "key-stock-v4"; // auto-managed by scripts/bump-service-worker.mjs
+const CACHE_NAME = "key-stock-b4660e697d"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
 // Fallback rendering used when a push arrives without a JSON payload

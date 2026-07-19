@@ -25,7 +25,11 @@ import type {
   StoredNewsNotification,
 } from "@/lib/news-watch/store";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
-import type { PushSupportDiagnostics, PermissionState } from "@/hooks/use-push-notifications";
+import type {
+  PushSupportDiagnostics,
+  PermissionState,
+  ServiceWorkerRegistrationStatus,
+} from "@/hooks/use-push-notifications";
 import { SignalAlertsPanel } from "@/components/signal-alerts-panel";
 import { PortfolioRiskAlertsPanel } from "@/components/portfolio-risk-alerts-panel";
 import { cn } from "@/lib/utils";
@@ -1339,8 +1343,18 @@ function PushAlertsPanel() {
 
         {/* Always-visible diagnostic strip — collapsed by default. Lets
             users on any device inspect exactly which browser capability
-            is (or isn't) available without opening devtools. */}
-        <PushDiagnosticsDetails diagnostics={status.diagnostics} permission={status.permission} />
+            is (or isn't) available without opening devtools. Also shows
+            the SW registrar's status, the local subscription state, and
+            the server-side subscriber count so a user seeing "enabled
+            but no notifications" can trace the pipeline end-to-end
+            without touching a terminal. */}
+        <PushDiagnosticsDetails
+          diagnostics={status.diagnostics}
+          permission={status.permission}
+          swRegistration={status.swRegistration}
+          subscribed={status.subscribed}
+          subscriberCount={status.subscriberCount}
+        />
 
 
         {/* This-device controls */}
@@ -1568,15 +1582,59 @@ function PushBlockerBanner({ diagnostics: d }: { diagnostics: PushSupportDiagnos
 function PushDiagnosticsDetails({
   diagnostics: d,
   permission,
+  swRegistration,
+  subscribed,
+  subscriberCount,
 }: {
   diagnostics: PushSupportDiagnostics;
   permission: PermissionState;
+  swRegistration: ServiceWorkerRegistrationStatus | null;
+  subscribed: boolean;
+  subscriberCount: number;
 }) {
+  // Derive human-friendly SW row inputs. The registrar writes an
+  // async marker to `caches.sw-diag/__sw-register-status`; a `null`
+  // reading means the marker hasn't been written yet (first ~1s
+  // after page load) OR the browser has no Cache API. Either way,
+  // we render it as neutral rather than red so we don't spuriously
+  // scare users into filing bugs.
+  const swOk = swRegistration?.state === "registered";
+  const swNeutral =
+    swRegistration === null || swRegistration.state === "registering";
+  const swLabel = (() => {
+    if (!swRegistration) return "Service Worker: checking…";
+    switch (swRegistration.state) {
+      case "unsupported":
+        return "Service Worker: unsupported";
+      case "registering":
+        return "Service Worker: registering…";
+      case "registered":
+        return `Service Worker: ${swRegistration.phase ?? "active"}`;
+      case "failed":
+        return `Service Worker: failed`;
+    }
+  })();
+  const swHint = (() => {
+    if (!swRegistration) {
+      return "Waiting for the SW registrar in /sw-register.js to report in — this usually takes under a second after page load.";
+    }
+    switch (swRegistration.state) {
+      case "unsupported":
+        return "This browser doesn't expose navigator.serviceWorker at all — try a mainstream browser.";
+      case "registering":
+        return "Registration is still in flight; refresh this panel in a moment.";
+      case "registered":
+        return `Registered for scope ${swRegistration.scope ?? "/"}. Push events will wake this worker.`;
+      case "failed":
+        return `register() rejected: ${swRegistration.reason ?? "unknown"}. Reload the page; if it persists, check the browser console for CSP / quota errors.`;
+    }
+  })();
+
   return (
     <details className="rounded-md border border-border/60 bg-muted/20 text-xs">
       <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 select-none">
         <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="font-medium">Why is Enable disabled? (browser diagnostics)</span>
+        <span className="font-medium">Push diagnostics (why isn&apos;t it working?)</span>
         <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
       </summary>
       <ul className="space-y-1 px-3 pb-3">
@@ -1604,6 +1662,38 @@ function PushDiagnosticsDetails({
               : permission === "granted"
                 ? "You've already granted permission."
                 : "You'll be asked when you click Enable."
+          }
+        />
+        {/* New rows below — these tell the user WHY notifications
+             aren't arriving even AFTER Enable succeeded. The
+             historical diagnostic panel only covered the "why is
+             Enable disabled" case. */}
+        <DiagRow
+          ok={swOk}
+          neutral={swNeutral}
+          label={swLabel}
+          hint={swHint}
+        />
+        <DiagRow
+          ok={subscribed}
+          label={
+            subscribed
+              ? "Push subscription: active on this device"
+              : "Push subscription: not created yet"
+          }
+          hint={
+            subscribed
+              ? "The browser has a live PushManager subscription and the server knows about it."
+              : "Click Enable push on this device above. If it succeeds but this row still says 'not created', the browser's pushManager.subscribe() failed silently — check the console for a NotAllowedError."
+          }
+        />
+        <DiagRow
+          ok={subscriberCount > 0}
+          label={`Server-known subscribers: ${subscriberCount}`}
+          hint={
+            subscriberCount > 0
+              ? `The server can deliver pushes to ${subscriberCount} device(s). Test with the "Send test push" button — if the toast doesn't appear, the issue is downstream of the server (OS DND / Focus Mode, browser site permission, or the push service).`
+              : "The server has zero subscribers stored. Click Enable push on this device above; if the count stays at zero, the /api/push POST rejected the subscription (bad VAPID key, endpoint allow-list, or auth cookie missing on the SW request)."
           }
         />
       </ul>

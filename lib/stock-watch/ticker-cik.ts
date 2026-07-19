@@ -12,7 +12,7 @@
  */
 
 import { secHeaders } from "@/lib/portfolios";
-import { timedFetch } from "@/lib/http";
+import { secTimedFetch } from "@/lib/sec-limiter";
 
 const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 const TTL_MS = 24 * 60 * 60 * 1000; // 1 day
@@ -47,7 +47,7 @@ function padCik(n: number): string {
 }
 
 async function loadFresh(): Promise<CacheEntry> {
-  const res = await timedFetch(TICKERS_URL, {
+  const res = await secTimedFetch(TICKERS_URL, {
     headers: secHeaders(),
     cache: "no-store",
     timeoutMs: 30_000,

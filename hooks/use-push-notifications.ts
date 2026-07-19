@@ -71,6 +71,31 @@ export interface PushResubscribeFailure {
   reason: string;
 }
 
+/**
+ * Snapshot of the SW registrar's own status, written to
+ * `caches.open('sw-diag') → '/__sw-register-status'` by
+ * `public/sw-register.js`. Surfaced to the diagnostics panel so a
+ * user seeing "push doesn't work" can immediately tell whether the
+ * SW even registered, and if not — why. The historical failure mode
+ * was a silently-empty catch swallowing the reason.
+ */
+export interface ServiceWorkerRegistrationStatus {
+  at: number;
+  /**
+   *  * `unsupported` — no `serviceWorker` on `navigator`.
+   *  * `registering` — register() was called, no result yet.
+   *  * `registered` — success (see `phase` for lifecycle state).
+   *  * `failed`     — register() rejected (see `reason`).
+   */
+  state: "unsupported" | "registering" | "registered" | "failed";
+  /** Populated on `state === "failed"`. */
+  reason?: string;
+  /** Populated on `state === "registered"`. */
+  scope?: string;
+  /** Populated on `state === "registered"` — SW lifecycle phase. */
+  phase?: "active" | "installing" | "waiting" | "unknown";
+}
+
 export interface PushStatus {
   /** True when the browser/environment can register a push subscription. */
   supported: boolean;
@@ -101,6 +126,14 @@ export interface PushStatus {
    * subscription on refresh.
    */
   resubscribeFailure: PushResubscribeFailure | null;
+  /**
+   * Snapshot of `sw-register.js`'s own registration attempt. Lets the
+   * diagnostics panel show "SW: active" vs. "SW: failed(reason)"
+   * without the user opening devtools. `null` = the registrar hasn't
+   * written anything yet (typically the first ~1s after page load,
+   * or a browser without the Cache API).
+   */
+  swRegistration: ServiceWorkerRegistrationStatus | null;
 }
 
 interface PushApiResponse {
@@ -209,6 +242,31 @@ async function _clearPushResubDiagnostic(): Promise<void> {
   }
 }
 
+/**
+ * Read the SW registrar's status blob. Written by
+ * `public/sw-register.js`; consumed by `refresh()` so the /bot
+ * diagnostics panel can render "Service Worker: active|failed(…)".
+ */
+async function _readSwRegisterStatus(): Promise<ServiceWorkerRegistrationStatus | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open("sw-diag");
+    const res = await cache.match("/__sw-register-status");
+    if (!res) return null;
+    const parsed = (await res.json()) as ServiceWorkerRegistrationStatus;
+    if (
+      parsed &&
+      typeof parsed.at === "number" &&
+      typeof parsed.state === "string"
+    ) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** URL-safe base64 (VAPID public key) → raw bytes for PushManager. */
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -241,6 +299,7 @@ export function usePushNotifications() {
     devices: [],
     subscriberCount: 0,
     resubscribeFailure: null,
+    swRegistration: null,
   });
 
   const diagnostics = React.useMemo(() => detectDiagnostics(), []);
@@ -250,6 +309,12 @@ export function usePushNotifications() {
   );
 
   const refresh = React.useCallback(async (): Promise<void> => {
+    // Registrar status is orthogonal to `supported` — a phone that
+    // fails capability probes can still have a stale SW from a prior
+    // load, and vice versa a phone that passes probes can have SW
+    // registration blocked (CSP, quota, incognito). Read it in both
+    // branches so the diagnostics row is always accurate.
+    const swRegistration = await _readSwRegisterStatus();
     if (!supported) {
       setStatus((s) => ({
         ...s,
@@ -257,6 +322,7 @@ export function usePushNotifications() {
         diagnostics,
         loading: false,
         permission: readPermission(),
+        swRegistration,
       }));
       return;
     }
@@ -295,6 +361,7 @@ export function usePushNotifications() {
         devices: body.subscriptions,
         subscriberCount: body.subscriberCount,
         resubscribeFailure: sub !== null ? null : resubscribeFailure,
+        swRegistration,
       });
     } catch (err) {
       setStatus((s) => ({
@@ -303,12 +370,24 @@ export function usePushNotifications() {
         diagnostics,
         loading: false,
         error: err instanceof Error ? err.message : String(err),
+        swRegistration,
       }));
     }
   }, [supported, diagnostics]);
 
   React.useEffect(() => {
     void refresh();
+    // The SW registrar in `public/sw-register.js` writes its status
+    // marker after `window.load`, which typically fires AFTER our
+    // first `refresh()` mount call. Re-read once at 1.5s so the
+    // diagnostics panel picks up the "registered" (or "failed")
+    // state without requiring a manual reload. One-shot — subsequent
+    // renders don't need this because `refresh()` is exposed to the
+    // UI (Test push button, Enable, etc.) and will pick it up.
+    const t = window.setTimeout(() => {
+      void refresh();
+    }, 1500);
+    return () => window.clearTimeout(t);
   }, [refresh]);
 
   const enable = React.useCallback(async (): Promise<void> => {
@@ -384,7 +463,29 @@ export function usePushNotifications() {
 
     // The layout registers /service-worker.js on page load; `.ready`
     // resolves once *any* activated SW is available for this scope.
-    const reg = await navigator.serviceWorker.ready;
+    //
+    // Bound this with a deadline: `navigator.serviceWorker.ready`
+    // NEVER rejects on failure — it just stays pending forever when
+    // registration was blocked (CSP, quota, storage-disabled
+    // incognito, corporate profile restrictions). Historically that
+    // wedged `enable()` silently and the user saw the busy spinner
+    // spin forever with no error message. 10s is well above the
+    // wall-time even a cold register+install+activate takes; longer
+    // than that means the SW isn't coming.
+    const reg = await Promise.race<ServiceWorkerRegistration>([
+      navigator.serviceWorker.ready,
+      new Promise<ServiceWorkerRegistration>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Service worker didn't become active within 10s. Reload this page — if it persists, the browser blocked SW registration (check the console for CSP / storage / quota errors, then try clearing site data and reloading).",
+              ),
+            ),
+          10_000,
+        ),
+      ),
+    ]);
 
     // Fetch (or re-fetch) the VAPID public key. We could reuse the last
     // status snapshot but the initial subscribe often races the /api/push

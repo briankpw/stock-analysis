@@ -46,7 +46,7 @@
  *     can normalize identically.
  */
 
-import { timedFetch } from "./http";
+import { secTimedFetch } from "./sec-limiter";
 import { settings } from "./config";
 
 /** Source URL. SEC publishes this file publicly with no auth. */
@@ -228,7 +228,7 @@ let _inflight: Promise<CachedMap | null> | null = null;
  */
 async function refreshMap(): Promise<CachedMap | null> {
   try {
-    const res = await timedFetch(SEC_TICKERS_URL, {
+    const res = await secTimedFetch(SEC_TICKERS_URL, {
       // A fresh copy is fine — the server sets its own cache
       // headers. `no-store` here just means "don't let the fetch
       // API cache the response body in-process independently".
