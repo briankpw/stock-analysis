@@ -356,8 +356,15 @@ export interface SortableThProps<T, K extends string = string>
    * "auto" (default) puts it on the right for left-aligned cells
    * and on the left for right-aligned (numeric) cells. Override
    * only for unusual layouts.
+   *
+   * Named `iconAlign` (not `align`) so it doesn't collide with the
+   * legacy `align` attribute inherited from
+   * `React.ThHTMLAttributes<HTMLTableCellElement>`, whose value union
+   * is fixed to `"center" | "right" | "left" | "justify" | "char"`.
+   * The clash surfaced as a build-time
+   * "incorrectly extends interface" TS error in production.
    */
-  align?: "auto" | "left" | "right";
+  iconAlign?: "auto" | "left" | "right";
   /** Accessible label prefix for the sort control. Defaults to "Sort by". */
   sortLabelPrefix?: string;
 }
@@ -365,7 +372,7 @@ export interface SortableThProps<T, K extends string = string>
 export function SortableTh<T, K extends string = string>({
   controls,
   sortKey,
-  align = "auto",
+  iconAlign = "auto",
   sortLabelPrefix = "Sort by",
   children,
   className,
@@ -378,8 +385,8 @@ export function SortableTh<T, K extends string = string>({
   // className. That's the same convention already used in the
   // portfolios page and elsewhere for numeric columns.
   const isRightAligned =
-    align === "right" ||
-    (align === "auto" && typeof className === "string" && className.includes("text-right"));
+    iconAlign === "right" ||
+    (iconAlign === "auto" && typeof className === "string" && className.includes("text-right"));
   const iconOnLeft = isRightAligned;
 
   const Icon = !active ? ChevronsUpDown : dir === "asc" ? ChevronUp : ChevronDown;
