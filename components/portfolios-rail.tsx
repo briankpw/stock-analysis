@@ -160,7 +160,21 @@ function matchesSearch(e: RailEntry, needle: string): boolean {
 // /portfolios detail view stays in sync.
 // ---------------------------------------------------------------------------
 
-export function PortfoliosRail() {
+export function PortfoliosRail({
+  onSelect,
+}: {
+  /**
+   * Called every time the user picks a preset (from the recent list OR a
+   * category section), AFTER the store selection has been updated. The
+   * Sidebar uses this to collapse the mobile drawer so the detail view
+   * is immediately visible — same UX as `TickerPicker.onSelectTicker`.
+   *
+   * Fires on every user-driven click, including re-selecting the
+   * currently-active preset: from the user's perspective a tap on the
+   * rail always means "show me this in the main pane."
+   */
+  onSelect?: () => void;
+} = {}) {
   const { data: index, loading, error, addPreset, removePreset } = usePortfolioIndex();
   const { isPersonWatched } = usePortfolioWatches();
   const selection = usePortfolios((s) => s.selection);
@@ -175,6 +189,19 @@ export function PortfoliosRail() {
 
   const [query, setQuery] = React.useState("");
   const needle = query.trim();
+
+  // Compose the store's `recordViewed` with the external close-drawer
+  // callback so every preset tap goes through one code path. Defined
+  // as a stable callback because `RecentSection` / `RailSection` are
+  // memoisation-friendly (they get a lot of re-renders as `selection`
+  // changes).
+  const selectPreset = React.useCallback(
+    (sel: Selection) => {
+      recordViewed(sel);
+      onSelect?.();
+    },
+    [recordViewed, onSelect],
+  );
 
   const toggleCollapse = (c: Category) =>
     updatePrefs((p) => ({ ...p, collapsed: { ...p.collapsed, [c]: !p.collapsed[c] } }));
@@ -242,7 +269,7 @@ export function PortfoliosRail() {
           <RecentSection
             rows={recentEntries}
             selection={selection}
-            onSelect={recordViewed}
+            onSelect={selectPreset}
           />
         )}
 
@@ -283,7 +310,7 @@ export function PortfoliosRail() {
               sortMode={sortMode}
               canMoveUp={idx > 0}
               canMoveDown={idx < prefs.order.length - 1}
-              onSelect={recordViewed}
+              onSelect={selectPreset}
               onDelete={handleDelete}
               onAddClick={setAddDialogCategory}
               onToggleCollapse={() => toggleCollapse(category)}
@@ -832,6 +859,24 @@ function SelectedEntityCard({
   );
 }
 
+/**
+ * Two-mode politician form:
+ *
+ *   1. **Search mode** (default) — type-ahead against the House Clerk
+ *      feed. This is the fast path for the ~450 sitting representatives.
+ *      Picking a hit pre-fills the confirm view with the correct name,
+ *      chamber ("House") and slug, so all the user needs to add is the
+ *      party affiliation (not in the feed) and an optional role.
+ *
+ *   2. **Manual mode** — a fallback for senators (the Senate portal
+ *      requires a session cookie we don't scrape) and rare House
+ *      members whose disclosures haven't been posted yet. Same three
+ *      fields as before the search was introduced; users toggle via a
+ *      "not in the list?" link under the search box.
+ *
+ * Both modes end at the same submit path so the caller doesn't have
+ * to care which one produced the preset.
+ */
 function PoliticianForm({
   onCancel,
   onSubmit,
@@ -839,22 +884,103 @@ function PoliticianForm({
   onCancel: () => void;
   onSubmit: (preset: PoliticianPreset) => Promise<void>;
 }) {
-  const [name, setName] = React.useState("");
-  const [chamber, setChamber] = React.useState<"House" | "Senate">("House");
-  const [party, setParty] = React.useState<"D" | "R" | "I">("D");
-  const [role, setRole] = React.useState("");
+  const t = useT();
+  // `null` = search mode. `EntityHit` = picked-from-search confirm mode.
+  // `"manual"` = manual-entry mode (senators, missing House members).
+  const [mode, setMode] = React.useState<EntityHit | "manual" | null>(null);
+
+  if (mode === null) {
+    return (
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-muted-foreground">
+          {t("form.politicianSearchIntro")}
+        </p>
+        <EntitySearch
+          kind="politician"
+          onPick={(hit) => setMode(hit)}
+          autoFocus
+        />
+        <div className="text-[0.7rem] text-muted-foreground bg-muted/30 border border-border rounded-md p-2.5 leading-relaxed">
+          {t("form.politicianManualHintBefore")}{" "}
+          <button
+            type="button"
+            onClick={() => setMode("manual")}
+            className="text-primary hover:underline"
+          >
+            {t("form.politicianManualLink")}
+          </button>
+          .
+        </div>
+        <div className="flex items-center justify-end pt-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onCancel}
+          >
+            {t("common.cancel")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <PoliticianConfirm
+      picked={mode === "manual" ? null : mode}
+      onBack={() => setMode(null)}
+      onCancel={onCancel}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+/**
+ * Confirmation step for both branches of `PoliticianForm`. When
+ * `picked` is non-null the form pre-fills from the search hit and
+ * displays a small "selected on SEC/House Clerk" chip; when it's null
+ * the user is in manual-entry mode and starts from blank inputs with
+ * the chamber selector visible (search-picked hits already know
+ * they're House members, so no need to expose the selector then).
+ */
+function PoliticianConfirm({
+  picked,
+  onBack,
+  onCancel,
+  onSubmit,
+}: {
+  picked: EntityHit | null;
+  onBack: () => void;
+  onCancel: () => void;
+  onSubmit: (preset: PoliticianPreset) => Promise<void>;
+}) {
+  const t = useT();
+  const [name, setName] = React.useState(picked ? titleCase(picked.name) : "");
+  const [chamber, setChamber] = React.useState<"House" | "Senate">(
+    picked?.chamber ?? "House",
+  );
+  // Party isn't in the House Clerk feed, so it's always user-picked.
+  // Default to Independent so we don't nudge the user toward one side.
+  const [party, setParty] = React.useState<"D" | "R" | "I">("I");
+  // Rail already renders "{chamber} · {role}" in the secondary line
+  // (see `entriesForCategory`), so pre-filling role with the state
+  // alone gives a clean "House · CA" — pre-filling with the chamber
+  // too would duplicate it. Users can overwrite with a meaningful
+  // title ("Speaker Emerita", "Freshman", …).
+  const [role, setRole] = React.useState(picked?.state ?? "");
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const t = useT();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
+      const cleanName = name.trim();
+      if (!cleanName) throw new Error("Name is required");
       await onSubmit({
-        id: toIdSlug(name),
-        name: name.trim(),
+        id: toIdSlug(cleanName),
+        name: cleanName,
         chamber,
         party,
         role: role.trim() || undefined,
@@ -868,9 +994,20 @@ function PoliticianForm({
 
   return (
     <FormShell onCancel={onCancel} onSubmit={submit} submitting={busy} error={error}>
-      <div className="text-[0.7rem] text-muted-foreground bg-muted/30 border border-border rounded-md p-2.5">
-        <p>{t("form.politicianDataSource")}</p>
-      </div>
+      {picked ? (
+        <SelectedPoliticianCard hit={picked} onChange={onBack} />
+      ) : (
+        <div className="text-[0.7rem] text-muted-foreground bg-muted/30 border border-border rounded-md p-2.5 flex items-start justify-between gap-2">
+          <p>{t("form.politicianManualHint")}</p>
+          <button
+            type="button"
+            onClick={onBack}
+            className="text-[0.7rem] text-primary hover:underline shrink-0"
+          >
+            {t("form.politicianBackToSearch")}
+          </button>
+        </div>
+      )}
       <LabeledInput
         label={t("form.namePolitician")}
         placeholder="Nancy Pelosi"
@@ -880,17 +1017,27 @@ function PoliticianForm({
         hint={t("form.politicianNameHint")}
       />
       <div className="grid grid-cols-2 gap-3">
-        <label className="block text-xs">
-          <span className="metric-label block mb-1">{t("form.chamber")}</span>
-          <select
-            className="w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-            value={chamber}
-            onChange={(e) => setChamber(e.target.value as "House" | "Senate")}
-          >
-            <option value="House">{t("form.chamberHouse")}</option>
-            <option value="Senate">{t("form.chamberSenate")}</option>
-          </select>
-        </label>
+        {/*
+          Chamber is fixed to "House" when a search hit was picked
+          (the House Clerk feed is our only source), so we hide the
+          selector to avoid confusing users with a Senate option that
+          would silently produce empty results. Manual mode keeps
+          the selector visible so senators can still be added — the
+          detail page then renders a "chamber not supported" panel.
+        */}
+        {!picked && (
+          <label className="block text-xs">
+            <span className="metric-label block mb-1">{t("form.chamber")}</span>
+            <select
+              className="w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              value={chamber}
+              onChange={(e) => setChamber(e.target.value as "House" | "Senate")}
+            >
+              <option value="House">{t("form.chamberHouse")}</option>
+              <option value="Senate">{t("form.chamberSenate")}</option>
+            </select>
+          </label>
+        )}
         <label className="block text-xs">
           <span className="metric-label block mb-1">{t("form.party")}</span>
           <select
@@ -911,6 +1058,50 @@ function PoliticianForm({
         onChange={(e) => setRole(e.target.value)}
       />
     </FormShell>
+  );
+}
+
+/**
+ * "You picked X" chip for the politician flow — the SEC-anchored
+ * `SelectedEntityCard` (with its CIK line) would look wrong here since
+ * politicians have no CIK; we render chamber + state instead.
+ */
+function SelectedPoliticianCard({
+  hit,
+  onChange,
+}: {
+  hit: EntityHit;
+  onChange: () => void;
+}) {
+  const t = useT();
+  const stateChamber = t("form.politicianSelectedMeta", {
+    chamber: hit.chamber ?? "House",
+    state: hit.state ?? "—",
+  });
+  return (
+    <div className="rounded-md border border-primary/40 bg-primary/5 px-3 py-2 flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-[0.65rem] uppercase tracking-wider text-muted-foreground">
+          {t("portfolios.dialog.selectedOn")}
+        </div>
+        <div className="text-sm font-medium truncate">{titleCase(hit.name)}</div>
+        <div className="text-[0.65rem] text-muted-foreground/80 mt-0.5">
+          {stateChamber}
+          {hit.latestFilingDate && (
+            <span className="ml-2">
+              · {t("entitySearch.lastFiled", { date: new Date(hit.latestFilingDate).toLocaleDateString() })}
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onChange}
+        className="text-[0.7rem] text-primary hover:underline shrink-0"
+      >
+        {t("common.change")}
+      </button>
+    </div>
   );
 }
 

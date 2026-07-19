@@ -31,9 +31,42 @@ export interface RegisteredDevice {
   lastUsedAt: string | null;
 }
 
+/**
+ * Per-capability breakdown of *why* push may (or may not) be
+ * usable. Surfaced to the UI so a user seeing a disabled
+ * "Enable" button can immediately tell whether the blocker is
+ * their transport (`isSecureContext === false` = you're on
+ * HTTP), their platform (`isIosSafariNotPwa` = iOS without
+ * "Add to Home Screen"), or something else entirely.
+ *
+ * The old boolean `supported` was correct but useless for
+ * debugging in the wild — five very different problems all
+ * collapse into "not supported", so users on mobile hit the
+ * wall with no idea what to fix.
+ */
+export interface PushSupportDiagnostics {
+  /** True on HTTPS or localhost. Web Push absolutely requires this. */
+  isSecureContext: boolean;
+  /** `serviceWorker` in `navigator`. */
+  hasServiceWorker: boolean;
+  /** `PushManager` in `window`. */
+  hasPushManager: boolean;
+  /** `Notification` in `window`. */
+  hasNotificationApi: boolean;
+  /** Best-effort iOS detection from userAgent. */
+  isIos: boolean;
+  /** True when running as an installed PWA (`display-mode: standalone`). */
+  isStandalone: boolean;
+  /** iOS in a plain Safari tab — Web Push is unavailable until the
+   *  user does Share → Add to Home Screen. */
+  isIosSafariNotPwa: boolean;
+}
+
 export interface PushStatus {
   /** True when the browser/environment can register a push subscription. */
   supported: boolean;
+  /** Granular breakdown behind `supported`; useful for a debug panel. */
+  diagnostics: PushSupportDiagnostics;
   /** Notification.permission at last check. */
   permission: PermissionState;
   /** True when this browser has an active push subscription. */
@@ -58,13 +91,55 @@ interface PushApiResponse {
   subscriptions: RegisteredDevice[];
 }
 
-function detectSupport(): boolean {
-  if (typeof window === "undefined") return false;
-  if (!("serviceWorker" in navigator)) return false;
-  if (!("PushManager" in window)) return false;
-  if (!("Notification" in window)) return false;
-  // Push absolutely requires a secure context. localhost qualifies.
-  if (!window.isSecureContext) return false;
+function detectDiagnostics(): PushSupportDiagnostics {
+  if (typeof window === "undefined") {
+    return {
+      isSecureContext: false,
+      hasServiceWorker: false,
+      hasPushManager: false,
+      hasNotificationApi: false,
+      isIos: false,
+      isStandalone: false,
+      isIosSafariNotPwa: false,
+    };
+  }
+  const ua = navigator.userAgent ?? "";
+  const isIos = /iPhone|iPad|iPod/i.test(ua);
+  const isStandalone =
+    ("matchMedia" in window &&
+      window.matchMedia("(display-mode: standalone)").matches) ||
+    // iOS-specific legacy property — TS doesn't know about it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Boolean((navigator as any).standalone);
+  return {
+    isSecureContext: window.isSecureContext === true,
+    hasServiceWorker: "serviceWorker" in navigator,
+    hasPushManager: "PushManager" in window,
+    hasNotificationApi: "Notification" in window,
+    isIos,
+    isStandalone,
+    isIosSafariNotPwa: isIos && !isStandalone,
+  };
+}
+
+function detectSupport(diag: PushSupportDiagnostics): boolean {
+  // All four capability probes must pass — missing any one means
+  // the browser genuinely can't subscribe.
+  if (
+    !diag.hasServiceWorker ||
+    !diag.hasPushManager ||
+    !diag.hasNotificationApi ||
+    !diag.isSecureContext
+  ) {
+    return false;
+  }
+  // iOS 16.4+ has all four APIs even inside a plain Safari tab, but
+  // `pushManager.subscribe()` throws unless the app is installed to
+  // the Home Screen. Reporting "supported" there would tempt users
+  // to tap Enable and see a cryptic NotAllowedError; we instead
+  // treat non-PWA iOS as unsupported and route the user to the
+  // "Add to Home Screen" hint.
+  if (diag.isIosSafariNotPwa) return false;
   return true;
 }
 
@@ -85,9 +160,20 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
   return out;
 }
 
+const EMPTY_DIAGNOSTICS: PushSupportDiagnostics = {
+  isSecureContext: false,
+  hasServiceWorker: false,
+  hasPushManager: false,
+  hasNotificationApi: false,
+  isIos: false,
+  isStandalone: false,
+  isIosSafariNotPwa: false,
+};
+
 export function usePushNotifications() {
   const [status, setStatus] = React.useState<PushStatus>({
     supported: false,
+    diagnostics: EMPTY_DIAGNOSTICS,
     permission: "unsupported",
     subscribed: false,
     publicKey: null,
@@ -97,13 +183,18 @@ export function usePushNotifications() {
     subscriberCount: 0,
   });
 
-  const supported = React.useMemo(() => detectSupport(), []);
+  const diagnostics = React.useMemo(() => detectDiagnostics(), []);
+  const supported = React.useMemo(
+    () => detectSupport(diagnostics),
+    [diagnostics],
+  );
 
   const refresh = React.useCallback(async (): Promise<void> => {
     if (!supported) {
       setStatus((s) => ({
         ...s,
         supported: false,
+        diagnostics,
         loading: false,
         permission: readPermission(),
       }));
@@ -124,6 +215,7 @@ export function usePushNotifications() {
 
       setStatus({
         supported: true,
+        diagnostics,
         permission: readPermission(),
         subscribed: sub !== null,
         publicKey: body.publicKey,
@@ -136,11 +228,12 @@ export function usePushNotifications() {
       setStatus((s) => ({
         ...s,
         supported,
+        diagnostics,
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       }));
     }
-  }, [supported]);
+  }, [supported, diagnostics]);
 
   React.useEffect(() => {
     void refresh();

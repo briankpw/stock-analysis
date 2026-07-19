@@ -23,6 +23,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
 import { TechnicalSignalCard } from "@/components/technical-signal-card";
+import { ResonanceCard } from "@/components/resonance-card";
+import { SectorResonanceAlertControl } from "@/components/sector-resonance-alert-control";
+import { SectorTechnicalAlertControl } from "@/components/sector-technical-alert-control";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
 import { KeyTerms } from "@/components/key-terms";
 import {
@@ -496,6 +499,97 @@ function ConstituentsSection({ rows }: { rows: ConstituentRow[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Sector 6-Signal Resonance section
+// ---------------------------------------------------------------------------
+//
+// Thin wrapper around the shared `<ResonanceCard>`. Reasons this lives
+// as its own component instead of inline JSX at the page's use-site:
+//   * cleanly falls back to a friendly empty state when the API
+//     returned `resonance: null` (proxy fetch failed, or <40 bars);
+//   * keeps the parent page compact and separates "sector data →
+//     card" wiring from the top-level page layout;
+//   * injects a `<SectorResonanceAlertControl>` into the card's
+//     header action slot so users can subscribe to sector-level
+//     notifications keyed by the segment slug (not the sidebar
+//     ticker). The card is deliberately never rendered with the
+//     default per-ticker bell — a sector's proxy ETF is rarely
+//     what a user has pinned in the sidebar, so a ticker-bound
+//     alert bell here would attach the subscription to the wrong
+//     symbol.
+// ---------------------------------------------------------------------------
+
+function SectorResonanceSection({
+  segmentId,
+  segmentName,
+  proxyEtf,
+  proxyEtfName,
+  resonance,
+  proxyStatus,
+}: {
+  segmentId: string;
+  segmentName: string;
+  proxyEtf: string;
+  proxyEtfName: string;
+  resonance: SegmentDetailResponse["proxy"]["resonance"];
+  proxyStatus: "ok" | "error";
+}) {
+  const t = useT();
+  // Split the two "no card" reasons: proxy data unavailable vs.
+  // resonance in warmup (bars < MIN_BARS in lib/resonance.ts). The
+  // second is much less alarming to the user and warrants softer
+  // copy.
+  const emptyMessage =
+    proxyStatus === "error" || resonance === null
+      ? t("segments.detail.resonanceEmpty")
+      : resonance.verdict === "warmup"
+        ? t("segments.detail.resonanceWarmup")
+        : null;
+
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-base sm:text-lg font-semibold">
+          {t("segments.detail.resonanceTitle")}
+        </h2>
+        <p className="text-xs text-muted-foreground">
+          {t("segments.detail.resonanceHint")}
+        </p>
+      </div>
+      {resonance && resonance.verdict !== "warmup" ? (
+        <ResonanceCard
+          result={resonance}
+          // Swap the per-ticker bell out for the sector variant so
+          // the subscription is keyed by segment id, not by whatever
+          // ticker the sidebar happens to be pointing at.
+          headerAction={
+            <SectorResonanceAlertControl
+              segmentId={segmentId}
+              segmentName={segmentName}
+              proxyTicker={proxyEtf}
+            />
+          }
+          title={t("segments.detail.resonanceTitle")}
+          subtitle={t("segments.detail.resonanceSubtitle")}
+        />
+      ) : (
+        <Card>
+          <CardContent className="py-6 text-center text-sm text-muted-foreground">
+            {emptyMessage ??
+              t("segments.detail.resonanceEmpty")}
+            <span className="block mt-1 text-[0.7rem] text-muted-foreground/80">
+              {t("segments.detail.trackedByFull", {
+                ticker: proxyEtf,
+                name: proxyEtfName,
+              })}
+            </span>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -639,7 +733,27 @@ export default function SegmentDetailPage({
                     </div>
                   </CardHeader>
                 </Card>
-                <TechnicalSignalCard signal={data.proxy.signal} />
+                {/*
+                  Inject a segment-scoped bell in place of the default
+                  per-ticker one. Without this the card's built-in
+                  `<TechnicalAlertControl />` would subscribe under the
+                  sidebar's current ticker (typically nothing to do
+                  with this segment), which is exactly the confusing
+                  behaviour that motivated splitting /bot into
+                  "Ticker" + "Market" tabs. The sector variant persists
+                  under `sector_technical_alerts` keyed by segmentId,
+                  and rolls up on the Market tab of the Alert Bot.
+                */}
+                <TechnicalSignalCard
+                  signal={data.proxy.signal}
+                  alertControl={
+                    <SectorTechnicalAlertControl
+                      segmentId={seg.id}
+                      segmentName={seg.name}
+                      proxyTicker={seg.proxyEtf}
+                    />
+                  }
+                />
               </div>
             ) : (
               <Card>
@@ -652,6 +766,30 @@ export default function SegmentDetailPage({
 
           {/* ---- Constituents (heatmap ↔ table toggle) ---- */}
           <ConstituentsSection rows={data.constituents} />
+
+          {/* ---- Sector 6-Signal Resonance ---------------------
+              Same TDX-style six-momentum-check strategy the
+              /overview page runs on individual tickers, applied
+              here to the segment's proxy ETF. Placement is below
+              the constituents on purpose — users first see who's
+              in the sector, then get a single "is the whole
+              theme momentum-aligned right now?" verdict. The
+              header bell is a sector-scoped alert control — it
+              subscribes to notifications keyed by segment id (not
+              by the sidebar ticker), so users can watch e.g. "AI"
+              without having to pin AIQ as their current ticker.
+              The alert engine still evaluates on this segment's
+              proxy ETF (`seg.proxyEtf`); the subscription record
+              just uses the segment slug as its primary key.
+          */}
+          <SectorResonanceSection
+            segmentId={seg.id}
+            segmentName={seg.name}
+            proxyEtf={seg.proxyEtf}
+            proxyEtfName={seg.proxyEtfName}
+            resonance={data.proxy.resonance}
+            proxyStatus={data.proxy.status}
+          />
 
           {/* ---- Key terms on this page (Beginner mode only) ----
               Explains the vocabulary a new user meets on this specific
@@ -673,6 +811,7 @@ export default function SegmentDetailPage({
               "Sector",
               "Segment",
               "Technical Signal",
+              "6-Signal Resonance",
               "Bullish",
               "Bearish",
             ]}

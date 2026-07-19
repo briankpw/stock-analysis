@@ -34,6 +34,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TermTip } from "@/components/term-tip";
+import { MasterAlertControl } from "@/components/master-alert-control";
 import type { MasterSource, MasterVerdict } from "@/lib/master-verdict";
 import { SOURCE_WEIGHTS } from "@/lib/master-verdict";
 import type { Verdict } from "@/lib/technical-signal";
@@ -515,23 +516,31 @@ export function MasterVerdictCard({ verdict }: { verdict: MasterVerdict }) {
               {t("master.subtitle")}
             </p>
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                aria-label={t("master.disclaimer.label")}
-              >
-                <InfoIcon className="h-4 w-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              <p className="font-medium mb-1">{t("master.disclaimer.title")}</p>
-              <p className="text-muted-foreground text-[0.7rem] leading-relaxed">
-                {t("master.disclaimer.body")}
-              </p>
-            </TooltipContent>
-          </Tooltip>
+          {/* Alert bell + disclaimer info sit side-by-side. The bell
+              is the primary interaction (users tap it to opt into
+              digests / change alerts); the info tooltip is passive.
+              Keeping the two grouped inside `shrink-0` prevents the
+              header from wrapping awkwardly on narrow phones. */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <MasterAlertControl />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={t("master.disclaimer.label")}
+                >
+                  <InfoIcon className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                <p className="font-medium mb-1">{t("master.disclaimer.title")}</p>
+                <p className="text-muted-foreground text-[0.7rem] leading-relaxed">
+                  {t("master.disclaimer.body")}
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </CardHeader>
 
         <CardContent>

@@ -34,6 +34,13 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "sidebar.ticker":          { en: "Ticker",     "zh-CN": "股票代码" },
   "sidebar.portfolios":      { en: "Portfolios", "zh-CN": "投资组合" },
   "sidebar.market":          { en: "Market",     "zh-CN": "市场" },
+  // "Personal" collects everything that operates on the *user's own*
+  // data rather than any specific ticker or the market as a whole —
+  // imported holdings (My Portfolio), simulated positions (Paper
+  // Trading), and notification subscriptions (Alert Bot). Split out
+  // of `sidebar.ticker` so those user-owned pages stop pretending to
+  // be per-ticker analysis surfaces.
+  "sidebar.personal":        { en: "Personal",   "zh-CN": "个人" },
   "sidebar.primaryNav":      { en: "Primary navigation",   "zh-CN": "主导航" },
   "sidebar.portfolioNav":    { en: "Portfolio presets",    "zh-CN": "投资组合预设" },
   "sidebar.toggleMenu":      { en: "Toggle menu",          "zh-CN": "切换菜单" },
@@ -158,6 +165,23 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "segments.detail.emptyProxy":     { en: "The proxy ETF for this segment couldn't be loaded right now — try again in a minute.",
                                        "zh-CN": "当前无法加载该板块的代理 ETF——请稍后重试。" },
 
+  // -------- Sector 6-Signal Resonance section --------------------------
+  // Same 6-signal strategy the /overview page runs on individual
+  // tickers, applied here to the segment's proxy ETF. The heading
+  // and subtitle deliberately name the *sector* rather than a
+  // ticker so users don't confuse it with the per-stock card in
+  // the sidebar.
+  "segments.detail.resonanceTitle": { en: "Sector 6-Signal Resonance",
+                                       "zh-CN": "板块六信号共振" },
+  "segments.detail.resonanceHint":  { en: "The same six momentum checks applied to individual stocks, run against the proxy ETF for this whole sector.",
+                                       "zh-CN": "对该板块的代理 ETF 运行与个股相同的六项动量检查，判断整个板块的共振状态。" },
+  "segments.detail.resonanceSubtitle": { en: "Momentum alignment across the sector — a fresh 6/6 signal on the proxy ETF signals broad sector-wide strength; a break signals rotation out.",
+                                          "zh-CN": "衡量整个板块的动量一致性——代理 ETF 出现新的 6/6 信号代表板块整体走强，破坏则代表资金撤离。" },
+  "segments.detail.resonanceWarmup": { en: "Not enough history yet to compute the sector resonance — needs about 40 trading days.",
+                                        "zh-CN": "历史数据不足，无法计算板块共振——大约需要 40 个交易日。" },
+  "segments.detail.resonanceEmpty":  { en: "Sector resonance is unavailable because the proxy ETF data couldn't be loaded.",
+                                        "zh-CN": "由于无法加载代理 ETF 数据，暂时无法计算板块共振。" },
+
   "segments.tbl.ticker":     { en: "Ticker",         "zh-CN": "代码" },
   "segments.tbl.price":      { en: "Price",          "zh-CN": "价格" },
   "segments.tbl.change":     { en: "Change",         "zh-CN": "涨跌" },
@@ -247,9 +271,28 @@ export const DICT: Readonly<Record<string, Entry>> = {
                                         "zh-CN": "已全部替换" },
   "myPortfolio.imported.replaceHint":{ en: "Last import overwrote all previously-stored rows.",
                                         "zh-CN": "上次导入已覆盖之前存储的全部行。" },
+  // Forex-filter toggle in the meta bar. Only rendered when the
+  // imported CSV actually contains at least one Yahoo `=X` pair
+  // (EURUSD=X, USDJPY=X, USDCNH=X, …). The toggle preference is
+  // persisted per-browser and defaults to "hide" — currency pairs
+  // have no cost basis or equity P&L and dilute the tables.
+  "myPortfolio.forex.chipHidden":  { en: "{n} FX hidden",   "zh-CN": "已隐藏 {n} 项外汇" },
+  "myPortfolio.forex.chipShown":   { en: "{n} FX shown",    "zh-CN": "已显示 {n} 项外汇" },
+  "myPortfolio.forex.tooltipShow": {
+    en: "Forex pairs ({symbols}) are hidden from your positions and transactions. Click to include them.",
+    "zh-CN": "外汇对（{symbols}）已从持仓和交易中隐藏。点击将其显示。",
+  },
+  "myPortfolio.forex.tooltipHide": {
+    en: "Forex pairs ({symbols}) are currently included. Click to hide them — they have no equity cost basis or P&L.",
+    "zh-CN": "当前包含外汇对（{symbols}）。点击将其隐藏——它们没有股权成本或盈亏概念。",
+  },
   "myPortfolio.clear":         { en: "Clear",           "zh-CN": "清除"          },
-  "myPortfolio.confirmClear":  { en: "Remove all imported portfolio rows from this device? You can re-upload the CSV any time.",
-                                 "zh-CN": "从本设备移除全部导入的组合数据？您可随时重新上传 CSV。" },
+  "myPortfolio.confirmClear":  { en: "Remove all imported portfolio rows? This clears the data on every device signed into this server. You can re-upload the CSV any time.",
+                                 "zh-CN": "移除所有已导入的组合数据？此操作将清除登录此服务器的所有设备上的数据。您可随时重新上传 CSV。" },
+  "myPortfolio.loading":       { en: "Loading portfolio…",
+                                 "zh-CN": "正在加载组合…" },
+  "myPortfolio.syncError":     { en: "Portfolio sync failed: {detail}. Your last change may not have been saved — reload to retry.",
+                                 "zh-CN": "组合同步失败：{detail}。您的最新更改可能未保存 — 请刷新重试。" },
 
   "myPortfolio.filter.searchLabel":       { en: "Search by symbol or company name",
                                             "zh-CN": "按代码或公司名称搜索" },
@@ -275,6 +318,46 @@ export const DICT: Readonly<Record<string, Entry>> = {
                                       "zh-CN": "尚未导入投资组合。" },
   "myPortfolio.table.emptyFilter": { en: "No rows match the current filters.",
                                       "zh-CN": "当前筛选条件下无匹配的行。" },
+  // Shown in the Positions tab when *every* imported row is a forex
+  // pair that the current "hide FX" preference is filtering out. Two
+  // sentences: the main message (concrete count) and a hint pointing
+  // to the toggle in the meta bar above.
+  "myPortfolio.table.emptyForexOnly": {
+    en: "Every imported row is a forex pair ({n} rows), and forex is hidden by default.",
+    "zh-CN": "所有已导入的行都是外汇对（共 {n} 行），且外汇默认被隐藏。",
+  },
+  "myPortfolio.table.emptyForexOnlyHint": {
+    en: "Use the “FX hidden” toggle above to include them, or re-upload a CSV that also contains equities.",
+    "zh-CN": "使用上方的“已隐藏外汇”开关将其包含在内，或重新上传包含股票的 CSV。",
+  },
+  // Small trailing note in the Transactions tab's "Showing X of Y"
+  // line, so the count reflects the toggle state honestly instead of
+  // silently under-reporting.
+  "myPortfolio.table.forexHiddenNote": {
+    en: "· {n} FX excluded",
+    "zh-CN": "· 排除 {n} 项外汇",
+  },
+  // Pagination controls — kept short so they fit in the compact
+  // footer rows next to Prev/Next chevrons on narrow viewports.
+  // Shared across every paginated table (portfolios, bot, my-portfolio,
+  // risks). The `myPortfolio.*` variants below alias to the shared
+  // strings so callers already importing them keep working.
+  "pager.pageSizeLabel":                 { en: "Per page",     "zh-CN": "每页" },
+  "pager.all":                           { en: "All",          "zh-CN": "全部" },
+  "pager.items":                         { en: "items",        "zh-CN": "项" },
+  "pager.rows":                          { en: "rows",         "zh-CN": "行" },
+  "pager.alerts":                        { en: "alerts",       "zh-CN": "条通知" },
+  "pager.notifications":                 { en: "notifications", "zh-CN": "条通知" },
+  "pager.watches":                       { en: "watches",      "zh-CN": "项监控" },
+  "pager.holdings":                      { en: "holdings",     "zh-CN": "个持仓" },
+  "pager.transactions":                  { en: "transactions", "zh-CN": "笔交易" },
+  "pager.trades":                        { en: "trades",       "zh-CN": "笔交易" },
+  "pager.positions":                     { en: "positions",    "zh-CN": "个持仓" },
+  "pager.assessments":                   { en: "positions",    "zh-CN": "项持仓" },
+  "myPortfolio.pager.pageSizeLabel":     { en: "Per page",     "zh-CN": "每页" },
+  "myPortfolio.pager.all":               { en: "All",          "zh-CN": "全部" },
+  "myPortfolio.pager.positionsLabel":    { en: "positions",    "zh-CN": "个持仓" },
+  "myPortfolio.pager.transactionsLabel": { en: "transactions", "zh-CN": "笔交易" },
   "myPortfolio.table.buy":         { en: "Buy",   "zh-CN": "买入" },
   "myPortfolio.table.sell":        { en: "Sell",  "zh-CN": "卖出" },
   "myPortfolio.table.watch":       { en: "Watch", "zh-CN": "关注" },
@@ -430,8 +513,52 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "myPortfolio.drill.col.afterShares":  { en: "After · shares", "zh-CN": "之后 · 股数" },
   "myPortfolio.drill.col.afterAvg":     { en: "After · avg",    "zh-CN": "之后 · 均价" },
   "myPortfolio.drill.col.realized":     { en: "Realized P&L",   "zh-CN": "已实现盈亏" },
+  "myPortfolio.drill.col.unrealized":   { en: "Unrealized P&L", "zh-CN": "未实现盈亏" },
   "myPortfolio.drill.col.afterHint":    { en: "Running position after this trade was applied.",
                                           "zh-CN": "该交易执行之后的持仓状态。" },
+
+  // -- FIFO lot attribution (Buy rows) --------------------------------------
+  //
+  // The timeline shows two P&L lenses per buy: how much profit has
+  // *already* been extracted from this specific lot (Realized, via
+  // FIFO matching against later sells), and how much is currently on
+  // paper for the shares from this lot that are still held
+  // (Unrealized, marked to the latest close).
+  "myPortfolio.drill.col.realizedHint": {
+    en: "On a Buy row: profit later sells extracted from THIS specific buy lot (FIFO matching). On a Sell row: profit this sell booked, computed against the FIFO cost basis of the specific lots it closed — the same view your broker uses.",
+    "zh-CN": "买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。卖出行：该笔卖出所实现的盈亏，按照其平仓的先进先出批次成本计算——与券商账单口径一致。",
+  },
+  "myPortfolio.drill.col.unrealizedHint": {
+    en: "On a Buy row: mark-to-market on shares from THIS lot that are still held. Sells (fully closed by definition) show —.",
+    "zh-CN": "买入行：该笔买入尚未卖出的股份按最新价的账面盈亏。卖出（本身即为平仓）显示 —。",
+  },
+  "myPortfolio.drill.col.realizedTooltip": {
+    en: "{sold} of {original} shares from this buy have been sold in later trades (FIFO). Realized value = Σ (sell price − this lot's cost) × chunk shares − commission.",
+    "zh-CN": "该笔买入的 {original} 股中，已有 {sold} 股在后续卖出中被消化（先进先出）。已实现盈亏 = Σ（卖出价 − 该笔买入成本）× 卖出股数 − 佣金。",
+  },
+  "myPortfolio.drill.col.unrealizedTooltip": {
+    en: "{shares} shares still open from this lot at cost {cost}. Unrealized = (current price − cost) × remaining shares.",
+    "zh-CN": "该笔买入尚有 {shares} 股未卖出，成本 {cost}。未实现盈亏 =（当前价 − 成本）× 剩余股数。",
+  },
+  "myPortfolio.drill.lotStatus.open":          { en: "Open",    "zh-CN": "未卖出" },
+  "myPortfolio.drill.lotStatus.partial":       { en: "Partial", "zh-CN": "部分卖出" },
+  "myPortfolio.drill.lotStatus.closed":        { en: "Closed",  "zh-CN": "已全部卖出" },
+  "myPortfolio.drill.lotStatus.openTooltip": {
+    en: "No shares from this buy have been sold yet.",
+    "zh-CN": "该笔买入尚未有股份被卖出。",
+  },
+  "myPortfolio.drill.lotStatus.partialTooltip": {
+    en: "Some shares from this buy have been sold, some are still held.",
+    "zh-CN": "该笔买入的部分股份已被卖出，其余仍持有。",
+  },
+  "myPortfolio.drill.lotStatus.closedTooltip": {
+    en: "Every share from this buy has been sold in later trades.",
+    "zh-CN": "该笔买入的所有股份都已在后续交易中被卖出。",
+  },
+  "myPortfolio.drill.lotFootnote": {
+    en: "All P&L on this page uses FIFO (First-In-First-Out) cost basis — sells consume your oldest lots first, and realized P&L is booked against those lots' actual costs. This is what US brokers (MooMoo, Schwab, Fidelity, etc.) report on statements and tax forms, so the numbers here should reconcile with your broker.",
+    "zh-CN": "本页面所有盈亏均基于先进先出（FIFO）成本口径——卖出优先消化最早买入的批次，已实现盈亏按被消化批次的实际成本计算。这与美国券商（如 MooMoo、Schwab、Fidelity 等）在账单与税务申报中所用口径一致，因此本页数字可与券商账单对账。",
+  },
 
   // -- Grand totals bar (per currency) --------------------------------------
   "myPortfolio.summary.positionsSummary": { en: "{open} open · {closed} closed",
@@ -499,6 +626,10 @@ export const DICT: Readonly<Record<string, Entry>> = {
     en: "{n} name(s) worth watching — moderate drawdown or sub-$1 close, but no urgent trigger yet.",
     "zh-CN": "{n} 只需继续关注——回撤中等或单日跌破 $1，但暂无紧急触发。",
   },
+  // Label passed to <Pagination> inside the collapsed Monitor list —
+  // kept short so the "1–10 of 42 names" summary stays legible on
+  // narrow viewports.
+  "portfolioRisk.pager.label": { en: "names", "zh-CN": "只" },
 
   // Risk card body
   "portfolioRisk.card.signalCount": {
@@ -730,6 +861,18 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "common.change":       { en: "Change",           "zh-CN": "更改" },
   "common.search":       { en: "Search",           "zh-CN": "搜索" },
   "common.clearSearch":  { en: "Clear search",     "zh-CN": "清除搜索" },
+  // Table search / sort controls — shared by every table that
+  // uses `useTableControls` + `<TableToolbar>` / `<SortableTh>`
+  // (see components/ui/table-controls.tsx). Placeholder is a
+  // generic verb so the same string works across holdings,
+  // trades, insider tx, 13F filings, etc.
+  "table.searchPlaceholder": { en: "Search rows…",        "zh-CN": "搜索行…" },
+  "table.clearFilters":       { en: "Clear",              "zh-CN": "清除" },
+  "table.sortBy":             { en: "Sort by",            "zh-CN": "按 … 排序" },
+  "table.matchHint":          { en: "{visible} of {total} matching",
+                                "zh-CN": "匹配 {visible} / {total}" },
+  "table.noMatches":          { en: "No rows match your search.",
+                                "zh-CN": "没有符合搜索条件的行。" },
   "common.loading":      { en: "Loading…",         "zh-CN": "加载中…" },
   "common.noData":       { en: "No data",          "zh-CN": "无数据" },
   "common.rateLimited":  { en: "Rate limited by upstream provider. Please wait a moment and retry.", "zh-CN": "上游数据提供方触发速率限制。请稍候再试。" },
@@ -1102,6 +1245,171 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "rs.alert.status.removed":     { en: "Alert removed.",              "zh-CN": "通知已移除。" },
   "rs.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
   "rs.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
+
+  // -------- Sector 6-Signal Resonance notifications --------------------------
+  // Structural mirror of the `rs.alert.*` block above but keyed by
+  // market segment rather than ticker. Copy explicitly names the
+  // proxy ETF so users always know what instrument the resonance is
+  // being measured on — the segment is the *subscription*, the
+  // proxy ETF is the *measurement*.
+  "srs.alert.button.configured":  { en: "Sector alerts configured",    "zh-CN": "已配置行业通知" },
+  "srs.alert.button.off":         { en: "Set up sector alerts",         "zh-CN": "设置行业通知" },
+  "srs.alert.chip.off":           { en: "Alerts off",                   "zh-CN": "通知已关" },
+  "srs.alert.chip.on":            { en: "Alerts on",                    "zh-CN": "通知已开" },
+  "srs.alert.chip.digest":        { en: "Daily {time} {tz}",            "zh-CN": "每日 {time} {tz}" },
+  "srs.alert.title":              { en: "Sector 6-Signal Resonance notifications", "zh-CN": "行业 6 信号共振通知" },
+  "srs.alert.subtitle":           {
+    en: "Get pinged when the 6-signal resonance verdict changes for the {segment} sector (measured on proxy ETF {proxy}).",
+    "zh-CN": "当 {segment} 行业的 6 信号共振结论发生变化时通知你（以代理 ETF {proxy} 衡量）。",
+  },
+  "srs.alert.close":              { en: "Close",                        "zh-CN": "关闭" },
+  "srs.alert.digest.title":       { en: "Daily digest at a time",       "zh-CN": "每日定时摘要" },
+  "srs.alert.digest.enable":      { en: "Send me the sector resonance snapshot each day", "zh-CN": "每日发送行业共振快照" },
+  "srs.alert.digest.time":        { en: "Time",                         "zh-CN": "时间" },
+  "srs.alert.digest.timezone":    { en: "Timezone",                     "zh-CN": "时区" },
+  "srs.alert.digest.hint":        {
+    en: "Fires once per day at (or just after) this time. The bot polls every ~15 min, so delivery can be up to 15 min late.",
+    "zh-CN": "每天在此时间或稍后触发一次。机器人每 ~15 分钟检查一次，因此可能延迟不超过 15 分钟。",
+  },
+  "srs.alert.change.title":       { en: "When the sector resonance changes", "zh-CN": "行业共振状态变化时" },
+  "srs.alert.change.enable":      { en: "Also notify me when the verdict flips", "zh-CN": "共振结论切换时同时通知" },
+  "srs.alert.change.strength":    { en: "Only notify for:",             "zh-CN": "仅在以下情况通知：" },
+  "srs.alert.change.strength.all":          { en: "All changes",        "zh-CN": "全部变化" },
+  "srs.alert.change.strength.trigger_only": { en: "Fresh Buy / Sell",   "zh-CN": "首次触发 买 / 卖" },
+  "srs.alert.change.strength.strong_only":  { en: "Full 6/6 only",      "zh-CN": "仅 6/6 全共振" },
+  "srs.alert.change.strength.all.hint":          {
+    en: "Every verdict transition — including holding ↔ out and warm-up changes. Most noisy.",
+    "zh-CN": "任何结论变化都会通知——包括持有 ↔ 出局与预热期切换。噪音最多。",
+  },
+  "srs.alert.change.strength.trigger_only.hint": {
+    en: "Only the moment a fresh BUY or SELL alignment triggers on the proxy ETF. Recommended default.",
+    "zh-CN": "仅在代理 ETF 上首次出现 BUY 或 SELL 共振时通知。默认推荐。",
+  },
+  "srs.alert.change.strength.strong_only.hint":  {
+    en: "Only fresh BUY / SELL at full 6/6 alignment on the proxy ETF. Skips early 5-signal triggers.",
+    "zh-CN": "仅在代理 ETF 的 6 项信号全部对齐（6/6）且首次触发时通知，跳过 5 信号早期触发。",
+  },
+  "srs.alert.footnote": {
+    en: "Resonance is computed on the proxy ETF ({proxy}), so its behaviour will mirror an ETF-level signal — not any individual constituent stock.",
+    "zh-CN": "共振基于代理 ETF ({proxy}) 计算，因此表现与该 ETF 一致，并不代表任何个股。",
+  },
+  "srs.alert.actions.save":       { en: "Save",                         "zh-CN": "保存" },
+  "srs.alert.actions.update":     { en: "Update",                       "zh-CN": "更新" },
+  "srs.alert.actions.test":       { en: "Test now",                     "zh-CN": "立即测试" },
+  "srs.alert.actions.testTitle":  {
+    en: "Fire a one-off sector-resonance digest right now to verify your Telegram / push setup.",
+    "zh-CN": "立即发送一次行业共振摘要，验证 Telegram / 推送是否正常。",
+  },
+  "srs.alert.actions.remove":     { en: "Remove",                       "zh-CN": "移除" },
+  "srs.alert.status.saved":       { en: "Saved. The worker will pick it up on its next tick.", "zh-CN": "已保存，机器人将在下一次轮询时启用。" },
+  "srs.alert.status.removed":     { en: "Alert removed.",               "zh-CN": "通知已移除。" },
+  "srs.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
+  "srs.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
+
+  // -------- Sector Technical Signal notifications (bell + settings popover)
+  // Same shape as `srs.alert.*` above but for the multi-indicator
+  // Technical Signal scorer applied to a market segment's proxy ETF.
+  // Copy is deliberately similar to `srs.alert.*` so a user who
+  // configured a Sector Resonance alert already recognises this
+  // popover — they're two flavours of the same "segment-scoped
+  // notification" pattern.
+  "sts.alert.button.configured":  { en: "Sector alerts configured",    "zh-CN": "已配置行业通知" },
+  "sts.alert.button.off":         { en: "Set up sector alerts",         "zh-CN": "设置行业通知" },
+  "sts.alert.chip.off":           { en: "Alerts off",                   "zh-CN": "通知已关" },
+  "sts.alert.chip.on":            { en: "Alerts on",                    "zh-CN": "通知已开" },
+  "sts.alert.chip.digest":        { en: "Daily {time} {tz}",            "zh-CN": "每日 {time} {tz}" },
+  "sts.alert.title":              { en: "Sector Technical Signal notifications", "zh-CN": "行业技术信号通知" },
+  "sts.alert.subtitle":           {
+    en: "Get pinged when the Technical Signal verdict changes for the {segment} sector (measured on proxy ETF {proxy}).",
+    "zh-CN": "当 {segment} 行业的技术信号判断发生变化时通知你（以代理 ETF {proxy} 衡量）。",
+  },
+  "sts.alert.close":              { en: "Close",                        "zh-CN": "关闭" },
+  "sts.alert.digest.title":       { en: "Daily digest at a time",       "zh-CN": "每日定时摘要" },
+  "sts.alert.digest.enable":      { en: "Send me the sector technical snapshot each day", "zh-CN": "每日发送行业技术信号快照" },
+  "sts.alert.digest.time":        { en: "Time",                         "zh-CN": "时间" },
+  "sts.alert.digest.timezone":    { en: "Timezone",                     "zh-CN": "时区" },
+  "sts.alert.digest.hint":        {
+    en: "Fires once per day at (or just after) this time. The bot polls every ~15 min, so delivery can be up to 15 min late.",
+    "zh-CN": "每天在此时间或稍后触发一次。机器人每 ~15 分钟检查一次，因此可能延迟不超过 15 分钟。",
+  },
+  "sts.alert.change.title":       { en: "When the sector verdict changes", "zh-CN": "行业判断变化时" },
+  "sts.alert.change.enable":      { en: "Also notify me when the verdict flips", "zh-CN": "判断切换时同时通知" },
+  "sts.alert.change.strength":    { en: "Only notify for:",             "zh-CN": "仅在以下情况通知：" },
+  "sts.alert.change.strength.all":         { en: "All changes",         "zh-CN": "全部变化" },
+  "sts.alert.change.strength.buy_sell":    { en: "Buy or Sell",         "zh-CN": "买入或卖出" },
+  "sts.alert.change.strength.strong_only": { en: "Strong only",         "zh-CN": "仅强烈信号" },
+  "sts.alert.change.strength.all.hint":         {
+    en: "Every verdict transition — including into HOLD. Most noisy.",
+    "zh-CN": "任何判断切换（包含进入观望）都会通知。噪音最多。",
+  },
+  "sts.alert.change.strength.buy_sell.hint":    {
+    en: "Only when the verdict flips into BUY / STRONG_BUY / SELL / STRONG_SELL. Skips HOLD chatter. Recommended default.",
+    "zh-CN": "仅当判断切换为买入 / 强买 / 卖出 / 强卖时通知，忽略进入观望的抖动。默认推荐。",
+  },
+  "sts.alert.change.strength.strong_only.hint": {
+    en: "Only STRONG_BUY / STRONG_SELL flips. Skips the smaller BUY / SELL band moves.",
+    "zh-CN": "仅在切换为强买 / 强卖时通知，忽略较弱的买 / 卖变化。",
+  },
+  "sts.alert.footnote": {
+    en: "The Technical Signal is computed on the proxy ETF ({proxy}), so its behaviour will mirror an ETF-level signal — not any individual constituent stock.",
+    "zh-CN": "技术信号基于代理 ETF ({proxy}) 计算，因此表现与该 ETF 一致，并不代表任何个股。",
+  },
+  "sts.alert.actions.save":       { en: "Save",                         "zh-CN": "保存" },
+  "sts.alert.actions.update":     { en: "Update",                       "zh-CN": "更新" },
+  "sts.alert.actions.test":       { en: "Test now",                     "zh-CN": "立即测试" },
+  "sts.alert.actions.testTitle":  {
+    en: "Fire a one-off sector-technical digest right now to verify your Telegram / push setup.",
+    "zh-CN": "立即发送一次行业技术信号摘要，验证 Telegram / 推送是否正常。",
+  },
+  "sts.alert.actions.remove":     { en: "Remove",                       "zh-CN": "移除" },
+  "sts.alert.status.saved":       { en: "Saved. The worker will pick it up on its next tick.", "zh-CN": "已保存，机器人将在下一次轮询时启用。" },
+  "sts.alert.status.removed":     { en: "Alert removed.",               "zh-CN": "通知已移除。" },
+  "sts.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
+  "sts.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
+
+  // -------- Master Verdict notifications (bell button + settings popover) --
+  // Same shape and copy conventions as `ts.alert.*` above so users
+  // learn one interaction pattern. Subtitle + change hints specifically
+  // call out that this fires on the *fused* verdict, not any single
+  // sub-scorer — otherwise users assume it duplicates the Technical
+  // Signal alerts they've already set up.
+  "master.alert.button.configured":  { en: "Master alerts configured",     "zh-CN": "已配置综合通知" },
+  "master.alert.button.off":         { en: "Set up master alerts",         "zh-CN": "设置综合通知" },
+  "master.alert.chip.off":           { en: "Alerts off",                   "zh-CN": "通知已关" },
+  "master.alert.chip.on":            { en: "Alerts on",                    "zh-CN": "通知已开" },
+  "master.alert.chip.digest":        { en: "Daily {time} {tz}",            "zh-CN": "每日 {time} {tz}" },
+  "master.alert.title":              { en: "Master Verdict notifications", "zh-CN": "综合结论通知" },
+  "master.alert.subtitle":           {
+    en: "Get pinged with the combined buy/sell verdict for {ticker} (technical + resonance + fundamentals + news + market mood).",
+    "zh-CN": "接收 {ticker} 的综合买卖判断（技术面 + 6 信号共振 + 基本面 + 新闻 + 市场情绪）。",
+  },
+  "master.alert.close":              { en: "Close",                         "zh-CN": "关闭" },
+  "master.alert.digest.title":       { en: "Daily digest at a time",        "zh-CN": "每日定时摘要" },
+  "master.alert.digest.enable":      { en: "Send me the master verdict each day", "zh-CN": "每日发送综合结论" },
+  "master.alert.digest.time":        { en: "Time",                          "zh-CN": "时间" },
+  "master.alert.digest.timezone":    { en: "Timezone",                      "zh-CN": "时区" },
+  "master.alert.digest.hint":        {
+    en: "Fires once per day at (or just after) this time. Gathers all five sub-scorers, so delivery can be up to ~15 min late.",
+    "zh-CN": "每天在此时间或稍后触发一次。需要采集全部五个子分数，可能延迟约 15 分钟。",
+  },
+  "master.alert.change.title":       { en: "When the master verdict changes", "zh-CN": "综合结论变化时" },
+  "master.alert.change.enable":      { en: "Also notify me on master band changes", "zh-CN": "综合结论档位变化时也通知" },
+  "master.alert.change.strength":    { en: "Only for these verdicts:",       "zh-CN": "仅对以下档位通知：" },
+  "master.alert.change.strength.all":         { en: "All (incl. Hold)",     "zh-CN": "全部（含观望）" },
+  "master.alert.change.strength.buy_sell":    { en: "Buy or Sell",          "zh-CN": "买入或卖出" },
+  "master.alert.change.strength.strong_only": { en: "Strong only",          "zh-CN": "仅强烈信号" },
+  "master.alert.actions.save":       { en: "Save",                          "zh-CN": "保存" },
+  "master.alert.actions.update":     { en: "Update",                        "zh-CN": "更新" },
+  "master.alert.actions.test":       { en: "Test now",                      "zh-CN": "立即测试" },
+  "master.alert.actions.testTitle":  {
+    en: "Fire a one-off master digest right now to verify your Telegram / push setup.",
+    "zh-CN": "立即发送一次综合摘要，验证 Telegram / 推送是否正常。",
+  },
+  "master.alert.actions.remove":     { en: "Remove",                        "zh-CN": "移除" },
+  "master.alert.status.saved":       { en: "Saved. The worker will pick it up on its next tick.", "zh-CN": "已保存，机器人将在下一次轮询时启用。" },
+  "master.alert.status.removed":     { en: "Alert removed.",                "zh-CN": "通知已移除。" },
+  "master.alert.status.testSent":    { en: "Test digest sent — check Telegram / notifications.", "zh-CN": "测试摘要已发送，请查看 Telegram / 通知。" },
+  "master.alert.status.testFailed":  { en: "Test failed — is Telegram or Web-Push configured?", "zh-CN": "测试失败，请确认 Telegram 或网页推送是否已配置。" },
 
   // Localized detail rows (fall back to English `detailEn` if key missing).
   "ts.row.trend.up":                 { en: "Uptrend: price above SMA-50, SMA-50 above SMA-200.", "zh-CN": "上升趋势：价格位于 SMA-50 之上，SMA-50 又位于 SMA-200 之上。" },
@@ -1721,8 +2029,30 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "paper.trades.col.shares":   { en: "Shares",   "zh-CN": "股数" },
   "paper.trades.col.price":    { en: "Price",    "zh-CN": "价格" },
   "paper.trades.col.notional": { en: "Notional", "zh-CN": "金额" },
-  "paper.trades.col.pnl":      { en: "P&L",      "zh-CN": "盈亏" },
-  "paper.trades.col.note":     { en: "Note",     "zh-CN": "备注" },
+  "paper.trades.col.pnl":         { en: "Realized P&L",   "zh-CN": "已实现盈亏" },
+  "paper.trades.col.unrealized":  { en: "Unrealized P&L", "zh-CN": "未实现盈亏" },
+  "paper.trades.col.note":        { en: "Note",           "zh-CN": "备注" },
+  "paper.trades.col.pnlHint": {
+    en: "Sell rows: this sell's own realized P&L. Buy rows: profit later sells extracted from THIS specific buy lot (FIFO matching).",
+    "zh-CN": "卖出行：该笔卖出的已实现盈亏。买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。",
+  },
+  "paper.trades.col.unrealizedHint": {
+    en: "Buy rows: mark-to-market on shares from THIS lot that are still held. Sells (fully closed by definition) show —.",
+    "zh-CN": "买入行：该笔买入尚未卖出的股份按最新价的账面盈亏。卖出（本身即为平仓）显示 —。",
+  },
+  "paper.trades.col.realizedTooltip": {
+    en: "{sold} of {original} shares from this buy have been sold in later trades (FIFO).",
+    "zh-CN": "该笔买入的 {original} 股中，已有 {sold} 股在后续卖出中被消化（先进先出）。",
+  },
+  "paper.trades.col.unrealizedTooltip": {
+    en: "{shares} shares still open from this lot at cost {cost}.",
+    "zh-CN": "该笔买入尚有 {shares} 股未卖出，成本 {cost}。",
+  },
+  "paper.trades.pnlFromLot": { en: "from lot", "zh-CN": "自该买入" },
+  "paper.trades.lotFootnote": {
+    en: "Realized P&L on Buy rows uses FIFO lot matching (i.e. which buy funded which sell), so you can tell which entries actually made money.",
+    "zh-CN": "买入行的“已实现盈亏”采用先进先出（FIFO）配对——追溯每笔卖出实际消化了哪笔买入的股份，让你一眼看出哪笔入场真的赚了钱。",
+  },
   "paper.trades.filter.symbol":     { en: "Filter by symbol",   "zh-CN": "按代码筛选" },
   "paper.trades.filter.side":       { en: "Filter by side",     "zh-CN": "按方向筛选" },
   "paper.trades.filter.pnl":        { en: "Filter by P&L",      "zh-CN": "按盈亏筛选" },
@@ -1787,6 +2117,19 @@ export const DICT: Readonly<Record<string, Entry>> = {
   // -------- Bot page --------
   "bot.title":              { en: "Alert Bot",    "zh-CN": "提醒机器人" },
   "bot.status":             { en: "Status",       "zh-CN": "状态" },
+  // The six alert-channel tabs on /bot. Kept short so the tab strip
+  // fits on one row on mobile (`components/ui/tabs.tsx` allows two
+  // rows but a single row reads better when it can). The old
+  // `bot.tabs.signal` key is retained for translations that might
+  // still reference it, but the /bot page now uses `ticker` +
+  // `market` (see Jul 2026 split).
+  "bot.tabs.signal":        { en: "Signal",       "zh-CN": "信号" },
+  "bot.tabs.ticker":        { en: "Ticker",       "zh-CN": "个股" },
+  "bot.tabs.market":        { en: "Market",       "zh-CN": "板块" },
+  "bot.tabs.portfolio":     { en: "Portfolio",    "zh-CN": "投资组合" },
+  "bot.tabs.insider":       { en: "Insider",      "zh-CN": "内部人" },
+  "bot.tabs.news":          { en: "News",         "zh-CN": "新闻" },
+  "bot.tabs.risks":         { en: "Risks",        "zh-CN": "风险" },
   "bot.enabled":            { en: "Enabled",      "zh-CN": "已启用" },
   "bot.on":                 { en: "ON",           "zh-CN": "开" },
   "bot.off":                { en: "OFF",          "zh-CN": "关" },
@@ -1795,31 +2138,51 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "bot.telegram.missing":   { en: "Missing token / chat id", "zh-CN": "缺少 token / chat id" },
   "bot.pollInterval":       { en: "Poll interval", "zh-CN": "轮询间隔" },
   "bot.lastTick":           { en: "Last tick",    "zh-CN": "上次运行" },
-  "bot.lastErrors":         { en: "Last errors",  "zh-CN": "最近错误" },
-  "bot.runTickNow":         { en: "Run one tick now", "zh-CN": "立即运行一次" },
   "bot.sendTest":           { en: "Send test alert",  "zh-CN": "发送测试通知" },
-  "bot.clearHistory":       { en: "Clear signal history for {ticker}", "zh-CN": "清除 {ticker} 的信号历史" },
-  "bot.strategies":         { en: "Strategies",   "zh-CN": "策略" },
-  "bot.signalHistory":      { en: "Signal history · {ticker}", "zh-CN": "信号历史 · {ticker}" },
-  "bot.signalHistoryHint":  { en: "All signals recorded by the bot, most recent first. Only cross-events get sent to Telegram.", "zh-CN": "机器人记录的所有信号，最新在前。仅交叉事件会推送至 Telegram。" },
-  "bot.noSignals":          { en: "No signals recorded yet. Run one tick to seed the feed.", "zh-CN": "暂无信号记录。运行一次以填充数据。" },
-  "bot.tickComplete":       { en: "Tick complete: {signals} signals, {alerts} alerts sent.", "zh-CN": "运行完成：{signals} 个信号，已发送 {alerts} 条通知。" },
-  "bot.alertedViaTelegram": { en: "delivered", "zh-CN": "已送达" },
-  "bot.strategy.sma":       { en: "SMA 50/200 crossover", "zh-CN": "SMA 50/200 均线交叉" },
-  "bot.strategy.rsi":       { en: "RSI reversion",        "zh-CN": "RSI 回归" },
-  "bot.strategy.macd":      { en: "MACD cross",           "zh-CN": "MACD 交叉" },
-  "bot.signal.buy":         { en: "BUY",  "zh-CN": "买入" },
-  "bot.signal.sell":        { en: "SELL", "zh-CN": "卖出" },
-  "bot.signal.hold":        { en: "HOLD", "zh-CN": "持有" },
+  "bot.infra.title":        { en: "Setup & delivery", "zh-CN": "配置与推送" },
+  "bot.infra.hint":         {
+    en: "Worker heartbeat and device push setup. Only touch these when you're setting up a new browser or debugging why alerts aren't arriving.",
+    "zh-CN": "机器人运行状态与设备推送配置。仅在配置新浏览器或排查通知未送达时使用。",
+  },
+  // NOTE: `bot.strategies`, `bot.strategy.*`, `bot.signal.*`,
+  // `bot.signalHistory*`, `bot.noSignals*`, `bot.runTickNow`,
+  // `bot.clearHistory`, `bot.lastErrors`, `bot.tickComplete`,
+  // `bot.alertedViaTelegram` were retired in July 2026 along with
+  // the legacy SMA/RSI/MACD strategy tick. Per-ticker signal
+  // notifications now flow through `bot.signalAlerts.*` below
+  // (Technical + Resonance).
 
   // -------- Signal & Resonance alerts summary (on /bot) --------
+  //
+  // `bot.signalAlerts.title` / `.subtitle` are the pre-split copy that
+  // covered both ticker- and market-scoped alerts on a single tab.
+  // They're retained here for anyone still importing them but the
+  // /bot page now uses the scoped variants below (`ticker.*` +
+  // `market.*`) so the user can tell at a glance whether they're
+  // looking at per-symbol or per-segment subscriptions.
   "bot.signalAlerts.title": {
     en: "Signal alerts",
     "zh-CN": "信号通知",
   },
   "bot.signalAlerts.subtitle": {
-    en: "Every ticker you've enabled a Technical or Resonance alert on. Delete here to stop notifications — open the ticker to change the schedule or strength gate.",
-    "zh-CN": "所有你已启用技术信号或共振通知的代码。在此处删除可停止通知——打开代码可更改时间或过滤强度。",
+    en: "Every ticker or sector you've enabled a Technical, Resonance, Master Verdict, or Sector-Resonance alert on. Delete here to stop notifications — open the item to change the schedule or strength gate.",
+    "zh-CN": "所有你已启用技术信号、共振、综合评级或行业共振通知的代码 / 板块。在此处删除可停止通知——打开对应项目可更改时间或过滤强度。",
+  },
+  "bot.signalAlerts.ticker.title": {
+    en: "Ticker signal alerts",
+    "zh-CN": "个股信号通知",
+  },
+  "bot.signalAlerts.ticker.subtitle": {
+    en: "Per-symbol subscriptions: Master Verdict, Technical Signal, and 6-Signal Resonance. Delete here to stop notifications — open the item to change the schedule or strength gate.",
+    "zh-CN": "针对单只股票的通知：综合评级、技术信号、6 信号共振。在此处删除可停止通知——打开对应项目可更改时间或过滤强度。",
+  },
+  "bot.signalAlerts.market.title": {
+    en: "Market signal alerts",
+    "zh-CN": "板块信号通知",
+  },
+  "bot.signalAlerts.market.subtitle": {
+    en: "Sector-level subscriptions: 6-Signal Resonance evaluated on a market segment's proxy ETF. Delete here to stop notifications — open the segment to change the schedule or strength gate.",
+    "zh-CN": "针对板块 / 主题的通知：以代表 ETF 计算的 6 信号共振。在此处删除可停止通知——打开对应板块可更改时间或过滤强度。",
   },
   "bot.signalAlerts.technical.title": {
     en: "Technical signal alerts",
@@ -1861,6 +2224,77 @@ export const DICT: Readonly<Record<string, Entry>> = {
     en: "and click the bell icon to configure notifications.",
     "zh-CN": "并点击铃铛图标配置通知。",
   },
+  "bot.signalAlerts.sectorResonance.title": {
+    en: "Sector 6-Signal Resonance alerts",
+    "zh-CN": "行业 6 信号共振通知",
+  },
+  "bot.signalAlerts.sectorResonance.hint": {
+    en: "Fire when a market segment's proxy ETF shows a fresh 6-signal alignment and/or as a daily digest.",
+    "zh-CN": "当某个行业板块的代理 ETF 出现新的 6 信号共振时触发，或按每日摘要发送。",
+  },
+  "bot.signalAlerts.sectorResonance.emptyBefore": {
+    en: "None yet. Open a",
+    "zh-CN": "尚无。打开某个",
+  },
+  "bot.signalAlerts.sectorResonance.emptyLink": {
+    en: "market segment",
+    "zh-CN": "市场板块",
+  },
+  "bot.signalAlerts.sectorResonance.emptyAfter": {
+    en: "and click the bell icon in its Sector Resonance section to configure notifications.",
+    "zh-CN": "并点击其“行业共振”一栏中的铃铛图标配置通知。",
+  },
+  "bot.signalAlerts.sectorResonance.proxyTag": {
+    en: "proxy {proxy}",
+    "zh-CN": "代理 {proxy}",
+  },
+  // -------- Sector Technical Signal alert summaries (on /bot Market tab) --
+  // Shape and copy conventions mirror `bot.signalAlerts.sectorResonance.*`
+  // above so the two market-scoped subsections read as visual twins.
+  "bot.signalAlerts.sectorTechnical.title": {
+    en: "Sector Technical Signal alerts",
+    "zh-CN": "行业技术信号通知",
+  },
+  "bot.signalAlerts.sectorTechnical.hint": {
+    en: "Fire when the Technical Signal verdict on a market segment's proxy ETF changes and/or as a daily digest.",
+    "zh-CN": "当某个行业板块的代理 ETF 上的技术信号判断发生变化时触发，或按每日摘要发送。",
+  },
+  "bot.signalAlerts.sectorTechnical.emptyBefore": {
+    en: "None yet. Open a",
+    "zh-CN": "尚无。打开某个",
+  },
+  "bot.signalAlerts.sectorTechnical.emptyLink": {
+    en: "market segment",
+    "zh-CN": "市场板块",
+  },
+  "bot.signalAlerts.sectorTechnical.emptyAfter": {
+    en: "and click the bell icon in its Technical Signal card to configure notifications.",
+    "zh-CN": "并点击其“技术信号”卡片中的铃铛图标配置通知。",
+  },
+  "bot.signalAlerts.confirmRemoveSectorTechnical": {
+    en: "Remove Sector Technical Signal alert for {segment}?",
+    "zh-CN": "确定移除 {segment} 的行业技术信号通知？",
+  },
+  "bot.signalAlerts.master.title": {
+    en: "Master Verdict alerts",
+    "zh-CN": "综合评级通知",
+  },
+  "bot.signalAlerts.master.hint": {
+    en: "Fire when the fused Master Verdict band crosses (Buy / Hold / Sell / Avoid) and/or as a daily digest.",
+    "zh-CN": "当综合评级跨越买入/持有/卖出/避开等区间时触发，或按每日摘要发送。",
+  },
+  "bot.signalAlerts.master.emptyBefore": {
+    en: "None yet. Open a ticker's",
+    "zh-CN": "尚无。打开某个代码的",
+  },
+  "bot.signalAlerts.master.emptyLink": {
+    en: "Master Verdict card",
+    "zh-CN": "综合评级卡片",
+  },
+  "bot.signalAlerts.master.emptyAfter": {
+    en: "on the Overview page and click the bell icon to configure notifications.",
+    "zh-CN": "（位于概览页），并点击铃铛图标配置通知。",
+  },
   "bot.signalAlerts.onChange": {
     en: "On change",
     "zh-CN": "变化时",
@@ -1877,6 +2311,14 @@ export const DICT: Readonly<Record<string, Entry>> = {
     en: "Open {ticker} in analysis",
     "zh-CN": "在分析页面打开 {ticker}",
   },
+  "bot.signalAlerts.openMaster": {
+    en: "Open {ticker} on the Overview page",
+    "zh-CN": "在概览页面打开 {ticker}",
+  },
+  "bot.signalAlerts.openSector": {
+    en: "Open the {segment} sector page",
+    "zh-CN": "打开 {segment} 板块页面",
+  },
   "bot.signalAlerts.test": {
     en: "Send a test alert for {ticker}",
     "zh-CN": "为 {ticker} 发送测试通知",
@@ -1892,6 +2334,14 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "bot.signalAlerts.confirmRemoveResonance": {
     en: "Stop the 6-Signal Resonance alert on {ticker}?",
     "zh-CN": "停止 {ticker} 的 6 信号共振通知？",
+  },
+  "bot.signalAlerts.confirmRemoveMaster": {
+    en: "Stop the Master Verdict alert on {ticker}?",
+    "zh-CN": "停止 {ticker} 的综合评级通知？",
+  },
+  "bot.signalAlerts.confirmRemoveSectorResonance": {
+    en: "Stop the Sector 6-Signal Resonance alert on {segment}?",
+    "zh-CN": "停止 {segment} 板块的 6 信号共振通知？",
   },
   "bot.signalAlerts.removed": {
     en: "Alert removed for {ticker}.",
@@ -1916,6 +2366,147 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "bot.signalAlerts.strength.triggerOnly": {
     en: "Fresh triggers only",
     "zh-CN": "仅新触发",
+  },
+
+  // -------- Portfolio-risk alerts summary (on /bot > Risks tab) --------
+  // This channel lives outside `bot.signalAlerts.*` because its data
+  // model is different: the master toggle is global (not per-ticker),
+  // and the watched-ticker list is driven by the /my-portfolio Risks
+  // tab's holding sync rather than by opening a stock and clicking a
+  // bell icon. The panel here is a management surface, not a
+  // configurator.
+  "bot.riskAlerts.title": {
+    en: "Portfolio risk alerts",
+    "zh-CN": "组合风险通知",
+  },
+  "bot.riskAlerts.subtitle": {
+    en: "Get pinged when a holding starts looking like a delisting or bankruptcy candidate.",
+    "zh-CN": "当持仓开始出现退市或破产迹象时通知你。",
+  },
+  "bot.riskAlerts.on":  { en: "On",  "zh-CN": "已开启" },
+  "bot.riskAlerts.off": { en: "Off", "zh-CN": "已关闭" },
+  "bot.riskAlerts.enabled": {
+    en: "Risk notifications enabled.",
+    "zh-CN": "已开启风险通知。",
+  },
+  "bot.riskAlerts.disabled": {
+    en: "Risk notifications disabled. Server watchlist cleared.",
+    "zh-CN": "已关闭风险通知。服务器监控列表已清空。",
+  },
+  "bot.riskAlerts.statusTitle": {
+    en: "Risk notification channel",
+    "zh-CN": "风险通知通道",
+  },
+  "bot.riskAlerts.statusBodyOn": {
+    en: "Monitoring {n} holding(s) for going-concern audits, delisting notices, bankruptcy filings, and price collapses.",
+    "zh-CN": "正在监控 {n} 个持仓，检查持续经营警告、退市通知、破产申报、以及价格暴跌信号。",
+  },
+  "bot.riskAlerts.statusBodyOff": {
+    en: "The worker is not walking any holdings. Turn on to have it check for delisting / bankruptcy signals on the imported set.",
+    "zh-CN": "机器人当前未监控任何持仓。开启后将根据你导入的组合检查退市/破产信号。",
+  },
+  "bot.riskAlerts.turnOn":  { en: "Turn on",  "zh-CN": "开启" },
+  "bot.riskAlerts.turnOff": { en: "Turn off", "zh-CN": "关闭" },
+  "bot.riskAlerts.severity": { en: "Fire on", "zh-CN": "触发级别" },
+  "bot.riskAlerts.severity.high": {
+    en: "High + critical",
+    "zh-CN": "高级+紧急",
+  },
+  "bot.riskAlerts.severity.critical": {
+    en: "Critical only",
+    "zh-CN": "仅紧急",
+  },
+  "bot.riskAlerts.severity.high.tip": {
+    en: "Notify on high-severity (going-concern audits, SEC enforcement, extended sub-$1) OR critical events.",
+    "zh-CN": "高严重度信号（持续经营警告、SEC 执法、长期低于 $1）或紧急事件都会通知。",
+  },
+  "bot.riskAlerts.severity.critical.tip": {
+    en: "Only notify on critical events: bankruptcy filings, delisting notices, price collapses, or no-data blackouts.",
+    "zh-CN": "仅在紧急事件时通知：破产申报、退市通知、价格暴跌、或数据长时间中断。",
+  },
+  "bot.riskAlerts.severity.medium.tip": {
+    en: "Medium-severity signals (yellow flags) don't trigger notifications — surface only in the analysis view.",
+    "zh-CN": "中等严重度信号（黄色警示）不会触发通知，仅在分析视图中显示。",
+  },
+  "bot.riskAlerts.lastSync": {
+    en: "Synced {when}",
+    "zh-CN": "上次同步 {when}",
+  },
+  "bot.riskAlerts.lastReport": {
+    en: "{total} watched · +{added} / -{removed}",
+    "zh-CN": "监控 {total} 项 · 新增 {added} / 移除 {removed}",
+  },
+  "bot.riskAlerts.watches.title": {
+    en: "Monitored tickers",
+    "zh-CN": "监控中的代码",
+  },
+  "bot.riskAlerts.watches.hint": {
+    en: "The set the worker walks every tick. Sourced from your imported holdings on My Portfolio → Risks. Remove here to stop watching a single ticker.",
+    "zh-CN": "机器人每次运行会走一遍这些代码，来源于「我的组合」→ 风险页所导入的持仓。在此可单独移除某个代码。",
+  },
+  "bot.riskAlerts.watches.manage": {
+    en: "Manage in My Portfolio",
+    "zh-CN": "前往我的组合管理",
+  },
+  "bot.riskAlerts.watches.emptyOff": {
+    en: "None. Turn risk notifications on above to start monitoring your holdings.",
+    "zh-CN": "暂无。打开上方的风险通知即可开始监控持仓。",
+  },
+  "bot.riskAlerts.watches.emptyOnBefore": {
+    en: "None yet. Import a portfolio and open the",
+    "zh-CN": "尚无。导入组合并前往",
+  },
+  "bot.riskAlerts.watches.emptyOnLink": {
+    en: "Risks tab on My Portfolio",
+    "zh-CN": "我的组合的风险页",
+  },
+  "bot.riskAlerts.watches.emptyOnAfter": {
+    en: "to sync tickers.",
+    "zh-CN": "以同步代码。",
+  },
+  "bot.riskAlerts.rowSeverity.critical": {
+    en: "Critical",
+    "zh-CN": "紧急",
+  },
+  "bot.riskAlerts.rowSeverity.high": {
+    en: "High",
+    "zh-CN": "高",
+  },
+  "bot.riskAlerts.rowSeverity.medium": {
+    en: "Medium",
+    "zh-CN": "中",
+  },
+  "bot.riskAlerts.rowSeverity.none": {
+    en: "No signal",
+    "zh-CN": "暂无信号",
+  },
+  "bot.riskAlerts.rowSeverity.none.tip": {
+    en: "The worker has evaluated this ticker but hasn't found a risk signal yet.",
+    "zh-CN": "机器人已经检查过该代码，暂未发现风险信号。",
+  },
+  "bot.riskAlerts.rowMinSev": {
+    en: "min: {sev}",
+    "zh-CN": "阈值：{sev}",
+  },
+  "bot.riskAlerts.lastNotified": {
+    en: "notified {when}",
+    "zh-CN": "上次通知 {when}",
+  },
+  "bot.riskAlerts.neverNotified": {
+    en: "no notifications yet",
+    "zh-CN": "尚未发送通知",
+  },
+  "bot.riskAlerts.remove": {
+    en: "Stop monitoring {ticker}",
+    "zh-CN": "停止监控 {ticker}",
+  },
+  "bot.riskAlerts.confirmRemove": {
+    en: "Stop monitoring {ticker} for risk signals?",
+    "zh-CN": "停止对 {ticker} 的风险监控？",
+  },
+  "bot.riskAlerts.removed": {
+    en: "Removed {ticker} from monitored tickers.",
+    "zh-CN": "已从监控列表移除 {ticker}。",
   },
 
   // -------- Portfolios page --------
@@ -1980,15 +2571,52 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "form.fundSearchIntro":  { en: "Search by firm or manager — 13F filers are indexed on SEC EDGAR by the fund entity's registered name (e.g. \"Pershing Square Capital\", \"Ark Investment Management\"). Pick the right one and we'll grab the CIK for you.", "zh-CN": "按公司或经理人搜索——13F 申报人在 SEC EDGAR 上以基金实体的注册名索引（例如 \"Pershing Square Capital\"、\"Ark Investment Management\"）。选中后我们会自动带出 CIK。" },
   "form.politicianDataSource":{ en: "Data source: U.S. House of Representatives Clerk (STOCK Act PTR filings only). Presidents, Cabinet secretaries and other executive-branch officials file with the OGE (Form 278) — not covered here. Senators use efdsearch.senate.gov, also not scraped.", "zh-CN": "数据来源：美国众议院书记员（仅限 STOCK 法案 PTR 文件）。总统、内阁部长及其他行政分支官员使用 OGE 提交（Form 278）——此处未覆盖。参议员使用 efdsearch.senate.gov——同样未抓取。" },
   "form.politicianNameHint":{ en: "Matching is first-name prefix + last-name substring, so middle names are fine. But the person MUST be a current U.S. House Representative for any filings to show.", "zh-CN": "匹配为名字前缀 + 姓氏子串，含中间名亦可。但该人物必须是现任美国众议员，其文件才能显示。" },
+  // -------- Politician search flow -----------------------------------------
+  // These strings back the two-mode PoliticianForm — search-first with a
+  // manual-entry fallback for senators (Senate PTR portal requires a
+  // session cookie we don't scrape).
+  "form.politicianSearchIntro":{
+    en: "Type a House member's name — we'll match against the House Clerk's disclosure feed and pre-fill the details.",
+    "zh-CN": "输入众议员姓名——我们会在众议院书记员披露数据中匹配并自动填充详情。",
+  },
+  "form.politicianManualHintBefore":{
+    en: "Senator or House member missing from the list?",
+    "zh-CN": "找不到某位参议员或众议员？",
+  },
+  "form.politicianManualLink":{
+    en: "Add manually",
+    "zh-CN": "手动添加",
+  },
+  "form.politicianManualHint":{
+    en: "Manual entry — use this for senators (Senate disclosures live on a separate portal we can't scrape) or House members whose latest filings haven't posted yet.",
+    "zh-CN": "手动添加 —— 用于参议员（其披露数据位于另一个我们无法抓取的门户）或最新文件尚未发布的众议员。",
+  },
+  "form.politicianBackToSearch":{
+    en: "Back to search",
+    "zh-CN": "返回搜索",
+  },
+  "form.politicianSelectedMeta":{
+    en: "{chamber} · {state} — pre-filled from House Clerk feed",
+    "zh-CN": "{chamber} · {state} —— 由众议院书记员数据自动填充",
+  },
   "portfolios.dialog.selectedOn":{ en: "Selected on SEC EDGAR", "zh-CN": "已在 SEC EDGAR 选中" },
 
   "entitySearch.personPlaceholder":{ en: "Search insiders on SEC EDGAR (e.g. Elon Musk, Tim Cook)", "zh-CN": "在 SEC EDGAR 搜索内部人士（如 Elon Musk、Tim Cook）" },
   "entitySearch.fundPlaceholder":  { en: "Search 13F filers on SEC EDGAR (e.g. Berkshire, Buffett, Ark Invest)", "zh-CN": "在 SEC EDGAR 搜索 13F 申报人（如 Berkshire、Buffett、Ark Invest）" },
+  "entitySearch.politicianPlaceholder":{ en: "Search House members from Clerk filings (e.g. Pelosi, Gottheimer, Nancy)", "zh-CN": "在众议院书记员文件中搜索议员（如 Pelosi、Gottheimer、Nancy）" },
   "entitySearch.personAria":       { en: "Search insiders on SEC EDGAR", "zh-CN": "在 SEC EDGAR 搜索内部人士" },
   "entitySearch.fundAria":         { en: "Search fund managers on SEC EDGAR", "zh-CN": "在 SEC EDGAR 搜索基金经理" },
+  "entitySearch.politicianAria":   { en: "Search House members from Clerk filings", "zh-CN": "在众议院书记员文件中搜索议员" },
   "entitySearch.noMatch":          { en: "No SEC filers matched \"{q}\". Try a different spelling or the firm name instead of the person.", "zh-CN": "没有匹配 \"{q}\" 的 SEC 申报人。换个拼写或改用公司名而非个人名试试。" },
+  "entitySearch.noMatchPolitician":{ en: "No House member matched \"{q}\". The Senate filing portal isn't scraped here — use \"Add manually\" for senators.", "zh-CN": "没有匹配 \"{q}\" 的众议员。参议院的披露门户此处未抓取——请用“手动添加”录入参议员。" },
   "entitySearch.lastFiled":        { en: "last filed {date}", "zh-CN": "最近申报 {date}" },
   "entitySearch.filingCount":      { en: "{n} filings", "zh-CN": "{n} 份文件" },
+  // Politician-specific context lines shown under each search hit.
+  // `chamber` / `state` are always populated from the feed for politicians,
+  // so we lean on those rather than the SEC-style "CIK ...· companies"
+  // context that person/fund results carry.
+  "entitySearch.politicianContext":{ en: "{chamber} · {state}", "zh-CN": "{chamber} · {state}" },
+  "entitySearch.politicianNoTypes":{ en: "No stock filings on record — may not trade individual equities.", "zh-CN": "没有股票相关文件记录 —— 可能不交易个股。" },
 
   // -------- Beginner glossary panel --------
   "keyTerms.title":       { en: "Key terms on this page", "zh-CN": "本页关键术语" },

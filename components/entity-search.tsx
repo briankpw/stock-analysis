@@ -1,23 +1,37 @@
 "use client";
 
 import * as React from "react";
-import { Building2, Loader2, Search, User } from "lucide-react";
+import { Building2, Landmark, Loader2, Search, User } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-/** Serialised shape of `EntitySearchResult` from `lib/portfolios.ts`. */
+/**
+ * Serialised shape of `EntitySearchResult` from `lib/portfolios.ts`.
+ *
+ * The three `kind`s share most fields but differ in a few places:
+ *   * `cik` is a real SEC identifier for `person` / `fund`, and an
+ *     empty string for `politician` (House Clerk data is name-matched).
+ *   * `state` / `chamber` / `firstName` / `lastName` are populated only
+ *     for `politician` so the caller can pre-fill the confirm form.
+ *   * `companies` is unused for `politician` (they don't have SEC
+ *     counterparty context) and comes back empty.
+ */
 export interface EntityHit {
-  kind: "person" | "fund";
+  kind: "person" | "fund" | "politician";
   cik: string;
   name: string;
   companies: string[];
   filingCount: number;
   latestFilingDate: string | null;
   formTypes: string[];
+  state?: string;
+  chamber?: "House" | "Senate";
+  firstName?: string;
+  lastName?: string;
 }
 
 interface Props {
-  kind: "person" | "fund";
+  kind: "person" | "fund" | "politician";
   onPick: (hit: EntityHit) => void;
   autoFocus?: boolean;
   placeholder?: string;
@@ -77,7 +91,11 @@ export function EntitySearch({ kind, onPick, autoFocus, placeholder }: Props) {
     return () => window.clearTimeout(timer);
   }, [query, kind]);
 
-  const Icon = kind === "person" ? User : Building2;
+  // Distinct icon per kind so the visual matches the CATEGORY_META in
+  // `portfolios-rail.tsx` (Users/Building2/Landmark), letting the user
+  // orient in a glance when the same picker is reused for all three.
+  const Icon =
+    kind === "person" ? User : kind === "fund" ? Building2 : Landmark;
 
   return (
     <div className="space-y-3">
@@ -92,13 +110,17 @@ export function EntitySearch({ kind, onPick, autoFocus, placeholder }: Props) {
             placeholder ??
             (kind === "person"
               ? t("entitySearch.personPlaceholder")
-              : t("entitySearch.fundPlaceholder"))
+              : kind === "fund"
+                ? t("entitySearch.fundPlaceholder")
+                : t("entitySearch.politicianPlaceholder"))
           }
           className="w-full rounded-md border border-border bg-card pl-8 pr-9 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
           aria-label={
             kind === "person"
               ? t("entitySearch.personAria")
-              : t("entitySearch.fundAria")
+              : kind === "fund"
+                ? t("entitySearch.fundAria")
+                : t("entitySearch.politicianAria")
           }
         />
         {loading && (
@@ -119,7 +141,9 @@ export function EntitySearch({ kind, onPick, autoFocus, placeholder }: Props) {
 
       {query.trim().length >= 2 && !loading && hits.length === 0 && !error && !sourceDown && (
         <p className="text-xs text-muted-foreground px-1">
-          {t("entitySearch.noMatch", { q: query.trim() })}
+          {kind === "politician"
+            ? t("entitySearch.noMatchPolitician", { q: query.trim() })
+            : t("entitySearch.noMatch", { q: query.trim() })}
         </p>
       )}
 
@@ -128,43 +152,73 @@ export function EntitySearch({ kind, onPick, autoFocus, placeholder }: Props) {
           className="max-h-72 overflow-y-auto rounded-md border border-border divide-y divide-border/50"
           role="listbox"
         >
-          {hits.map((h) => (
-            <li key={h.cik}>
-              <button
-                type="button"
-                onClick={() => onPick(h)}
-                className={cn(
-                  "w-full text-left px-3 py-2.5 hover:bg-primary/10 transition-colors",
-                  "focus:outline-none focus:bg-primary/10",
-                )}
-              >
-                <div className="flex items-start gap-2">
-                  <Icon className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium leading-tight truncate">
-                      {titleCase(h.name)}
-                    </div>
-                    {h.companies.length > 0 && (
-                      <div className="text-[0.7rem] text-muted-foreground mt-0.5 truncate">
-                        {h.companies.slice(0, 2).map(titleCase).join(" · ")}
+          {hits.map((h) => {
+            // Politicians have no CIK to disambiguate them, so we use
+            // `state + last + first` as a stable list key. Persons and
+            // funds continue to use their CIK.
+            const key =
+              h.kind === "politician"
+                ? `${h.state ?? ""}|${h.lastName ?? ""}|${h.firstName ?? ""}`
+                : h.cik;
+            return (
+              <li key={key}>
+                <button
+                  type="button"
+                  onClick={() => onPick(h)}
+                  className={cn(
+                    "w-full text-left px-3 py-2.5 hover:bg-primary/10 transition-colors",
+                    "focus:outline-none focus:bg-primary/10",
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    <Icon className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium leading-tight truncate">
+                        {titleCase(h.name)}
                       </div>
-                    )}
-                    <div className="text-[0.65rem] text-muted-foreground/70 mt-0.5 font-mono">
-                      CIK {h.cik}
-                      {h.latestFilingDate && (
-                        <span className="ml-2">
-                          {t("entitySearch.lastFiled", { date: new Date(h.latestFilingDate).toLocaleDateString() })}
-                        </span>
+                      {/* Person / fund: SEC counterparty context.
+                          Politician: chamber + state on the secondary line
+                          so the identity ("Rep. X from CA") is legible at
+                          a glance. */}
+                      {h.kind === "politician" ? (
+                        <div className="text-[0.7rem] text-muted-foreground mt-0.5 truncate">
+                          {t("entitySearch.politicianContext", {
+                            chamber: h.chamber ?? "House",
+                            state: h.state ?? "—",
+                          })}
+                        </div>
+                      ) : (
+                        h.companies.length > 0 && (
+                          <div className="text-[0.7rem] text-muted-foreground mt-0.5 truncate">
+                            {h.companies.slice(0, 2).map(titleCase).join(" · ")}
+                          </div>
+                        )
                       )}
-                      <span className="ml-2">
-                        · {t("entitySearch.filingCount", { n: h.filingCount })}
-                      </span>
+                      <div className="text-[0.65rem] text-muted-foreground/70 mt-0.5 font-mono">
+                        {h.kind === "politician" ? (
+                          <span>
+                            {h.formTypes.length > 0
+                              ? h.formTypes.join(" · ")
+                              : t("entitySearch.politicianNoTypes")}
+                          </span>
+                        ) : (
+                          <span>CIK {h.cik}</span>
+                        )}
+                        {h.latestFilingDate && (
+                          <span className="ml-2">
+                            {t("entitySearch.lastFiled", { date: new Date(h.latestFilingDate).toLocaleDateString() })}
+                          </span>
+                        )}
+                        <span className="ml-2">
+                          · {t("entitySearch.filingCount", { n: h.filingCount })}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </button>
-            </li>
-          ))}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

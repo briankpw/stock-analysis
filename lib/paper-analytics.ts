@@ -46,6 +46,28 @@ export interface EnrichedTrade extends Trade {
   /** Cost basis (avg cost × shares) that this sell consumed. Useful for
    *  the trade-log tooltip. `null` for buys. */
   costBasisSold: number | null;
+
+  // --- FIFO lot attribution (Buy rows only; null on Sell) ---------------
+  //
+  // A second lens on the same data: instead of "how much did *this
+  // sell* realize?", it answers "how much did *this buy* end up
+  // making?" by tracing which sells later drained shares from this
+  // buy lot (FIFO) and attributing per-lot P&L back to the buy.
+
+  /** Shares originally bought in this lot (same as `shares` on Buys). */
+  lotOriginalShares: number | null;
+  /** Shares from this buy lot that were later consumed by FIFO sells. */
+  lotSharesSold: number | null;
+  /** Shares from this buy lot still open. */
+  lotSharesRemaining: number | null;
+  /** This lot's per-share cost (matches the buy `price` because paper
+   *  trading tracks commission on sells only — kept as a field for
+   *  parity with the portfolio model and for future evolution). */
+  lotCostPerShare: number | null;
+  /** Cumulative realized P&L attributed to this buy from later sells. */
+  lotRealizedPnl: number | null;
+  /** `open` (nothing sold), `partial` (some sold), or `closed`. */
+  lotStatus: "open" | "partial" | "closed" | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +166,23 @@ export interface PaperAnalyticsResult {
 interface ReplayState {
   shares: number;
   avgCost: number;
+  /**
+   * FIFO lot queue for this symbol. Each Buy pushes a lot; Sells
+   * drain the oldest lots first. When a lot closes we DON'T shift
+   * it out of the queue — we just leave `remainingShares === 0` so
+   * the `tradeId` back-reference stays valid for later attribution
+   * on the enriched trade output. Cheap: the queue is only as long
+   * as the number of buys, per symbol.
+   */
+  lots: LotState[];
+}
+
+interface LotState {
+  tradeId: number;
+  originalShares: number;
+  costPerShare: number;
+  remainingShares: number;
+  attributedRealized: number;
 }
 
 /**
@@ -194,9 +233,13 @@ export function computePaperAnalytics(trades: Trade[]): PaperAnalyticsResult {
     firstTradeAt: firstAt,
   });
 
+  // Track every lot we've ever opened by trade id — a flat map means
+  // the second-pass fold onto enriched trades is O(1) per buy.
+  const lotByBuyId = new Map<number, LotState>();
+
   for (const t of chrono) {
     const symbol = t.symbol;
-    const st = state.get(symbol) ?? { shares: 0, avgCost: 0 };
+    const st = state.get(symbol) ?? { shares: 0, avgCost: 0, lots: [] };
     const perf =
       perSymbol.get(symbol) ?? initPerf(symbol, t.createdAt);
     perf.totalCommissions += t.commission;
@@ -219,6 +262,22 @@ export function computePaperAnalytics(trades: Trade[]): PaperAnalyticsResult {
       st.shares = newShares;
       st.avgCost = newAvg;
       perf.totalBought += t.shares * t.price;
+
+      // Open a FIFO lot mirroring this buy. Cost per share is the
+      // pure trade price — paper trading (unlike the imported
+      // portfolio) doesn't fold buy commission into avg cost;
+      // commission is only debited from cash at trade time. We
+      // preserve that convention here so lot P&L reconciles cleanly
+      // with the ledger's avg cost.
+      const lot: LotState = {
+        tradeId: t.id,
+        originalShares: t.shares,
+        costPerShare: t.price,
+        remainingShares: t.shares,
+        attributedRealized: 0,
+      };
+      st.lots.push(lot);
+      lotByBuyId.set(t.id, lot);
     } else {
       // Sell path: compute P&L on the shares we can actually account
       // for from the running cost basis. If a sell exceeds `st.shares`
@@ -243,6 +302,31 @@ export function computePaperAnalytics(trades: Trade[]): PaperAnalyticsResult {
           perf.worstTrade = realizedPnl;
         }
       }
+
+      // FIFO lot drain — walk the lots oldest-first, consuming
+      // shares until this sell is filled, and attribute per-lot P&L
+      // back onto each buy that funded it. Sell commission is
+      // distributed proportionally across the consumed lots so the
+      // sum stays honest.
+      let toSell = closable;
+      const consumed: Array<{ lot: LotState; shares: number }> = [];
+      for (const lot of st.lots) {
+        if (toSell <= 1e-9) break;
+        if (lot.remainingShares <= 1e-9) continue;
+        const take = Math.min(lot.remainingShares, toSell);
+        lot.remainingShares -= take;
+        consumed.push({ lot, shares: take });
+        toSell -= take;
+      }
+      const totalConsumed = consumed.reduce((s, c) => s + c.shares, 0);
+      if (totalConsumed > 1e-9) {
+        for (const c of consumed) {
+          const grossPnl = (t.price - c.lot.costPerShare) * c.shares;
+          const commissionShare = t.commission * (c.shares / totalConsumed);
+          c.lot.attributedRealized += grossPnl - commissionShare;
+        }
+      }
+
       perf.totalSold += t.shares * t.price;
       const preSellShares = st.shares;
       st.shares = Math.max(0, st.shares - sellShares);
@@ -258,12 +342,40 @@ export function computePaperAnalytics(trades: Trade[]): PaperAnalyticsResult {
 
     state.set(symbol, st);
     perSymbol.set(symbol, perf);
+    // Sells don't own a lot — lot fields stay null. Buys get their
+    // lot back-referenced in the second pass below (attribution runs
+    // through end of history first).
     enrichedByOriginalId.set(t.id, {
       ...t,
       realizedPnl,
       realizedPnlPct,
       costBasisSold,
+      lotOriginalShares: null,
+      lotSharesSold: null,
+      lotSharesRemaining: null,
+      lotCostPerShare: null,
+      lotRealizedPnl: null,
+      lotStatus: null,
     });
+  }
+
+  // Second pass: fold FIFO lot attribution onto every Buy in the
+  // enriched output now that the whole history has been replayed.
+  for (const [tradeId, lot] of lotByBuyId) {
+    const enriched = enrichedByOriginalId.get(tradeId);
+    if (!enriched) continue;
+    const sold = lot.originalShares - lot.remainingShares;
+    enriched.lotOriginalShares = lot.originalShares;
+    enriched.lotSharesSold = sold;
+    enriched.lotSharesRemaining = lot.remainingShares;
+    enriched.lotCostPerShare = lot.costPerShare;
+    enriched.lotRealizedPnl = lot.attributedRealized;
+    enriched.lotStatus =
+      lot.remainingShares <= 1e-9
+        ? "closed"
+        : sold > 1e-9
+          ? "partial"
+          : "open";
   }
 
   // Snapshot the still-open position for each symbol so the UI can show
@@ -290,6 +402,12 @@ export function computePaperAnalytics(trades: Trade[]): PaperAnalyticsResult {
         realizedPnl: null,
         realizedPnlPct: null,
         costBasisSold: null,
+        lotOriginalShares: null,
+        lotSharesSold: null,
+        lotSharesRemaining: null,
+        lotCostPerShare: null,
+        lotRealizedPnl: null,
+        lotStatus: null,
       },
   );
 

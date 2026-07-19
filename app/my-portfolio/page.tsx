@@ -5,11 +5,16 @@
  *
  * This page is the entry point for the CSV-upload workflow: users
  * export their transaction history from a portfolio-tracker app (MSP,
- * MooMoo, Webull, etc.) and drop the file here to see everything on-
- * device. The CSV never leaves the browser — rows are parsed and kept
- * in `localStorage` via the `useHoldings` store, so there's no server
- * persistence, auth, or DB migration involved for a "list down all the
- * details" feature.
+ * MooMoo, Webull, etc.) and drop the file here to see everything.
+ *
+ * As of v7 the parsed rows are persisted server-side (SQLite via
+ * `/api/holdings`) so a portfolio uploaded on the desktop is visible
+ * on the phone without a re-upload. The client-side `useHoldings`
+ * store is a write-through cache — the page mounts
+ * `useHydrateHoldings()` on first render, waits for the server to
+ * respond, and shows a small spinner until then. See
+ * `lib/holdings-state.ts` for the migration path that carries any
+ * pre-v7 localStorage blob up to the server on first hydration.
  *
  * Layout:
  *   • Header + PageIntro.
@@ -44,7 +49,8 @@ import {
   PortfolioRisksTab,
   usePortfolioRiskBadge,
 } from "@/components/portfolio-risks-tab";
-import { useHoldings } from "@/lib/holdings-state";
+import { ErrorBanner, LoadingPage } from "@/components/loading";
+import { useHoldings, useHydrateHoldings } from "@/lib/holdings-state";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -52,7 +58,13 @@ type Tab = "positions" | "transactions" | "risks";
 
 export default function MyPortfolioPage() {
   const t = useT();
+  // Kick off the one-shot GET /api/holdings on mount. Idempotent —
+  // safe to re-mount (route change back onto this page won't refetch
+  // once `hydrated=true`).
+  useHydrateHoldings();
   const hasData = useHoldings((s) => s.rows.length > 0 && s.meta !== null);
+  const hydrated = useHoldings((s) => s.hydrated);
+  const syncError = useHoldings((s) => s.syncError);
   const [tab, setTab] = React.useState<Tab>("positions");
 
   // Deep-link support for the push notification's `?tab=risks` param
@@ -89,6 +101,22 @@ export default function MyPortfolioPage() {
 
       <PageIntro pageKey="my-portfolio" />
 
+      {/* Show the sync error at the top so it's visible regardless of
+          which tab is selected. Errors are self-clearing on the next
+          successful mutation, so a stale banner isn't a concern. */}
+      {syncError && (
+        <div className="mb-4">
+          <ErrorBanner message={t("myPortfolio.syncError", { detail: syncError })} />
+        </div>
+      )}
+
+      {/* First-mount loading state — the store is empty until GET
+          /api/holdings resolves. Without this guard we'd flash the
+          "no portfolio yet" uploader for a beat and then swap in the
+          real data, which reads as a bug on slow connections. */}
+      {!hydrated && !syncError ? (
+        <LoadingPage label={t("myPortfolio.loading")} />
+      ) : (
       <div className="space-y-6 animate-fade-in">
         {hasData ? (
           <>
@@ -147,6 +175,7 @@ export default function MyPortfolioPage() {
           ]}
         />
       </div>
+      )}
     </div>
   );
 }

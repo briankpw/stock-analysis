@@ -33,6 +33,12 @@ import { KeyTerms } from "@/components/key-terms";
 import { TermTip } from "@/components/term-tip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Pagination, usePagination } from "@/components/ui/pagination";
+import {
+  SortableTh,
+  TableToolbar,
+  useTableControls,
+} from "@/components/ui/table-controls";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
 import { AddIssuerToWatchlistButton } from "@/components/add-issuer-to-watchlist-button";
@@ -70,6 +76,7 @@ import type {
   InsiderTransaction,
   PersonPreset,
   PersonPresetView,
+  PoliticianFilingStatus,
   PoliticianHolding,
   PoliticianPreset,
   PoliticianPresetView,
@@ -91,6 +98,11 @@ function PersonDetail({ preset }: { preset: PersonPreset }) {
   }
   if (error) return <ErrorBanner message={error} retry={reload} />;
   if (!data) return null;
+
+  const noHoldings = data.holdings.length === 0;
+  const noTx = data.recentTransactions.length === 0;
+  const filingsTotal =
+    data.filingsParsed + data.filingsSkipped + data.filingsDerivativeOnly;
 
   return (
     <div className="space-y-4">
@@ -115,15 +127,39 @@ function PersonDetail({ preset }: { preset: PersonPreset }) {
               displayName={preset.name}
               variant="label"
             />
-            <SmallStat label="Companies held" value={fmtInteger(data.holdings.length)} tone="neu" />
-            <SmallStat label="Filings parsed" value={fmtInteger(data.filingsParsed)} tone="neu" />
-            <SmallStat label="Transactions" value={fmtInteger(data.recentTransactions.length)} tone="neu" />
+            <SmallStat
+              label="Companies held"
+              value={fmtInteger(data.holdings.length)}
+              tone={noHoldings ? "warn" : "neu"}
+            />
+            <SmallStat
+              label="Filings parsed"
+              value={fmtInteger(data.filingsParsed)}
+              tone={data.filingsParsed === 0 ? "warn" : "neu"}
+            />
+            <SmallStat
+              label="Transactions"
+              value={fmtInteger(data.recentTransactions.length)}
+              tone={noTx ? "warn" : "neu"}
+            />
           </div>
         </div>
       </Card>
 
-      <PersonHoldingsCard holdings={data.holdings} />
-      <PersonTransactionsCard transactions={data.recentTransactions} />
+      {noHoldings && noTx ? (
+        <NoInsiderDataExplainer
+          preset={preset}
+          filingsParsed={data.filingsParsed}
+          filingsSkipped={data.filingsSkipped}
+          filingsDerivativeOnly={data.filingsDerivativeOnly}
+          filingsTotal={filingsTotal}
+        />
+      ) : (
+        <>
+          <PersonHoldingsCard holdings={data.holdings} />
+          <PersonTransactionsCard transactions={data.recentTransactions} />
+        </>
+      )}
 
       <p className="text-xs text-muted-foreground text-center">
         Source: <a href={data.source} target="_blank" rel="noreferrer" className="underline">SEC EDGAR submissions API</a>.
@@ -137,15 +173,195 @@ function PersonDetail({ preset }: { preset: PersonPreset }) {
   );
 }
 
+/**
+ * Diagnostic card for the "we parsed X filings but surfaced nothing"
+ * state on an individual insider preset. Modelled on the politician
+ * `NoHouseFilingsExplainer` — the goal is to tell users *why* the panel
+ * is empty (which is almost always benign — Section 16 filers paid in
+ * RSUs never generate non-derivative rows until they sell) and give them
+ * a one-click way to sanity-check against the raw SEC feed.
+ */
+function NoInsiderDataExplainer({
+  preset,
+  filingsParsed,
+  filingsSkipped,
+  filingsDerivativeOnly,
+  filingsTotal,
+}: {
+  preset: PersonPreset;
+  filingsParsed: number;
+  filingsSkipped: number;
+  filingsDerivativeOnly: number;
+  filingsTotal: number;
+}) {
+  const edgarSearchUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${preset.cik}&type=&dateb=&owner=include&count=40`;
+  const rawSubmissionsUrl = `https://data.sec.gov/submissions/CIK${preset.cik}.json`;
+
+  // Discriminate the four plausible states so the copy actually matches
+  // what happened rather than dumping the whole possibility tree on the
+  // user. Priority order matters — a preset can hit "some parsed, some
+  // failed" in which case the mixed message is the useful one.
+  //   noFilings      — EDGAR returned no Form 3/4/5 in the window at all
+  //   allDerivative  — every parsed filing was options/RSUs only
+  //   allFailed      — every filing failed to fetch/parse (rate-limit)
+  //   mixed          — a bit of everything, none producing non-deriv rows
+  const state: "noFilings" | "allDerivative" | "allFailed" | "mixed" =
+    filingsTotal === 0
+      ? "noFilings"
+      : filingsSkipped === filingsTotal
+        ? "allFailed"
+        : filingsDerivativeOnly === filingsTotal - filingsSkipped &&
+            filingsSkipped === 0
+          ? "allDerivative"
+          : "mixed";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Nothing to show for {preset.name}</CardTitle>
+      </CardHeader>
+      <CardContent className="text-sm space-y-3">
+        <p>
+          {state === "noFilings" && (
+            <>
+              SEC EDGAR returned <strong>no Form 3/4/5 filings</strong> for CIK{" "}
+              <code className="text-xs">{preset.cik}</code> in the current window.
+            </>
+          )}
+          {state === "allFailed" && (
+            <>
+              Found <strong>{filingsTotal}</strong> Form 3/4/5 filing
+              {filingsTotal === 1 ? "" : "s"} on EDGAR, but couldn't fetch or
+              parse any of them (all {filingsSkipped} skipped). This is almost
+              always rate-limiting — retry in a minute.
+            </>
+          )}
+          {state === "allDerivative" && (
+            <>
+              Parsed <strong>{filingsDerivativeOnly}</strong> Form 3/4/5 filing
+              {filingsDerivativeOnly === 1 ? "" : "s"} for {preset.name}, but
+              none contained any{" "}
+              <TermTip term="Non-Derivative">non-derivative</TermTip> rows —
+              everything reported was options, warrants, or RSUs (the derivative
+              table, which we omit by design).
+            </>
+          )}
+          {state === "mixed" && (
+            <>
+              Read <strong>{filingsTotal}</strong> Form 3/4/5 filing
+              {filingsTotal === 1 ? "" : "s"} but surfaced nothing:{" "}
+              {filingsDerivativeOnly} contained only derivative rows
+              (options / RSUs) and {filingsSkipped} couldn't be fetched or
+              parsed.
+            </>
+          )}
+        </p>
+
+        <p className="text-muted-foreground">Common reasons:</p>
+        <ul className="text-xs text-muted-foreground space-y-1.5 pl-4 list-disc">
+          <li>
+            <strong className="text-foreground">
+              Compensation is mostly equity awards.
+            </strong>{" "}
+            Tech-executive Form 4s are dominated by RSU grants and vests (Form 4
+            code <code>A</code>/<code>M</code>) which live in the{" "}
+            <TermTip term="Derivative">derivative table</TermTip>. Until the
+            insider sells the underlying shares (a code <code>S</code>{" "}
+            sale, which generates a non-derivative row), the parser sees
+            nothing to show here.
+          </li>
+          <li>
+            <strong className="text-foreground">Every position was closed.</strong>{" "}
+            The most recent filing may have reported{" "}
+            <code>sharesOwnedFollowing = 0</code> for every issuer — legit if
+            the insider has fully exited but retains the Section 16 relationship.
+          </li>
+          <li>
+            <strong className="text-foreground">Wrong or stale CIK.</strong>{" "}
+            The CIK on this preset may point to a trust, family office, or
+            former entity rather than the person's current insider CIK. Check
+            the EDGAR search below to confirm.
+          </li>
+          <li>
+            <strong className="text-foreground">EDGAR rate-limited us.</strong>{" "}
+            SEC caps public traffic at ~10 requests/sec per IP. If several
+            people/funds are refreshed simultaneously we may drop filings;
+            retrying in a minute usually clears it.
+          </li>
+        </ul>
+
+        <p className="text-xs text-muted-foreground">
+          Sanity-check against the source:{" "}
+          <a
+            href={edgarSearchUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            EDGAR filings for CIK {preset.cik}
+          </a>
+          {" · "}
+          <a
+            href={rawSubmissionsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            raw submissions JSON
+          </a>
+          .
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function PersonHoldingsCard({ holdings }: { holdings: InsiderHolding[] }) {
+  const t = useT();
+  // Search over issuer + ticker + CIK — the three fields a user
+  // is likely to have in mind when hunting for a specific row.
+  // Sort defaults to nothing (source order = "most recent filing
+  // first" from the backend), but users can click any of the four
+  // numeric / date columns to override.
+  const controls = useTableControls<InsiderHolding, "shares" | "lastFiling" | "filings">(
+    holdings,
+    {
+      searchFields: (h) => [h.issuerName, h.issuerTicker, h.issuerCik],
+      sorters: {
+        shares: (a, b) => (a.sharesHeld ?? 0) - (b.sharesHeld ?? 0),
+        // Missing filing dates sort to the bottom under desc, top under
+        // asc — feed a sentinel epoch instead of NaN so the sort stays
+        // stable rather than triggering "NaN vs number" comparisons.
+        lastFiling: (a, b) => {
+          const ta = a.lastFilingDate ? new Date(a.lastFilingDate).getTime() : 0;
+          const tb = b.lastFilingDate ? new Date(b.lastFilingDate).getTime() : 0;
+          return ta - tb;
+        },
+        filings: (a, b) => (a.totalFilingsSeen ?? 0) - (b.totalFilingsSeen ?? 0),
+      },
+    },
+  );
+  // Portfolio tables can get long (200+ trades for an active politician,
+  // 100+ 13F positions for a large fund). Paginate at 25 rows so a full
+  // "page" fits in one viewport on a laptop without the user scrolling
+  // through 100+ rows to find the last-known holding.
+  const pager = usePagination(controls.rows, 25);
+  // Snap back to page 1 whenever the filter changes, otherwise a user
+  // paging through the tail of the unfiltered list and then typing a
+  // search would land on an empty "page 6 of 1" until the pagination
+  // hook's clamp effect fires on the next paint.
+  React.useEffect(() => {
+    pager.setPage(1);
+  }, [controls.query, controls.sort, pager.setPage]);
   if (holdings.length === 0) {
     return (
       <Card>
         <CardHeader><CardTitle>Current holdings</CardTitle></CardHeader>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          No non-derivative holdings surfaced in the last parsed filings. This
-          person may only hold options / RSUs (from the derivative table),
-          or have exited every reported position.
+          No non-derivative holdings on file — but recent transactions were
+          parsed below. This typically means every reported position has
+          been closed while option / RSU activity continues in the derivative
+          table (which is intentionally omitted).
         </CardContent>
       </Card>
     );
@@ -153,19 +369,31 @@ function PersonHoldingsCard({ holdings }: { holdings: InsiderHolding[] }) {
   return (
     <Card>
       <CardHeader><CardTitle>Current holdings ({holdings.length})</CardTitle></CardHeader>
+      <TableToolbar
+        controls={controls}
+        placeholder={t("table.searchPlaceholder")}
+        clearLabel={t("table.clearFilters")}
+        formatMatchHint={(n, m) => t("table.matchHint", { visible: n, total: m })}
+      />
       <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="px-4 py-3 font-semibold">Issuer</th>
               <th className="px-4 py-3 font-semibold">Ticker</th>
-              <th className="px-4 py-3 font-semibold text-right">Shares held</th>
-              <th className="px-4 py-3 font-semibold">Last filing</th>
-              <th className="px-4 py-3 font-semibold text-right"># filings</th>
+              <SortableTh controls={controls} sortKey="shares" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Shares held</SortableTh>
+              <SortableTh controls={controls} sortKey="lastFiling" className="px-4 py-3 font-semibold" sortLabelPrefix={t("table.sortBy")}>Last filing</SortableTh>
+              <SortableTh controls={controls} sortKey="filings" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}># filings</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {holdings.map((h) => (
+            {pager.visibleItems.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  {t("table.noMatches")}
+                </td>
+              </tr>
+            ) : pager.visibleItems.map((h) => (
               <tr
                 key={`${h.issuerCik ?? h.issuerName}-${h.issuerTicker ?? ""}`}
                 className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
@@ -205,6 +433,20 @@ function PersonHoldingsCard({ holdings }: { holdings: InsiderHolding[] }) {
           </tbody>
         </table>
       </div>
+      <Pagination
+        page={pager.page}
+        pageCount={pager.pageCount}
+        total={pager.total}
+        range={pager.range}
+        onPageChange={pager.setPage}
+        pageSize={pager.pageSize}
+        onPageSizeChange={pager.setPageSize}
+        pageSizeOptions={[10, 25, 50, 100, 0]}
+        pageSizeLabel={t("pager.pageSizeLabel")}
+        allLabel={t("pager.all")}
+        className="px-4 py-3 border-t border-border"
+        label={t("pager.holdings")}
+      />
     </Card>
   );
 }
@@ -226,12 +468,48 @@ const TX_CODE_META: Record<string, { label: string; tone: "bull" | "bear" | "neu
 };
 
 function PersonTransactionsCard({ transactions }: { transactions: InsiderTransaction[] }) {
+  const t = useT();
+  // Search over issuer + ticker so a user can jump straight to
+  // "the AAPL row" in a multi-hundred-row tape. Sort on the four
+  // numeric / date columns — Date is the natural default and
+  // matches the pre-existing "most recent first" source order,
+  // but users can flip to price/shares to find outliers fast.
+  const controls = useTableControls<
+    InsiderTransaction,
+    "date" | "shares" | "price" | "postTrade"
+  >(transactions, {
+    searchFields: (tx) => [tx.issuerName, tx.issuerTicker, tx.formType, tx.transactionCode],
+    sorters: {
+      date: (a, b) => {
+        const ta = a.transactionDate
+          ? new Date(a.transactionDate).getTime()
+          : a.filingDate ? new Date(a.filingDate).getTime() : 0;
+        const tb = b.transactionDate
+          ? new Date(b.transactionDate).getTime()
+          : b.filingDate ? new Date(b.filingDate).getTime() : 0;
+        return ta - tb;
+      },
+      shares: (a, b) => (a.shares ?? 0) - (b.shares ?? 0),
+      price: (a, b) => (a.pricePerShare ?? 0) - (b.pricePerShare ?? 0),
+      postTrade: (a, b) => (a.sharesOwnedFollowing ?? 0) - (b.sharesOwnedFollowing ?? 0),
+    },
+  });
+  // 25 per page — same rhythm as the holdings table above. Pagination
+  // replaces the previous "showing 100 of N" cap so long histories
+  // (multi-year Form 4 tapes on active insiders like Bezos, Musk) are
+  // fully browsable instead of silently truncated.
+  const pager = usePagination(controls.rows, 25);
+  React.useEffect(() => {
+    pager.setPage(1);
+  }, [controls.query, controls.sort, pager.setPage]);
   if (transactions.length === 0) {
     return (
       <Card>
         <CardHeader><CardTitle>Recent transactions</CardTitle></CardHeader>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          No non-derivative transactions parsed.
+          No non-derivative transactions parsed — but current holdings show
+          above. Recent Form 4 activity was likely all derivative (option
+          grants / vests / exercises) rather than open-market share trades.
         </CardContent>
       </Card>
     );
@@ -239,32 +517,53 @@ function PersonTransactionsCard({ transactions }: { transactions: InsiderTransac
   return (
     <Card>
       <CardHeader><CardTitle>Recent transactions ({transactions.length})</CardTitle></CardHeader>
+      <TableToolbar
+        controls={controls}
+        placeholder={t("table.searchPlaceholder")}
+        clearLabel={t("table.clearFilters")}
+        formatMatchHint={(n, m) => t("table.matchHint", { visible: n, total: m })}
+      />
       <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
-              <th className="px-4 py-3 font-semibold">Date</th>
+              <SortableTh controls={controls} sortKey="date" className="px-4 py-3 font-semibold" sortLabelPrefix={t("table.sortBy")}>Date</SortableTh>
               <th className="px-4 py-3 font-semibold">Form</th>
               <th className="px-4 py-3 font-semibold">Issuer</th>
               <th className="px-4 py-3 font-semibold">Action</th>
-              <th className="px-4 py-3 font-semibold text-right">Shares</th>
-              <th className="px-4 py-3 font-semibold text-right">Price</th>
-              <th className="px-4 py-3 font-semibold text-right">Post-trade</th>
+              <SortableTh controls={controls} sortKey="shares" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Shares</SortableTh>
+              <SortableTh controls={controls} sortKey="price" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Price</SortableTh>
+              <SortableTh controls={controls} sortKey="postTrade" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Post-trade</SortableTh>
               <th className="px-4 py-3 font-semibold">Filing</th>
             </tr>
           </thead>
           <tbody>
-            {transactions.slice(0, 100).map((t, i) => (
-              <InsiderTxRow key={`${t.accessionNumber}-${i}`} t={t} />
+            {pager.visibleItems.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  {t("table.noMatches")}
+                </td>
+              </tr>
+            ) : pager.visibleItems.map((tx, i) => (
+              <InsiderTxRow key={`${tx.accessionNumber}-${pager.range[0] + i}`} t={tx} />
             ))}
           </tbody>
         </table>
       </div>
-      {transactions.length > 100 && (
-        <div className="px-4 py-3 text-xs text-muted-foreground border-t border-border">
-          Showing 100 of {transactions.length} transactions.
-        </div>
-      )}
+      <Pagination
+        page={pager.page}
+        pageCount={pager.pageCount}
+        total={pager.total}
+        range={pager.range}
+        onPageChange={pager.setPage}
+        pageSize={pager.pageSize}
+        onPageSizeChange={pager.setPageSize}
+        pageSizeOptions={[10, 25, 50, 100, 0]}
+        pageSizeLabel={t("pager.pageSizeLabel")}
+        allLabel={t("pager.all")}
+        className="px-4 py-3 border-t border-border"
+        label={t("pager.transactions")}
+      />
     </Card>
   );
 }
@@ -388,11 +687,35 @@ function PoliticianDetail({ preset }: { preset: PoliticianPreset }) {
             <SmallStat label="Tickers touched" value={fmtInteger(data.holdings.length)} tone="neu" />
           </div>
         </div>
-        {data.filingsSkipped > 0 && (
-          <p className="text-[0.7rem] text-muted-foreground mt-3 border-l-2 border-warning/40 pl-2">
-            {data.filingsSkipped} filing{data.filingsSkipped === 1 ? "" : "s"} could not be parsed automatically
-            (usually scanned/handwritten PDFs). Click any filing below to view the original.
-          </p>
+        {((data.filingsNoStockRows ?? 0) > 0 || (data.filingsFetchFailed ?? 0) > 0) && (
+          <div className="text-[0.7rem] text-muted-foreground mt-3 space-y-1.5">
+            {(data.filingsNoStockRows ?? 0) > 0 && (
+              <p className="border-l-2 border-primary/40 pl-2">
+                <span className="text-foreground font-medium">
+                  {data.filingsNoStockRows} filing
+                  {data.filingsNoStockRows === 1 ? "" : "s"} parsed cleanly but
+                  had no stock-ticker rows.
+                </span>{" "}
+                Almost always because the filing lists only bonds, mutual
+                funds, options, or private-company holdings — none of which
+                trade under an exchange ticker. Click the filing to see the
+                original PDF; the trades are there, they just aren&#39;t
+                individual equity positions we can chart.
+              </p>
+            )}
+            {(data.filingsFetchFailed ?? 0) > 0 && (
+              <p className="border-l-2 border-warning/40 pl-2">
+                <span className="text-foreground font-medium">
+                  {data.filingsFetchFailed} filing
+                  {data.filingsFetchFailed === 1 ? "" : "s"} couldn&#39;t be
+                  read automatically.
+                </span>{" "}
+                Usually a scanned or handwritten PDF, or a transient network
+                error. Click any filing below to view the original — retry
+                in a minute if it&#39;s the network.
+              </p>
+            )}
+          </div>
         )}
       </Card>
 
@@ -418,19 +741,24 @@ function PoliticianDetail({ preset }: { preset: PoliticianPreset }) {
                       selectedDocId === f.docId && "bg-primary/10",
                     )}
                   >
-                    <div className="text-sm font-medium">
-                      {f.filingDate
-                        ? new Date(f.filingDate).toLocaleDateString()
-                        : "unknown date"}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      Doc {f.docId} · {f.stateDst || "House"}
-                    </div>
-                    {f.filingDate && (
-                      <div className="text-[0.7rem] text-muted-foreground opacity-70 mt-0.5">
-                        filed {relativeTime(f.filingDate)}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">
+                          {f.filingDate
+                            ? new Date(f.filingDate).toLocaleDateString()
+                            : "unknown date"}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          Doc {f.docId} · {f.stateDst || "House"}
+                        </div>
+                        {f.filingDate && (
+                          <div className="text-[0.7rem] text-muted-foreground opacity-70 mt-0.5">
+                            filed {relativeTime(f.filingDate)}
+                          </div>
+                        )}
                       </div>
-                    )}
+                      <FilingStatusChip status={f.parseStatus} />
+                    </div>
                   </button>
                 </li>
               ))}
@@ -466,12 +794,47 @@ function PoliticianDetail({ preset }: { preset: PoliticianPreset }) {
                 )}
               </div>
               {selected ? (
-                <iframe
-                  key={selected.docId}
-                  src={selected.pdfUrl}
-                  title={`PTR filing ${selected.docId}`}
-                  className="w-full flex-1 min-h-[60vh] bg-white"
-                />
+                <>
+                  <iframe
+                    key={selected.docId}
+                    // Load the PDF via our same-origin proxy instead
+                    // of hitting `disclosures-clerk.house.gov`
+                    // directly. The upstream site sends
+                    // `X-Frame-Options` / `frame-ancestors` headers
+                    // that flat-out refuse cross-origin embedding,
+                    // which is why the raw URL opens fine in a new
+                    // tab but shows an error inside an <iframe>.
+                    // `/api/portfolios/ptr-pdf` fetches the same PDF
+                    // server-side and streams it back with iframe-
+                    // friendly headers. The "Open PDF" link above
+                    // still points at the original URL so deep-
+                    // linkers / archivists get the source.
+                    src={`/api/portfolios/ptr-pdf?year=${encodeURIComponent(
+                      String(selected.year),
+                    )}&docId=${encodeURIComponent(selected.docId)}`}
+                    title={`PTR filing ${selected.docId}`}
+                    className="w-full flex-1 min-h-[60vh] bg-white"
+                  />
+                  {/* Fallback hint. Some mobile browsers (notably
+                      iOS Safari) refuse to render PDFs in an
+                      <iframe> at all — they show a blank frame
+                      with no error. Signposting the "Open PDF"
+                      button here means those users don't sit
+                      staring at a blank white area wondering
+                      what went wrong. */}
+                  <p className="px-4 py-1.5 text-[0.65rem] text-muted-foreground border-t border-border/60 text-center">
+                    Preview not loading? Use{" "}
+                    <a
+                      href={selected.pdfUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary hover:underline inline-flex items-center gap-0.5"
+                    >
+                      Open PDF <ExternalLink className="h-2.5 w-2.5" />
+                    </a>{" "}
+                    to view the source file directly.
+                  </p>
+                </>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground p-8 text-center">
                   Each PDF lists every trade in that report — ticker, buy/sell/exchange,
@@ -508,7 +871,92 @@ const TRADE_ACTION_META: Record<
   E:         { label: "Exchange",      chip: "chip-neu"  },
 };
 
+/**
+ * Compact status chip rendered next to each filing button. Colour +
+ * copy are chosen so the two "we couldn't chart this" states read
+ * distinctly:
+ *   ok           — trades parsed cleanly (no chip; the default state
+ *                  is quiet so scanning down the list is easy)
+ *   no_rows      — PDF read fine but held only non-equity positions;
+ *                  clicking still shows the raw filing
+ *   fetch_failed — real failure (scanned PDF / network); user should
+ *                  fall back to the original PDF
+ *   unparsed     — outside the parseLimit window, we didn't try
+ */
+function FilingStatusChip({ status }: { status: PoliticianFilingStatus | undefined }) {
+  // Undefined status = older cached snapshot from before this feature
+  // shipped, or a code path that constructs filings without going
+  // through `fetchPoliticianTrades`. Rendering "not analysed" for
+  // those would be misleading, so we stay silent — same as an "ok"
+  // filing.
+  if (!status || status === "ok") return null;
+  const label =
+    status === "no_rows"
+      ? "no stock rows"
+      : status === "fetch_failed"
+        ? "unreadable"
+        : "not analysed";
+  const tone =
+    status === "fetch_failed"
+      ? "border-warning/40 text-warning"
+      : "border-border text-muted-foreground";
+  const tooltip =
+    status === "no_rows"
+      ? "PDF read cleanly but had no stock-ticker rows (bonds, mutual funds, options, or private holdings)."
+      : status === "fetch_failed"
+        ? "The PDF couldn't be fetched or scanned automatically. Open the PDF to view it directly."
+        : "This filing sits outside the parse window — no analysis attempted.";
+  return (
+    <span
+      title={tooltip}
+      className={cn(
+        "shrink-0 self-start rounded-full border px-1.5 py-[1px] text-[0.6rem] leading-tight",
+        tone,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
 function PoliticianHoldingsCard({ holdings }: { holdings: PoliticianHolding[] }) {
+  const t = useT();
+  // Sort defaults come from the backend ("largest activity first"),
+  // but users often want to flip to "biggest net" or "most recent"
+  // to spot the interesting rows. Search over ticker + company for
+  // the "did they touch AAPL?" query.
+  const controls = useTableControls<
+    PoliticianHolding,
+    "buys" | "sells" | "net" | "lastTrade"
+  >(holdings, {
+    searchFields: (h) => [h.ticker, h.assetName],
+    sorters: {
+      buys: (a, b) => a.buyCount - b.buyCount,
+      sells: (a, b) => a.sellCount - b.sellCount,
+      // Net estimate is a range. Sort on the midpoint so a
+      // definitively-positive position (both bounds > 0) ranks
+      // above a straddling range, and a definitively-negative
+      // one ranks last — the shape the user probably has in mind
+      // when they click "Net estimate desc".
+      net: (a, b) => {
+        const midA = (a.netEstimateLow + a.netEstimateHigh) / 2;
+        const midB = (b.netEstimateLow + b.netEstimateHigh) / 2;
+        return midA - midB;
+      },
+      lastTrade: (a, b) => {
+        const ta = a.lastTradeDate ? new Date(a.lastTradeDate).getTime() : 0;
+        const tb = b.lastTradeDate ? new Date(b.lastTradeDate).getTime() : 0;
+        return ta - tb;
+      },
+    },
+  });
+  // Politicians with hundreds of tickers touched (Nancy Pelosi, Dan
+  // Crenshaw) benefit most from pagination — the previous silent 100-row
+  // cap hid interesting long-tail positions.
+  const pager = usePagination(controls.rows, 25);
+  React.useEffect(() => {
+    pager.setPage(1);
+  }, [controls.query, controls.sort, pager.setPage]);
   if (holdings.length === 0) {
     return (
       <Card>
@@ -531,22 +979,34 @@ function PoliticianHoldingsCard({ holdings }: { holdings: PoliticianHolding[] })
           "low" and "high".
         </p>
       </CardHeader>
+      <TableToolbar
+        controls={controls}
+        placeholder={t("table.searchPlaceholder")}
+        clearLabel={t("table.clearFilters")}
+        formatMatchHint={(n, m) => t("table.matchHint", { visible: n, total: m })}
+      />
       <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="px-4 py-3 font-semibold">Ticker</th>
               <th className="px-4 py-3 font-semibold">Company</th>
-              <th className="px-4 py-3 font-semibold text-right">Buys</th>
-              <th className="px-4 py-3 font-semibold text-right">Sells</th>
+              <SortableTh controls={controls} sortKey="buys" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Buys</SortableTh>
+              <SortableTh controls={controls} sortKey="sells" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Sells</SortableTh>
               <th className="px-4 py-3 font-semibold text-right">Bought (range)</th>
               <th className="px-4 py-3 font-semibold text-right">Sold (range)</th>
-              <th className="px-4 py-3 font-semibold text-right">Net estimate</th>
-              <th className="px-4 py-3 font-semibold">Last trade</th>
+              <SortableTh controls={controls} sortKey="net" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Net estimate</SortableTh>
+              <SortableTh controls={controls} sortKey="lastTrade" className="px-4 py-3 font-semibold" sortLabelPrefix={t("table.sortBy")}>Last trade</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {holdings.slice(0, 100).map((h) => (
+            {pager.visibleItems.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  {t("table.noMatches")}
+                </td>
+              </tr>
+            ) : pager.visibleItems.map((h) => (
               <tr
                 key={h.ticker}
                 className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
@@ -607,6 +1067,20 @@ function PoliticianHoldingsCard({ holdings }: { holdings: PoliticianHolding[] })
           </tbody>
         </table>
       </div>
+      <Pagination
+        page={pager.page}
+        pageCount={pager.pageCount}
+        total={pager.total}
+        range={pager.range}
+        onPageChange={pager.setPage}
+        pageSize={pager.pageSize}
+        onPageSizeChange={pager.setPageSize}
+        pageSizeOptions={[10, 25, 50, 100, 0]}
+        pageSizeLabel={t("pager.pageSizeLabel")}
+        allLabel={t("pager.all")}
+        className="px-4 py-3 border-t border-border"
+        label={t("pager.positions")}
+      />
     </Card>
   );
 }
@@ -618,29 +1092,75 @@ function PoliticianTradesCard({
   trades: PoliticianTrade[];
   onOpenFiling: (docId: string) => void;
 }) {
+  const t = useT();
+  // Trades default to "most recent first" from the backend. Sort
+  // lets users flip to oldest-first or largest-amount-first.
+  // Search matches on the asset name, ticker, and owner code so
+  // "spouse trades" or "AAPL trades" narrow fast.
+  const controls = useTableControls<PoliticianTrade, "date" | "amount">(trades, {
+    searchFields: (tr) => [tr.assetName, tr.ticker, tr.ownerCode, tr.assetClass],
+    sorters: {
+      date: (a, b) => {
+        const ta = a.transactionDate
+          ? new Date(a.transactionDate).getTime()
+          : a.filingDate ? new Date(a.filingDate).getTime() : 0;
+        const tb = b.transactionDate
+          ? new Date(b.transactionDate).getTime()
+          : b.filingDate ? new Date(b.filingDate).getTime() : 0;
+        return ta - tb;
+      },
+      // Trades disclose a bracket rather than a point amount. Use
+      // the midpoint of the reported range as the sort key — the
+      // same fiction the "Net estimate" column already uses.
+      amount: (a, b) => {
+        const midA = (a.amountLow + a.amountHigh) / 2;
+        const midB = (b.amountLow + b.amountHigh) / 2;
+        return midA - midB;
+      },
+    },
+  });
+  // 25 per page. Individual-trade tables can hit 200+ rows for a
+  // 2-year window on active traders; the previous silent 200-row cap
+  // would drop rows for a handful of extreme cases (Pelosi, Crenshaw).
+  const pager = usePagination(controls.rows, 25);
+  React.useEffect(() => {
+    pager.setPage(1);
+  }, [controls.query, controls.sort, pager.setPage]);
   if (trades.length === 0) return null;
   return (
     <Card>
       <CardHeader><CardTitle>Individual trades ({trades.length})</CardTitle></CardHeader>
+      <TableToolbar
+        controls={controls}
+        placeholder={t("table.searchPlaceholder")}
+        clearLabel={t("table.clearFilters")}
+        formatMatchHint={(n, m) => t("table.matchHint", { visible: n, total: m })}
+      />
       <div className="table-scroll">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[0.7rem] uppercase tracking-wider text-muted-foreground border-b border-border">
-              <th className="px-4 py-3 font-semibold">Date</th>
+              <SortableTh controls={controls} sortKey="date" className="px-4 py-3 font-semibold" sortLabelPrefix={t("table.sortBy")}>Date</SortableTh>
               <th className="px-4 py-3 font-semibold">Owner</th>
               <th className="px-4 py-3 font-semibold">Asset</th>
               <th className="px-4 py-3 font-semibold">Ticker</th>
               <th className="px-4 py-3 font-semibold">Action</th>
-              <th className="px-4 py-3 font-semibold text-right">Amount</th>
+              <SortableTh controls={controls} sortKey="amount" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Amount</SortableTh>
               <th className="px-4 py-3 font-semibold">Filing</th>
             </tr>
           </thead>
           <tbody>
-            {trades.slice(0, 200).map((t, i) => {
+            {pager.visibleItems.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  {t("table.noMatches")}
+                </td>
+              </tr>
+            ) : pager.visibleItems.map((t, i) => {
               const meta = t.action ? TRADE_ACTION_META[t.action] : null;
               return (
                 <tr
-                  key={`${t.filingDocId}-${t.ticker ?? "notk"}-${i}`}
+                  key={`${t.filingDocId}-${t.ticker ?? "notk"}-${pager.range[0] + i}`}
                   className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
                 >
                   <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
@@ -698,11 +1218,20 @@ function PoliticianTradesCard({
           </tbody>
         </table>
       </div>
-      {trades.length > 200 && (
-        <div className="px-4 py-3 text-xs text-muted-foreground border-t border-border">
-          Showing 200 of {trades.length} trades.
-        </div>
-      )}
+      <Pagination
+        page={pager.page}
+        pageCount={pager.pageCount}
+        total={pager.total}
+        range={pager.range}
+        onPageChange={pager.setPage}
+        pageSize={pager.pageSize}
+        onPageSizeChange={pager.setPageSize}
+        pageSizeOptions={[10, 25, 50, 100, 0]}
+        pageSizeLabel={t("pager.pageSizeLabel")}
+        allLabel={t("pager.all")}
+        className="px-4 py-3 border-t border-border"
+        label={t("pager.trades")}
+      />
     </Card>
   );
 }
@@ -830,6 +1359,52 @@ function FundDetail({ preset }: { preset: FundPreset }) {
   const t = useT();
   const { data, loading, error, sourceUnavailable, reload } = useFundReport(preset);
 
+  // 13F filings routinely list hundreds of positions (Berkshire is under
+  // 100 but is the exception; most managers file 200-800 rows). Paginate
+  // at 25 with the ranks preserved across pages so page 2 shows #26 →
+  // #50 by portfolio weight.
+  //
+  // `useMemo` on the empty fallback so `usePagination` sees a stable
+  // reference before `data` resolves — otherwise the hook would ping-
+  // pong between two identity arrays on the first render.
+  const emptyHoldings = React.useMemo(
+    () => [] as Array<FundHolding & { portfolioRank: number }>,
+    [],
+  );
+  // Freeze the portfolio-weight rank onto each holding once, so that
+  // the "#" column keeps reporting "this is the #7 position by value"
+  // even after the user sorts by shares or filters to "APH". Without
+  // this the rank would silently mean "row index on the current
+  // sorted/filtered view", which is nearly meaningless and would
+  // reset numbering as the user typed.
+  const rankedHoldings = React.useMemo(() => {
+    if (!data) return emptyHoldings;
+    // `data.holdings` is already sorted by value desc in the backend
+    // (see `fetchFund13F`), so the incoming index IS the rank.
+    return data.holdings.map((h, i) => ({ ...h, portfolioRank: i + 1 }));
+  }, [data, emptyHoldings]);
+
+  const controls = useTableControls<
+    FundHolding & { portfolioRank: number },
+    "shares" | "value" | "pct"
+  >(rankedHoldings, {
+    // Match on issuer, CUSIP, and the resolver-populated ticker
+    // (see `lib/sec-ticker-map.ts`) so the user can search by any
+    // of the three ways they might identify a position.
+    searchFields: (h) => [h.issuer, h.cusip, h.resolvedTicker, h.titleOfClass],
+    sorters: {
+      shares: (a, b) => a.shares - b.shares,
+      value: (a, b) => a.value - b.value,
+      // `pctOfPortfolio` is nullable; sentinel-to-zero keeps the
+      // sort stable rather than comparing NaN.
+      pct: (a, b) => (a.pctOfPortfolio ?? 0) - (b.pctOfPortfolio ?? 0),
+    },
+  });
+  const pager = usePagination(controls.rows, 25);
+  React.useEffect(() => {
+    pager.setPage(1);
+  }, [controls.query, controls.sort, pager.setPage]);
+
   if (loading) return <LoadingPage label={t("loading.fund13F", { firm: preset.firm })} />;
   if (sourceUnavailable) {
     return <ErrorBanner message={t("portfolios.sec.throttled")} retry={reload} />;
@@ -888,6 +1463,12 @@ function FundDetail({ preset }: { preset: FundPreset }) {
         </Card>
       ) : (
         <Card>
+          <TableToolbar
+            controls={controls}
+            placeholder={t("table.searchPlaceholder")}
+            clearLabel={t("table.clearFilters")}
+            formatMatchHint={(n, m) => t("table.matchHint", { visible: n, total: m })}
+          />
           <div className="table-scroll">
             <table className="w-full text-sm">
               <thead>
@@ -895,25 +1476,47 @@ function FundDetail({ preset }: { preset: FundPreset }) {
                   <th className="px-4 py-3 font-semibold">#</th>
                   <th className="px-4 py-3 font-semibold">Issuer</th>
                   <th className="px-4 py-3 font-semibold">Class</th>
-                  <th className="px-4 py-3 font-semibold text-right">Shares</th>
-                  <th className="px-4 py-3 font-semibold text-right">Value</th>
-                  <th className="px-4 py-3 font-semibold text-right">% of portfolio</th>
+                  <SortableTh controls={controls} sortKey="shares" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Shares</SortableTh>
+                  <SortableTh controls={controls} sortKey="value" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>Value</SortableTh>
+                  <SortableTh controls={controls} sortKey="pct" className="px-4 py-3 font-semibold text-right" sortLabelPrefix={t("table.sortBy")}>% of portfolio</SortableTh>
                   <th className="px-4 py-3 font-semibold">Put/Call</th>
                   <th className="px-4 py-3 font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {data.holdings.slice(0, 100).map((h, i) => (
-                  <HoldingRow key={`${h.cusip}-${i}`} rank={i + 1} h={h} />
+                {pager.visibleItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                      {t("table.noMatches")}
+                    </td>
+                  </tr>
+                ) : pager.visibleItems.map((h) => (
+                  // Ranks come from `portfolioRank` — the position
+                  // in the ORIGINAL value-desc sort of the whole
+                  // filing. Sort/search never changes this label
+                  // because "this is the fund's 7th largest
+                  // position" is a stable factual claim that
+                  // shouldn't depend on how the user is currently
+                  // browsing the list.
+                  <HoldingRow key={`${h.cusip}-${h.portfolioRank}`} rank={h.portfolioRank} h={h} />
                 ))}
               </tbody>
             </table>
           </div>
-          {data.holdings.length > 100 && (
-            <div className="px-4 py-3 text-xs text-muted-foreground border-t border-border">
-              Showing top 100 of {data.holdings.length} positions by value.
-            </div>
-          )}
+          <Pagination
+            page={pager.page}
+            pageCount={pager.pageCount}
+            total={pager.total}
+            range={pager.range}
+            onPageChange={pager.setPage}
+            pageSize={pager.pageSize}
+            onPageSizeChange={pager.setPageSize}
+            pageSizeOptions={[10, 25, 50, 100, 0]}
+            pageSizeLabel={t("pager.pageSizeLabel")}
+            allLabel={t("pager.all")}
+            className="px-4 py-3 border-t border-border"
+            label={t("pager.positions")}
+          />
         </Card>
       )}
 
@@ -937,11 +1540,41 @@ function FundDetail({ preset }: { preset: FundPreset }) {
 
 function HoldingRow({ rank, h }: { rank: number; h: FundHolding }) {
   const searchQuery = encodeURIComponent(`${h.issuer} stock ticker`);
+  // The 13F filing schema has no ticker column — SEC deliberately
+  // publishes CUSIP + issuer name only, since CUSIPs are IP-protected
+  // by CUSIP Global Services. `resolvedTicker` is a server-side
+  // name-normalised lookup against SEC's company-tickers file (see
+  // lib/sec-ticker-map.ts). When populated we can offer the standard
+  // one-click add-to-watchlist / open-in-analysis flow; when it
+  // isn't (foreign listings, private placements, unusual naming)
+  // we fall back to the manual-ticker popover as before.
+  const hasTicker = !!h.resolvedTicker;
+  const ticker = h.resolvedTicker ?? "";
   return (
     <tr className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors">
       <td className="px-4 py-3 tabular-nums text-muted-foreground">{rank}</td>
       <td className="px-4 py-3">
-        <div className="font-medium">{h.issuer || DASH}</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="font-medium truncate max-w-[16rem]" title={h.issuer}>
+            {h.issuer || DASH}
+          </div>
+          {hasTicker && (
+            <span
+              className="chip chip-neu font-mono text-[0.65rem] px-1.5 py-0"
+              title={
+                h.resolvedExchange
+                  ? `${ticker} · ${h.resolvedExchange}${
+                      h.resolvedConfidence === "normalized"
+                        ? " (matched by normalized name)"
+                        : ""
+                    }`
+                  : ticker
+              }
+            >
+              {ticker}
+            </span>
+          )}
+        </div>
         <div className="text-[0.7rem] text-muted-foreground font-mono">{h.cusip}</div>
       </td>
       <td className="px-4 py-3 text-xs text-muted-foreground">{h.titleOfClass || DASH}</td>
@@ -965,19 +1598,38 @@ function HoldingRow({ rank, h }: { rank: number; h: FundHolding }) {
         )}
       </td>
       <td className="px-4 py-3">
-        <div className="inline-flex items-center gap-2">
-          <a
-            href={`https://finance.yahoo.com/lookup?s=${searchQuery}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-muted-foreground hover:text-primary inline-flex items-center gap-1 text-xs"
-            title="Look up ticker on Yahoo Finance"
-          >
-            <Search className="h-3 w-3" />
-            find
-          </a>
-          <AddIssuerToWatchlistButton issuerName={h.issuer} />
-        </div>
+        {hasTicker ? (
+          // Auto-resolved path: matches the politician-trades row
+          // (see line ~514) so the whole app stays consistent —
+          // "Add to watchlist" + "Watch this trade / open analysis"
+          // side-by-side.
+          <div className="inline-flex items-center gap-1.5">
+            <AddToWatchlistButton symbol={ticker} displayName={h.issuer} />
+            <WatchTradeButton
+              kind="ticker"
+              ticker={ticker}
+              displayName={h.issuer}
+            />
+          </div>
+        ) : (
+          // Unresolved fallback: keep the Yahoo lookup and the
+          // manual-entry popover so the user can still add the
+          // symbol themselves. This is the pre-existing UX for
+          // holdings we can't confidently map.
+          <div className="inline-flex items-center gap-2">
+            <a
+              href={`https://finance.yahoo.com/lookup?s=${searchQuery}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-muted-foreground hover:text-primary inline-flex items-center gap-1 text-xs"
+              title="Look up ticker on Yahoo Finance"
+            >
+              <Search className="h-3 w-3" />
+              find
+            </a>
+            <AddIssuerToWatchlistButton issuerName={h.issuer} />
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -992,11 +1644,12 @@ function SmallStat({
 }: {
   label: string;
   value: string;
-  tone: "bull" | "bear" | "neu";
+  tone: "bull" | "bear" | "neu" | "warn";
 }) {
   const border =
     tone === "bull" ? "border-l-success" :
     tone === "bear" ? "border-l-danger" :
+    tone === "warn" ? "border-l-warning" :
     "border-l-border";
   return (
     <div className={cn("rounded-lg border border-border border-l-4 px-3 py-2 bg-card", border)}>

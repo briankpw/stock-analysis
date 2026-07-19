@@ -138,16 +138,27 @@ export function PortfolioUploader() {
     if (file) void handleFile(file);
   };
 
-  const onMerge = () => {
+  const onMerge = async () => {
     if (!preview) return;
-    mergeHoldings(preview.parsed.rows, {
-      sourceFilename: preview.filename,
-      importedAt: new Date().toISOString(),
-    });
-    setPreview(null);
+    setBusy(true);
+    try {
+      await mergeHoldings(preview.parsed.rows, {
+        sourceFilename: preview.filename,
+        importedAt: new Date().toISOString(),
+      });
+      setPreview(null);
+    } catch (e) {
+      // Server rejected the sync — the store already rolled back and
+      // set `syncError`. Surface it inline on the uploader so the
+      // user knows the merge didn't actually persist. Leave the
+      // preview open so they can retry without re-selecting the file.
+      setReadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const onReplace = () => {
+  const onReplace = async () => {
     if (!preview) return;
     // If the user has existing data, replacing is destructive — make them
     // acknowledge it. First-time imports skip the confirm because there's
@@ -155,12 +166,19 @@ export function PortfolioUploader() {
     if (existingRowsRef.current.length > 0) {
       if (!window.confirm(t("myPortfolio.upload.confirmReplace"))) return;
     }
-    setHoldings(preview.parsed.rows, {
-      sourceFilename: preview.filename,
-      importedAt: new Date().toISOString(),
-      rowCount: preview.parsed.rows.length,
-    });
-    setPreview(null);
+    setBusy(true);
+    try {
+      await setHoldings(preview.parsed.rows, {
+        sourceFilename: preview.filename,
+        importedAt: new Date().toISOString(),
+        rowCount: preview.parsed.rows.length,
+      });
+      setPreview(null);
+    } catch (e) {
+      setReadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onCancelPreview = () => setPreview(null);

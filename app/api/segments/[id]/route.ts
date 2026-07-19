@@ -5,6 +5,7 @@ import { enrich, latestSignals, type LatestSignals } from "@/lib/indicators";
 import { redactError } from "@/lib/http";
 import { findSegment } from "@/lib/segments";
 import { computeTechnicalSignal, type TechnicalSignal } from "@/lib/technical-signal";
+import { computeResonance, type ResonanceResult } from "@/lib/resonance";
 import { mapConcurrent } from "@/lib/utils";
 
 export const runtime = "nodejs";
@@ -69,6 +70,13 @@ export interface SegmentDetailResponse {
     quote: QuoteLite | null;
     signals: LatestSignals | null;
     signal: TechnicalSignal | null;
+    /**
+     * 6-Signal Resonance evaluated on the proxy ETF's daily bars. Same
+     * shape as the per-stock resonance shown on `/overview` so the UI
+     * can render the shared `<ResonanceCard>` verbatim. `null` when the
+     * proxy fetch failed or fewer than ~40 bars are available.
+     */
+    resonance: ResonanceResult | null;
     stance: "bullish" | "bearish" | "neutral";
     status: "ok" | "error";
     error?: string;
@@ -176,6 +184,7 @@ export async function GET(
             quote: null,
             signals: null,
             signal: null,
+            resonance: null,
             stance: "neutral" as const,
             status: "error" as const,
             error: "no data",
@@ -193,6 +202,12 @@ export async function GET(
           levels: enriched.levels,
           kdj: enriched.kdj,
         });
+        // Sector-level 6-Signal Resonance — same pure computation the
+        // Overview page runs on individual tickers, applied here to the
+        // proxy ETF's daily bars. That gives a single "is this whole
+        // theme momentum-aligned right now?" verdict, complementing the
+        // classic multi-indicator signal above.
+        const resonance = computeResonance(enriched.bars);
         const lastBarVolume = bars[bars.length - 1]?.volume ?? null;
         const quoteLite: QuoteLite = quote
           ? {
@@ -217,6 +232,7 @@ export async function GET(
           quote: quoteLite,
           signals,
           signal,
+          resonance,
           stance: stanceFromTrend(signals.trend),
           status: "ok" as const,
         };
@@ -232,6 +248,7 @@ export async function GET(
           quote: null,
           signals: null,
           signal: null,
+          resonance: null,
           stance: "neutral" as const,
           status: "error" as const,
           error: msg,

@@ -1482,9 +1482,9 @@ function TradesTable({
 
   // Number of visible <th> cells — used by the expanded row's colSpan
   // so the inline editor spans the full table width regardless of
-  // which breakpoint is active. We render eight <th> here; the editor
-  // renders inside `<td colSpan={8}>`.
-  const columnCount = 8;
+  // which breakpoint is active. We render nine <th> here; the editor
+  // renders inside `<td colSpan={9}>`.
+  const columnCount = 9;
 
   const filtered = React.useMemo(() => {
     return trades.filter((tr) => {
@@ -1660,7 +1660,20 @@ function TradesTable({
                     {t("paper.trades.col.notional")}
                   </SortHeader>
                 </th>
-                <th className="text-right px-3 py-2 font-medium">
+                {/* Unrealized column — meaningful on Buy rows only.
+                    Shows mark-to-market on shares from *this specific
+                    buy lot* that haven't been sold yet, using the
+                    latest close from the valuation snapshot. */}
+                <th
+                  className="text-right px-3 py-2 font-medium"
+                  title={t("paper.trades.col.unrealizedHint")}
+                >
+                  {t("paper.trades.col.unrealized")}
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium"
+                  title={t("paper.trades.col.pnlHint")}
+                >
                   <SortHeader
                     active={sortKey === "realizedPnl"}
                     dir={sortDir}
@@ -1678,10 +1691,6 @@ function TradesTable({
             <tbody>
               {sorted.map((trade) => {
                 const notional = trade.shares * trade.price;
-                const pnlPos =
-                  trade.realizedPnl !== null && trade.realizedPnl > 0;
-                const pnlNeg =
-                  trade.realizedPnl !== null && trade.realizedPnl < 0;
                 const isExpanded = expandedId === trade.id;
                 const openPos = positionBySymbol.get(trade.symbol) ?? null;
                 const hasTargets =
@@ -1689,6 +1698,40 @@ function TradesTable({
                   (openPos.stopLoss !== null || openPos.takeProfit !== null);
                 const toggleRow = () =>
                   setExpandedId((cur) => (cur === trade.id ? null : trade.id));
+
+                // Combined P&L for display:
+                //   • Sells: their own realized P&L (unchanged).
+                //   • Buys: the FIFO-attributed realized P&L — profit
+                //     from every later sell that consumed shares from
+                //     THIS specific buy lot.
+                // We don't overwrite the sort key logic; sorting still
+                // uses `trade.realizedPnl` (i.e. sells drive P&L sort)
+                // to keep the filter semantics ("wins only" = winning
+                // sells) predictable.
+                const displayPnl =
+                  trade.side === "sell"
+                    ? trade.realizedPnl
+                    : trade.lotRealizedPnl !== null && trade.lotRealizedPnl !== 0
+                      ? trade.lotRealizedPnl
+                      : null;
+                const pnlPos = displayPnl !== null && displayPnl > 0;
+                const pnlNeg = displayPnl !== null && displayPnl < 0;
+
+                // Unrealized P&L for BUY rows only, using the latest
+                // close from the valuation snapshot (if the symbol is
+                // still held). Fully-closed positions have no live
+                // price entry — that's fine, we show DASH.
+                const lastPrice = openPos?.last ?? null;
+                const lotUnrealized =
+                  trade.side === "buy" &&
+                  trade.lotCostPerShare !== null &&
+                  trade.lotSharesRemaining !== null &&
+                  trade.lotSharesRemaining > 1e-9 &&
+                  lastPrice !== null
+                    ? (lastPrice - trade.lotCostPerShare) * trade.lotSharesRemaining
+                    : null;
+                const unrealPos = lotUnrealized !== null && lotUnrealized > 0;
+                const unrealNeg = lotUnrealized !== null && lotUnrealized < 0;
                 return (
                   <React.Fragment key={trade.id}>
                     <tr
@@ -1752,21 +1795,57 @@ function TradesTable({
                       </td>
                       <td
                         className={cn(
+                          "px-3 py-2 text-right tabular-nums",
+                          unrealPos && "text-success",
+                          unrealNeg && "text-danger",
+                        )}
+                        title={
+                          trade.side === "buy" && trade.lotSharesRemaining != null
+                            ? t("paper.trades.col.unrealizedTooltip", {
+                                shares: fmtNumber(trade.lotSharesRemaining, 0),
+                                cost: fmtCurrency(trade.lotCostPerShare),
+                              })
+                            : undefined
+                        }
+                      >
+                        {lotUnrealized === null ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : (
+                          fmtSigned(lotUnrealized)
+                        )}
+                      </td>
+                      <td
+                        className={cn(
                           "px-3 py-2 text-right tabular-nums font-semibold",
                           pnlPos && "text-success",
                           pnlNeg && "text-danger",
                         )}
+                        title={
+                          trade.side === "buy" && trade.lotSharesSold != null && trade.lotSharesSold > 1e-9
+                            ? t("paper.trades.col.realizedTooltip", {
+                                sold: fmtNumber(trade.lotSharesSold, 0),
+                                original: fmtNumber(trade.lotOriginalShares, 0),
+                              })
+                            : undefined
+                        }
                       >
-                        {trade.realizedPnl === null ? (
+                        {displayPnl === null ? (
                           <span className="text-muted-foreground">—</span>
-                        ) : (
+                        ) : trade.side === "sell" ? (
                           <>
-                            {fmtSigned(trade.realizedPnl)}
+                            {fmtSigned(displayPnl)}
                             {trade.realizedPnlPct !== null && (
                               <span className="text-[0.65rem] block font-normal opacity-80">
                                 {fmtSignedPercent(trade.realizedPnlPct)}
                               </span>
                             )}
+                          </>
+                        ) : (
+                          <>
+                            {fmtSigned(displayPnl)}
+                            <span className="text-[0.55rem] block font-normal opacity-70 uppercase tracking-wider">
+                              {t("paper.trades.pnlFromLot")}
+                            </span>
                           </>
                         )}
                       </td>
@@ -1803,11 +1882,14 @@ function TradesTable({
             {t("paper.trades.filter.noMatch")}
           </div>
         )}
-        <div className="px-4 py-2 border-t border-border text-[0.7rem] text-muted-foreground text-right">
-          {t("paper.trades.showing", {
-            visible: sorted.length,
-            total: trades.length,
-          })}
+        <div className="px-4 py-2 border-t border-border text-[0.7rem] text-muted-foreground flex flex-wrap justify-between gap-2">
+          <span>{t("paper.trades.lotFootnote")}</span>
+          <span>
+            {t("paper.trades.showing", {
+              visible: sorted.length,
+              total: trades.length,
+            })}
+          </span>
         </div>
       </CardContent>
     </Card>

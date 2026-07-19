@@ -574,7 +574,22 @@ function CatalogRow({
 // Main card
 // ---------------------------------------------------------------------------
 
-export function TechnicalSignalCard({ signal }: { signal: TechnicalSignal }) {
+export function TechnicalSignalCard({
+  signal,
+  alertControl,
+}: {
+  signal: TechnicalSignal;
+  /**
+   * Override for the default per-ticker `<TechnicalAlertControl />`
+   * bell in the header. Pass a segment-scoped variant when the card
+   * is rendered on `/market/segments/[id]` — otherwise the bell would
+   * silently save its subscription under whatever ticker happens to
+   * be pinned in the sidebar, which is not what the segment user
+   * expects. Set to `null` to hide the bell entirely (useful in
+   * read-only contexts like exports or previews).
+   */
+  alertControl?: React.ReactNode;
+}) {
   const t = useT();
   const s = VERDICT_STYLE[signal.verdict];
   const scorePct = signal.score * 100;
@@ -593,7 +608,7 @@ export function TechnicalSignalCard({ signal }: { signal: TechnicalSignal }) {
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <TechnicalAlertControl />
+          {alertControl === undefined ? <TechnicalAlertControl /> : alertControl}
           <Tooltip>
             <TooltipTrigger asChild>
               <button

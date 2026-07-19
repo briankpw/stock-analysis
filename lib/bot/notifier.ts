@@ -19,12 +19,12 @@
  */
 
 import { settings, telegramConfigured } from "../config";
-import type { Signal } from "./strategy";
 import type { PortfolioEvent } from "../portfolio-watch/events";
 import type { IssuerInsiderTransaction } from "../stock-watch/sec-issuer";
 import type { NewsItemInput } from "../news-watch/store";
 import type { TechnicalSignal, Verdict } from "../technical-signal";
 import type { ResonanceResult, ResonanceVerdict } from "../resonance";
+import type { MasterSource, MasterVerdict } from "../master-verdict";
 import type {
   RiskAssessment,
   RiskSeverity,
@@ -132,11 +132,6 @@ function emojiForAction(action: "BUY" | "SELL" | "OTHER" | string): string {
   return "⚪️";
 }
 
-function formatBarTs(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toISOString().slice(0, 16).replace("T", " ");
-}
-
 function formatDateSuffix(event: PortfolioEvent): string {
   return event.tradeDate
     ? ` on ${event.tradeDate}`
@@ -145,70 +140,11 @@ function formatDateSuffix(event: PortfolioEvent): string {
       : "";
 }
 
-// ---- Bot strategy signals --------------------------------------------------
-
-/** Format + send a single trade signal. */
-export async function notifySignal(
-  ticker: string,
-  signal: Signal,
-): Promise<NotifyResult> {
-  const emoji = emojiForAction(signal.type);
-  const priceStr = signal.price === null ? "—" : `$${signal.price.toFixed(2)}`;
-  const barStr = formatBarTs(signal.barTs);
-  const markdown =
-    `${emoji} *${signal.type}* · *${ticker}*\n` +
-    `_${signal.strategy}_\n\n` +
-    `Price: ${priceStr}\n` +
-    `Bar: ${barStr} UTC\n` +
-    `\n${signal.reason}`;
-
-  const push: WebPushPayload = {
-    title: `${emoji} ${signal.type} — ${ticker}`,
-    body: `${signal.strategy} @ ${priceStr} · ${truncate(signal.reason, 120)}`,
-    tag: `signal:${ticker}`,
-    url: "/bot",
-    data: { kind: "signal", ticker, type: signal.type },
-  };
-  return dispatchAlert({ markdown, push });
-}
-
-export async function notifySignalsBatch(
-  ticker: string,
-  signals: Signal[],
-): Promise<NotifyResult> {
-  if (signals.length === 0) return { ok: false, detail: "empty batch" };
-  if (signals.length === 1) return notifySignal(ticker, signals[0]!);
-
-  const rows: string[] = [];
-  const shown = signals.slice(0, MAX_ITEMS_PER_BATCH);
-  for (const s of shown) {
-    const priceStr = s.price === null ? "—" : `$${s.price.toFixed(2)}`;
-    const barStr = formatBarTs(s.barTs);
-    rows.push(
-      `${emojiForAction(s.type)} *${escapeMd(s.type)}* — _${escapeMd(s.strategy)}_ @ ${escapeMd(priceStr)}\n` +
-        `   Bar: ${escapeMd(barStr)} UTC · ${escapeMd(truncate(s.reason, 140))}`,
-    );
-  }
-  const overflow = signals.length - shown.length;
-  if (overflow > 0) rows.push(`_…and ${overflow} more_`);
-
-  const header = `📊 *${signals.length} signals* — *${escapeMd(ticker)}*`;
-  const markdown = `${header}\n\n${rows.join("\n\n")}`;
-
-  const pushBody = signals
-    .slice(0, 3)
-    .map((s) => `${s.type} (${s.strategy})`)
-    .join(", ") + (signals.length > 3 ? `, +${signals.length - 3} more` : "");
-
-  const push: WebPushPayload = {
-    title: `📊 ${signals.length} signals — ${ticker}`,
-    body: pushBody,
-    tag: `signal:${ticker}`,
-    url: "/bot",
-    data: { kind: "signal-batch", ticker, count: signals.length },
-  };
-  return dispatchAlert({ markdown, push });
-}
+// (The `notifySignal` / `notifySignalsBatch` helpers used to live here
+// but were removed alongside the legacy SMA/RSI/MACD strategy tick —
+// see `lib/bot/engine.ts` for the rationale. Per-ticker signals now
+// flow through `notifyTechnicalDigest` / `notifyResonanceChange`
+// below, both of which have proper user-configured gating.)
 
 // ---- Portfolio watch events -----------------------------------------------
 
@@ -742,6 +678,403 @@ export async function notifyResonanceChange(
       bearishCount: result.bearishAlignedCount,
       freshBuy: result.freshBuy,
       freshSell: result.freshSell,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- Sector 6-Signal Resonance alerts --------------------------------------
+//
+// Structurally identical to the per-ticker resonance notifiers above,
+// but the "subject" is a market segment (e.g. "Artificial
+// Intelligence") rather than a single ticker. The resonance math is
+// still computed on a single instrument — the segment's proxy ETF —
+// so we surface both the segment name (what the user subscribed to)
+// AND the proxy ticker (what was actually measured) so nobody's left
+// wondering "wait, why does this alert mention AIQ?".
+//
+// Deep link points at the segment detail page rather than the
+// /signal ticker page, since that's where the same 6-Signal
+// Resonance card is rendered for the sector.
+
+/**
+ * Context passed to sector-resonance notifiers. Kept as a plain
+ * bag rather than a class so the engine (which already has these
+ * fields hoisted from the segment definition) doesn't have to build
+ * a wrapper type.
+ */
+export interface SectorNotifyContext {
+  segmentId: string;
+  segmentName: string;
+  proxyTicker: string;
+}
+
+/**
+ * Daily digest for the 6-Signal Resonance on a market segment's
+ * proxy ETF. Content mirrors `notifyResonanceDigest` but the header
+ * emphasises the segment, and the push `tag` is scoped by
+ * `sector-resonance:<segment_id>` so multiple sector subscriptions
+ * don't overwrite each other in the notification tray.
+ */
+export async function notifySectorResonanceDigest(
+  ctx: SectorNotifyContext,
+  result: ResonanceResult,
+  context: { localDate: string; localTime: string; timezone: string },
+): Promise<NotifyResult> {
+  const emoji = emojiForResonance(result.verdict);
+  const label = RS_VERDICT_LABEL[result.verdict];
+  const composition = resonanceComposition(result);
+
+  const streakLine =
+    result.streak > 0
+      ? `Bullish streak: ${result.streak} bar${result.streak === 1 ? "" : "s"}`
+      : result.streak < 0
+        ? `Bearish streak: ${-result.streak} bar${result.streak === -1 ? "" : "s"}`
+        : "No active alignment";
+
+  const meta =
+    `Alignment: *${result.alignedCount}/6↑* · *${result.bearishAlignedCount}/6↓*\n` +
+    `${streakLine}\n` +
+    (result.freshBuy
+      ? "✨ *Fresh BUY trigger on this bar*\n"
+      : result.freshSell
+        ? "✨ *Fresh SELL trigger on this bar*\n"
+        : "");
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ctx.segmentName)}*\n` +
+    `_Sector 6-Signal Resonance daily digest ${escapeMd(context.localDate)} ${escapeMd(context.localTime)} (${escapeMd(context.timezone)})_\n` +
+    `_Measured on proxy ETF *${escapeMd(ctx.proxyTicker)}*_\n\n` +
+    `${meta}\n` +
+    `Checks: \`${escapeMd(composition)}\`\n` +
+    `\n_Open the segment page for the full check-by-check breakdown._`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ctx.segmentName}`,
+    body: `${result.alignedCount}↑ / ${result.bearishAlignedCount}↓ · ${composition} · ${ctx.proxyTicker}`,
+    tag: `sector-resonance:${ctx.segmentId}`,
+    url: `/market/segments/${ctx.segmentId}`,
+    data: {
+      kind: "sector-resonance-digest",
+      segmentId: ctx.segmentId,
+      segmentName: ctx.segmentName,
+      proxyTicker: ctx.proxyTicker,
+      verdict: result.verdict,
+      alignedCount: result.alignedCount,
+      bearishCount: result.bearishAlignedCount,
+      freshBuy: result.freshBuy,
+      freshSell: result.freshSell,
+      localTime: context.localTime,
+      timezone: context.timezone,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+/**
+ * On-change alert for the sector 6-Signal Resonance. Fires when
+ * the proxy ETF's verdict crosses since the previous evaluation.
+ */
+export async function notifySectorResonanceChange(
+  ctx: SectorNotifyContext,
+  result: ResonanceResult,
+  context: {
+    previousVerdict: ResonanceVerdict;
+    previousAlignedCount: number | null;
+    previousBearishCount: number | null;
+  },
+): Promise<NotifyResult> {
+  const emoji = emojiForResonance(result.verdict);
+  const label = RS_VERDICT_LABEL[result.verdict];
+  const prevLabel = RS_VERDICT_LABEL[context.previousVerdict];
+  const composition = resonanceComposition(result);
+
+  const prevAligned =
+    context.previousAlignedCount === null
+      ? "?"
+      : String(context.previousAlignedCount);
+  const prevBearish =
+    context.previousBearishCount === null
+      ? "?"
+      : String(context.previousBearishCount);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ctx.segmentName)}*\n` +
+    `_Sector 6-Signal Resonance: ${escapeMd(prevLabel)} → ${escapeMd(label)}_\n` +
+    `_Measured on proxy ETF *${escapeMd(ctx.proxyTicker)}*_\n\n` +
+    `Alignment: *${result.alignedCount}/6↑* (was ${prevAligned}) · ` +
+    `*${result.bearishAlignedCount}/6↓* (was ${prevBearish})\n` +
+    (result.freshBuy
+      ? "✨ *Fresh BUY trigger on this bar*\n"
+      : result.freshSell
+        ? "✨ *Fresh SELL trigger on this bar*\n"
+        : "") +
+    `\nChecks: \`${escapeMd(composition)}\``;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ctx.segmentName}`,
+    body: `Sector resonance ${prevLabel} → ${label} · ${result.alignedCount}↑/${result.bearishAlignedCount}↓ · ${ctx.proxyTicker}`,
+    tag: `sector-resonance:${ctx.segmentId}`,
+    url: `/market/segments/${ctx.segmentId}`,
+    data: {
+      kind: "sector-resonance-change",
+      segmentId: ctx.segmentId,
+      segmentName: ctx.segmentName,
+      proxyTicker: ctx.proxyTicker,
+      previous: context.previousVerdict,
+      verdict: result.verdict,
+      alignedCount: result.alignedCount,
+      bearishCount: result.bearishAlignedCount,
+      freshBuy: result.freshBuy,
+      freshSell: result.freshSell,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- Sector Technical Signal alerts ---------------------------------------
+//
+// Same story as `notifySectorResonance*` above but for the multi-
+// indicator Technical Signal scorer. The scorer runs on the segment's
+// proxy ETF (resolved by the engine), so the notification body
+// surfaces both the segment name (what the user subscribed to) AND
+// the proxy ticker (what was actually measured). Deep link points at
+// the segment detail page rather than /signal.
+//
+// The two helpers reuse `TS_VERDICT_LABEL`, `emojiForVerdict` and
+// `topContribLine()` from the per-ticker technical alerts, so a
+// STRONG_BUY on the AI sector looks and feels identical to a
+// STRONG_BUY on NVDA — same emoji, same "top signals" tail, same
+// score-out-of-100 phrasing. Only the header labels the subscription
+// as sector-scoped.
+
+/**
+ * Daily digest — the user asked "at 09:30 send me today's technical
+ * verdict for this sector". Body mirrors `notifyTechnicalDigest`
+ * verbatim but the header calls out the segment + proxy so users
+ * aren't left wondering why a "Tech sector" digest mentions XLK.
+ */
+export async function notifySectorTechnicalDigest(
+  ctx: SectorNotifyContext,
+  signal: TechnicalSignal,
+  context: { localDate: string; localTime: string; timezone: string },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(signal.verdict);
+  const label = TS_VERDICT_LABEL[signal.verdict];
+  const scoreStr = formatScorePct(signal.score);
+  const coveragePct = Math.round(signal.coverage * 100);
+  const agreementPct =
+    signal.agreement === null ? null : Math.round(signal.agreement * 100);
+
+  const meta =
+    `Score: *${scoreStr}* / 100\n` +
+    `Coverage: ${coveragePct}% · Agreement: ${agreementPct === null ? "—" : `${agreementPct}%`}\n` +
+    `Regime: ${signal.regime} · ${signal.bullishCount}↑ / ${signal.bearishCount}↓`;
+
+  const contribs = topContribLine(signal);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ctx.segmentName)}*\n` +
+    `_Sector Technical Signal daily digest ${escapeMd(context.localDate)} ${escapeMd(context.localTime)} (${escapeMd(context.timezone)})_\n` +
+    `_Measured on proxy ETF *${escapeMd(ctx.proxyTicker)}*_\n\n` +
+    `${meta}\n\n` +
+    `Top signals: ${escapeMd(contribs)}\n` +
+    `\n_Open the segment page for the full breakdown._`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ctx.segmentName} (${scoreStr})`,
+    body: `Sector technical digest · ${contribs} · ${ctx.proxyTicker}`,
+    tag: `sector-technical:${ctx.segmentId}`,
+    url: `/market/segments/${ctx.segmentId}`,
+    data: {
+      kind: "sector-technical-digest",
+      segmentId: ctx.segmentId,
+      segmentName: ctx.segmentName,
+      proxyTicker: ctx.proxyTicker,
+      verdict: signal.verdict,
+      score: signal.score,
+      localTime: context.localTime,
+      timezone: context.timezone,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+/**
+ * On-change alert for the sector Technical Signal. Fires when the
+ * verdict band crosses since the previous evaluation.
+ */
+export async function notifySectorTechnicalChange(
+  ctx: SectorNotifyContext,
+  signal: TechnicalSignal,
+  context: { previousVerdict: Verdict; previousScore: number | null },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(signal.verdict);
+  const label = TS_VERDICT_LABEL[signal.verdict];
+  const prevLabel = TS_VERDICT_LABEL[context.previousVerdict];
+  const scoreStr = formatScorePct(signal.score);
+  const prevScoreStr =
+    context.previousScore === null
+      ? "?"
+      : formatScorePct(context.previousScore);
+  const contribs = topContribLine(signal);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ctx.segmentName)}*\n` +
+    `_Sector Technical Signal: ${escapeMd(prevLabel)} → ${escapeMd(label)}_\n` +
+    `_Measured on proxy ETF *${escapeMd(ctx.proxyTicker)}*_\n\n` +
+    `Score: *${scoreStr}* / 100 (was ${prevScoreStr})\n` +
+    `Regime: ${signal.regime} · ${signal.bullishCount}↑ / ${signal.bearishCount}↓\n\n` +
+    `Top signals: ${escapeMd(contribs)}`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ctx.segmentName}`,
+    body: `Sector technical ${prevLabel} → ${label} · ${scoreStr} · ${ctx.proxyTicker}`,
+    tag: `sector-technical:${ctx.segmentId}`,
+    url: `/market/segments/${ctx.segmentId}`,
+    data: {
+      kind: "sector-technical-change",
+      segmentId: ctx.segmentId,
+      segmentName: ctx.segmentName,
+      proxyTicker: ctx.proxyTicker,
+      previous: context.previousVerdict,
+      verdict: signal.verdict,
+      score: signal.score,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+// ---- Master-verdict alerts -------------------------------------------------
+//
+// Fuses the technical, resonance, fundamentals, sentiment and F&G
+// signals into a single BUY/SELL band, and pings the user on that
+// combined verdict rather than any individual sub-scorer.
+//
+// Same 5-band `Verdict` vocabulary as the technical scorer, so we
+// reuse `TS_VERDICT_LABEL` + `emojiForVerdict` + `formatScorePct`
+// above. The distinguishing UX signal in the notification body is
+// the `topReasons` list and the coverage/agreement chips — that's
+// what tells the reader "this is the fused verdict, not just the
+// technical one".
+
+/**
+ * One-line summary of the biggest drivers behind the master verdict.
+ * Mirrors `topContribLine()` for the technical signal — capped at
+ * three entries so the Telegram body stays scannable on a phone.
+ */
+function masterTopReasonsLine(reasons: MasterSource[]): string {
+  if (reasons.length === 0) return "no meaningful drivers";
+  return reasons
+    .slice(0, 3)
+    .map((r) => {
+      const contrib = r.contribution ?? 0;
+      const pct = Math.round(contrib * 100);
+      const sign = pct >= 0 ? "+" : "";
+      return `${sign}${pct}·${r.labelEn.toLowerCase().split(" ")[0]}`;
+    })
+    .join(", ");
+}
+
+/**
+ * Daily digest — the user asked "at 09:30 send me today's combined
+ * verdict". Body includes coverage and agreement so the reader can
+ * gauge how trustable today's summary is (high coverage + high
+ * agreement = strongest possible signal).
+ */
+export async function notifyMasterDigest(
+  ticker: string,
+  verdict: MasterVerdict,
+  context: { localDate: string; localTime: string; timezone: string },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(verdict.verdict);
+  const label = TS_VERDICT_LABEL[verdict.verdict];
+  const scoreStr = formatScorePct(verdict.score);
+  const coveragePct = Math.round(verdict.coverage * 100);
+  const agreementPct =
+    verdict.agreement === null ? null : Math.round(verdict.agreement * 100);
+  const reasonsLine = masterTopReasonsLine(verdict.topReasons);
+
+  const meta =
+    `Score: *${scoreStr}* / 100\n` +
+    `Coverage: ${coveragePct}% · Agreement: ${agreementPct === null ? "—" : `${agreementPct}%`}\n` +
+    `Regime: ${verdict.regime}`;
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}* _(Master Verdict)_\n` +
+    `_daily digest ${escapeMd(context.localDate)} ${escapeMd(context.localTime)} (${escapeMd(context.timezone)})_\n\n` +
+    `${meta}\n\n` +
+    `Top drivers: ${escapeMd(reasonsLine)}\n` +
+    `\n_Open the app for the full breakdown._`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker} (${scoreStr})`,
+    body: `Master verdict digest · ${reasonsLine}`,
+    tag: `master:${ticker}`,
+    url: "/signal",
+    data: {
+      kind: "master-digest",
+      ticker,
+      verdict: verdict.verdict,
+      score: verdict.score,
+      coverage: verdict.coverage,
+      localTime: context.localTime,
+      timezone: context.timezone,
+    },
+  };
+  return dispatchAlert({ markdown, push });
+}
+
+/**
+ * On-change alert. Fires when the master verdict band crosses since
+ * the last evaluation (e.g. hold → buy or buy → strong_sell). The
+ * body carries the score delta AND the coverage delta because a
+ * verdict change while coverage jumps from 50% → 90% is a very
+ * different signal from a change on already-full coverage.
+ */
+export async function notifyMasterChange(
+  ticker: string,
+  verdict: MasterVerdict,
+  context: {
+    previousVerdict: Verdict;
+    previousScore: number | null;
+    previousCoverage: number | null;
+  },
+): Promise<NotifyResult> {
+  const emoji = emojiForVerdict(verdict.verdict);
+  const label = TS_VERDICT_LABEL[verdict.verdict];
+  const prevLabel = TS_VERDICT_LABEL[context.previousVerdict];
+  const scoreStr = formatScorePct(verdict.score);
+  const prevScoreStr =
+    context.previousScore === null
+      ? "?"
+      : formatScorePct(context.previousScore);
+  const coveragePct = Math.round(verdict.coverage * 100);
+  const prevCoverageStr =
+    context.previousCoverage === null
+      ? "?"
+      : `${Math.round(context.previousCoverage * 100)}%`;
+  const reasonsLine = masterTopReasonsLine(verdict.topReasons);
+
+  const markdown =
+    `${emoji} *${label}* — *${escapeMd(ticker)}* _(Master Verdict)_\n` +
+    `_verdict changed: ${escapeMd(prevLabel)} → ${escapeMd(label)}_\n\n` +
+    `Score: *${scoreStr}* / 100 (was ${prevScoreStr})\n` +
+    `Coverage: ${coveragePct}% (was ${prevCoverageStr}) · Regime: ${verdict.regime}\n\n` +
+    `Top drivers: ${escapeMd(reasonsLine)}`;
+
+  const push: WebPushPayload = {
+    title: `${emoji} ${label} — ${ticker}`,
+    body: `Master verdict: ${prevLabel} → ${label} (${scoreStr})`,
+    tag: `master:${ticker}`,
+    url: "/signal",
+    data: {
+      kind: "master-change",
+      ticker,
+      previous: context.previousVerdict,
+      verdict: verdict.verdict,
+      score: verdict.score,
+      coverage: verdict.coverage,
     },
   };
   return dispatchAlert({ markdown, push });

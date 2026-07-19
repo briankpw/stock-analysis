@@ -33,9 +33,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
 import { PortfolioWinnersLosers } from "@/components/portfolio-winners-losers";
-import { useHoldings } from "@/lib/holdings-state";
+import { useHoldingsView } from "@/lib/holdings-state";
 import { useUi } from "@/lib/state";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -282,39 +283,56 @@ function CurrencyTotalsBar({ totals }: { totals: CurrencyTotals[] }) {
                 </p>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-              <TotalTile
-                label={t("myPortfolio.summary.marketValue")}
-                value={fmtMoney(b.marketValue)}
-                sub={t("myPortfolio.summary.investedSub", { v: fmtMoney(b.invested) })}
-              />
-              <TotalTile
-                label={t("myPortfolio.summary.dayChange")}
-                value={fmtMoney(b.dayChange, { signed: true })}
-                sub={fmtPct(b.dayChangePct, { signed: true })}
-                tone={pnlTone(b.dayChange)}
-              />
-              <TotalTile
-                label={t("myPortfolio.summary.unrealized")}
-                value={fmtMoney(b.unrealizedPnl, { signed: true })}
-                tone={pnlTone(b.unrealizedPnl)}
-              />
-              <TotalTile
-                label={t("myPortfolio.summary.realized")}
-                value={fmtMoney(b.realizedPnl, { signed: true })}
-                tone={pnlTone(b.realizedPnl)}
-              />
-              <TotalTile
-                label={t("myPortfolio.summary.totalPnl")}
-                value={fmtMoney(b.totalPnl, { signed: true })}
-                tone={pnlTone(b.totalPnl)}
-              />
-              <TotalTile
-                label={t("myPortfolio.summary.commissions")}
-                value={fmtMoney(b.commissions)}
-                sub={t("myPortfolio.summary.commissionsSub")}
-              />
-            </div>
+            {/* When the imported CSV has no commission data for this
+                currency (common for MSP users on free-trade brokers),
+                the "Commissions" tile is nothing but a zero value and
+                pure clutter. Suppress it and shrink the grid to 5
+                columns so the remaining tiles stay evenly sized. */}
+            {(() => {
+              const showCommissions = b.commissions !== 0;
+              return (
+                <div
+                  className={cn(
+                    "grid grid-cols-2 sm:grid-cols-3 gap-2",
+                    showCommissions ? "lg:grid-cols-6" : "lg:grid-cols-5",
+                  )}
+                >
+                  <TotalTile
+                    label={t("myPortfolio.summary.marketValue")}
+                    value={fmtMoney(b.marketValue)}
+                    sub={t("myPortfolio.summary.investedSub", { v: fmtMoney(b.invested) })}
+                  />
+                  <TotalTile
+                    label={t("myPortfolio.summary.dayChange")}
+                    value={fmtMoney(b.dayChange, { signed: true })}
+                    sub={fmtPct(b.dayChangePct, { signed: true })}
+                    tone={pnlTone(b.dayChange)}
+                  />
+                  <TotalTile
+                    label={t("myPortfolio.summary.unrealized")}
+                    value={fmtMoney(b.unrealizedPnl, { signed: true })}
+                    tone={pnlTone(b.unrealizedPnl)}
+                  />
+                  <TotalTile
+                    label={t("myPortfolio.summary.realized")}
+                    value={fmtMoney(b.realizedPnl, { signed: true })}
+                    tone={pnlTone(b.realizedPnl)}
+                  />
+                  <TotalTile
+                    label={t("myPortfolio.summary.totalPnl")}
+                    value={fmtMoney(b.totalPnl, { signed: true })}
+                    tone={pnlTone(b.totalPnl)}
+                  />
+                  {showCommissions && (
+                    <TotalTile
+                      label={t("myPortfolio.summary.commissions")}
+                      value={fmtMoney(b.commissions)}
+                      sub={t("myPortfolio.summary.commissionsSub")}
+                    />
+                  )}
+                </div>
+              );
+            })()}
           </CardContent>
         </Card>
       ))}
@@ -582,6 +600,39 @@ function TypeChip({ type }: { type: TradeEvent["type"] }) {
 }
 
 /**
+ * Small pill next to a Buy row's TypeChip showing whether the FIFO
+ * lot opened by that buy is still open, partially drained by later
+ * sells, or fully closed. Uses subtle borders/backgrounds so the
+ * chip reads as a status indicator rather than as another action.
+ *
+ * The three states map to different colour tones:
+ *   • open    → primary/blue tint  (nothing sold yet)
+ *   • partial → warning/amber tint (some sold, some still held)
+ *   • closed  → muted/grey tint    (all shares from this buy sold)
+ */
+function LotStatusChip({ status }: { status: "open" | "partial" | "closed" }) {
+  const t = useT();
+  const label = t(`myPortfolio.drill.lotStatus.${status}`);
+  const tone =
+    status === "open"
+      ? "border-primary/30 bg-primary/10 text-primary"
+      : status === "partial"
+        ? "border-warning/30 bg-warning/10 text-warning"
+        : "border-border bg-muted/40 text-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-[1px] text-[0.55rem] font-medium uppercase tracking-wider",
+        tone,
+      )}
+      title={t(`myPortfolio.drill.lotStatus.${status}Tooltip`)}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
  * Extract the date portion of the raw MSP timestamp (`YYYY-MM-DD
  * GMT+ZZZZ` → `YYYY-MM-DD`) for compact display. Falls back to the
  * raw string when the format doesn't match so no data is lost.
@@ -603,6 +654,10 @@ function PositionDrilldown({
 }) {
   const t = useT();
   const p = position;
+  // Auto-hide the Commission column + mobile row when this position
+  // has no commission on any trade. Same condition used above for the
+  // Commission snapshot tile, so the two never disagree.
+  const showCommission = p.totalCommission > 0;
 
   // Newest trade first — matches the "recent activity" mental model
   // (users usually want to see their last trade at a glance). The
@@ -615,50 +670,78 @@ function PositionDrilldown({
     <div className="p-4 space-y-4">
       {/* Position snapshot — the numbers that stay true regardless of
           per-trade detail (bought/sold, total invested, commissions,
-          date range). Denominated in the stock's own currency. */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-        <SnapshotTile
-          label={t("myPortfolio.drill.bought")}
-          value={p.boughtShares > 0 ? fmtShares(p.boughtShares) : DASH}
-          sub={t("myPortfolio.drill.buyCount", { n: p.buyCount })}
-        />
-        <SnapshotTile
-          label={t("myPortfolio.drill.sold")}
-          value={p.soldShares > 0 ? fmtShares(p.soldShares) : DASH}
-          sub={t("myPortfolio.drill.sellCount", { n: p.sellCount })}
-        />
-        <SnapshotTile
-          label={t("myPortfolio.drill.netHeld")}
-          value={p.netShares > 0 ? fmtShares(p.netShares) : DASH}
-          sub={
-            p.avgCost != null
-              ? t("myPortfolio.pos.avgCost", { v: `${fmtMoney(p.avgCost)} ${p.currency}` })
-              : t("myPortfolio.drill.flat")
-          }
-        />
-        <SnapshotTile
-          label={t("myPortfolio.drill.totalInvested")}
-          value={fmtMoney(p.totalInvested)}
-          sub={p.currency}
-        />
-        <SnapshotTile
-          label={t("myPortfolio.drill.totalProceeds")}
-          value={fmtMoney(p.totalProceeds)}
-          sub={p.currency}
-        />
-        <SnapshotTile
-          label={t("myPortfolio.drill.commissions")}
-          value={fmtMoney(p.totalCommission)}
-          sub={
-            p.firstTradeDate && p.lastTradeDate
-              ? t("myPortfolio.drill.dateRange", {
-                  from: (p.firstTradeDate.match(/^(\d{4}-\d{2}-\d{2})/) ?? [p.firstTradeDate])[0],
-                  to: (p.lastTradeDate.match(/^(\d{4}-\d{2}-\d{2})/) ?? [p.lastTradeDate])[0],
-                })
-              : undefined
-          }
-        />
-      </div>
+          date range). Denominated in the stock's own currency.
+
+          Commission tile is auto-hidden when this position has no
+          commission on any trade (broker's a free-trade shop, or the
+          CSV export just doesn't carry the column). When hidden, the
+          date-range info that used to ride on the commission tile's
+          sub-line moves to `totalProceeds` so we don't lose it. */}
+      {(() => {
+        // `showCommission` is hoisted to the component scope (used
+        // below by the timeline table + mobile cards too); reuse it
+        // here so the whole drilldown makes the same decision.
+        const dateRangeSub =
+          p.firstTradeDate && p.lastTradeDate
+            ? t("myPortfolio.drill.dateRange", {
+                from: (p.firstTradeDate.match(/^(\d{4}-\d{2}-\d{2})/) ?? [p.firstTradeDate])[0],
+                to: (p.lastTradeDate.match(/^(\d{4}-\d{2}-\d{2})/) ?? [p.lastTradeDate])[0],
+              })
+            : null;
+        return (
+          <div
+            className={cn(
+              "grid grid-cols-2 sm:grid-cols-3 gap-2",
+              showCommission ? "lg:grid-cols-6" : "lg:grid-cols-5",
+            )}
+          >
+            <SnapshotTile
+              label={t("myPortfolio.drill.bought")}
+              value={p.boughtShares > 0 ? fmtShares(p.boughtShares) : DASH}
+              sub={t("myPortfolio.drill.buyCount", { n: p.buyCount })}
+            />
+            <SnapshotTile
+              label={t("myPortfolio.drill.sold")}
+              value={p.soldShares > 0 ? fmtShares(p.soldShares) : DASH}
+              sub={t("myPortfolio.drill.sellCount", { n: p.sellCount })}
+            />
+            <SnapshotTile
+              label={t("myPortfolio.drill.netHeld")}
+              value={p.netShares > 0 ? fmtShares(p.netShares) : DASH}
+              sub={
+                p.avgCost != null
+                  ? t("myPortfolio.pos.avgCost", { v: `${fmtMoney(p.avgCost)} ${p.currency}` })
+                  : t("myPortfolio.drill.flat")
+              }
+            />
+            <SnapshotTile
+              label={t("myPortfolio.drill.totalInvested")}
+              value={fmtMoney(p.totalInvested)}
+              sub={p.currency}
+            />
+            <SnapshotTile
+              label={t("myPortfolio.drill.totalProceeds")}
+              value={fmtMoney(p.totalProceeds)}
+              // Absorb the date range here when the commission tile
+              // (its usual home) is suppressed, so users never lose
+              // the "traded from X to Y" context. Falls back to just
+              // the currency when we have no trades at all.
+              sub={
+                !showCommission && dateRangeSub
+                  ? `${p.currency} · ${dateRangeSub}`
+                  : p.currency
+              }
+            />
+            {showCommission && (
+              <SnapshotTile
+                label={t("myPortfolio.drill.commissions")}
+                value={fmtMoney(p.totalCommission)}
+                sub={dateRangeSub ?? undefined}
+              />
+            )}
+          </div>
+        );
+      })()}
 
       {/* Trade timeline — the "trade-by-trade" list, most recent
           first. Renders as a table on md+ (best density for cross-
@@ -703,9 +786,11 @@ function PositionDrilldown({
                   <th className="text-right px-2.5 py-1.5 font-medium">
                     {t("myPortfolio.drill.col.price")}
                   </th>
-                  <th className="text-right px-2.5 py-1.5 font-medium">
-                    {t("myPortfolio.drill.col.commission")}
-                  </th>
+                  {showCommission && (
+                    <th className="text-right px-2.5 py-1.5 font-medium">
+                      {t("myPortfolio.drill.col.commission")}
+                    </th>
+                  )}
                   <th className="text-right px-2.5 py-1.5 font-medium">
                     {t("myPortfolio.drill.col.cashFlow")}
                   </th>
@@ -721,137 +806,254 @@ function PositionDrilldown({
                   >
                     {t("myPortfolio.drill.col.afterAvg")}
                   </th>
-                  <th className="text-right px-2.5 py-1.5 font-medium">
+                  {/* Two P&L lenses side-by-side.
+
+                      Realized on a Buy row shows FIFO-lot P&L: the
+                      profit later sells extracted from *this specific
+                      buy lot*. Sells still show their own realized
+                      (weighted-avg vs. running basis at time of sell).
+
+                      Unrealized on a Buy row shows the mark-to-market
+                      on shares from *this lot* that are still held.
+                      Sells (fully closed by definition) show DASH. */}
+                  <th
+                    className="text-right px-2.5 py-1.5 font-medium border-l border-border/60"
+                    title={t("myPortfolio.drill.col.unrealizedHint")}
+                  >
+                    {t("myPortfolio.drill.col.unrealized")}
+                  </th>
+                  <th
+                    className="text-right px-2.5 py-1.5 font-medium"
+                    title={t("myPortfolio.drill.col.realizedHint")}
+                  >
                     {t("myPortfolio.drill.col.realized")}
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {timeline.map((ev, idx) => (
-                  <tr
-                    key={`${ev.row.id}-${idx}`}
-                    className={cn(
-                      "border-t border-border/50",
-                      ev.type === "Buy" && "bg-success/5",
-                      ev.type === "Sell" && "bg-danger/5",
-                    )}
-                  >
-                    <td className="px-2.5 py-1.5 whitespace-nowrap font-mono tabular-nums text-[0.7rem]">
-                      {tradeDateLabel(ev.row)}
-                    </td>
-                    <td className="px-2.5 py-1.5">
-                      <TypeChip type={ev.type} />
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">
-                      {ev.shares != null ? fmtShares(ev.shares) : DASH}
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">
-                      {fmtMoney(ev.price)}
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">
-                      {ev.commission > 0 ? fmtMoney(ev.commission) : DASH}
-                    </td>
-                    <td
+                {timeline.map((ev, idx) => {
+                  // Lot-level unrealized: only meaningful on Buy rows
+                  // with live-price data AND shares still open. All
+                  // other cases render as DASH.
+                  const lotUnrealized =
+                    ev.type === "Buy" &&
+                    p.price != null &&
+                    ev.lotCostPerShare != null &&
+                    ev.lotSharesRemaining != null &&
+                    ev.lotSharesRemaining > 1e-9
+                      ? (p.price - ev.lotCostPerShare) * ev.lotSharesRemaining
+                      : null;
+                  // Lot-level realized: on Buy rows, sum of FIFO
+                  // attributions from later sells. On Sell rows, keep
+                  // the sell's own realizedPnl (cash-flow truth).
+                  const lotRealized =
+                    ev.type === "Buy"
+                      ? ev.lotRealizedPnl
+                      : ev.realizedPnl !== 0
+                        ? ev.realizedPnl
+                        : null;
+                  return (
+                    <tr
+                      key={`${ev.row.id}-${idx}`}
                       className={cn(
-                        "px-2.5 py-1.5 text-right tabular-nums",
-                        pnlTone(ev.cashFlow),
+                        "border-t border-border/50",
+                        ev.type === "Buy" && "bg-success/5",
+                        ev.type === "Sell" && "bg-danger/5",
                       )}
                     >
-                      {fmtMoney(ev.cashFlow, { signed: true })}
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums font-medium border-l border-border/60">
-                      {ev.runningShares > 0 ? fmtShares(ev.runningShares) : DASH}
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums font-medium">
-                      {ev.runningAvgCost != null ? fmtMoney(ev.runningAvgCost) : DASH}
-                    </td>
-                    <td
-                      className={cn(
-                        "px-2.5 py-1.5 text-right tabular-nums font-medium",
-                        pnlTone(ev.realizedPnl === 0 ? null : ev.realizedPnl),
+                      <td className="px-2.5 py-1.5 whitespace-nowrap font-mono tabular-nums text-[0.7rem]">
+                        {tradeDateLabel(ev.row)}
+                      </td>
+                      <td className="px-2.5 py-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <TypeChip type={ev.type} />
+                          {ev.type === "Buy" && ev.lotStatus && (
+                            <LotStatusChip status={ev.lotStatus} />
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">
+                        {ev.shares != null ? fmtShares(ev.shares) : DASH}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums">
+                        {fmtMoney(ev.price)}
+                      </td>
+                      {showCommission && (
+                        <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">
+                          {ev.commission > 0 ? fmtMoney(ev.commission) : DASH}
+                        </td>
                       )}
-                    >
-                      {ev.realizedPnl !== 0
-                        ? fmtMoney(ev.realizedPnl, { signed: true })
-                        : DASH}
-                    </td>
-                  </tr>
-                ))}
+                      <td
+                        className={cn(
+                          "px-2.5 py-1.5 text-right tabular-nums",
+                          pnlTone(ev.cashFlow),
+                        )}
+                      >
+                        {fmtMoney(ev.cashFlow, { signed: true })}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums font-medium border-l border-border/60">
+                        {ev.runningShares > 0 ? fmtShares(ev.runningShares) : DASH}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right tabular-nums font-medium">
+                        {ev.runningAvgCost != null ? fmtMoney(ev.runningAvgCost) : DASH}
+                      </td>
+                      <td
+                        className={cn(
+                          "px-2.5 py-1.5 text-right tabular-nums border-l border-border/60",
+                          pnlTone(lotUnrealized),
+                        )}
+                        title={
+                          ev.type === "Buy" && ev.lotSharesRemaining != null
+                            ? t("myPortfolio.drill.col.unrealizedTooltip", {
+                                shares: fmtShares(ev.lotSharesRemaining),
+                                cost:
+                                  ev.lotCostPerShare != null
+                                    ? fmtMoney(ev.lotCostPerShare)
+                                    : DASH,
+                              })
+                            : undefined
+                        }
+                      >
+                        {lotUnrealized != null
+                          ? fmtMoney(lotUnrealized, { signed: true })
+                          : DASH}
+                      </td>
+                      <td
+                        className={cn(
+                          "px-2.5 py-1.5 text-right tabular-nums font-medium",
+                          pnlTone(lotRealized),
+                        )}
+                        title={
+                          ev.type === "Buy" && ev.lotSharesSold != null && ev.lotSharesSold > 1e-9
+                            ? t("myPortfolio.drill.col.realizedTooltip", {
+                                sold: fmtShares(ev.lotSharesSold),
+                                original:
+                                  ev.lotOriginalShares != null
+                                    ? fmtShares(ev.lotOriginalShares)
+                                    : DASH,
+                              })
+                            : undefined
+                        }
+                      >
+                        {lotRealized != null
+                          ? fmtMoney(lotRealized, { signed: true })
+                          : DASH}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           {/* Mobile: stacked cards so no horizontal scroll. */}
           <div className="md:hidden space-y-2">
-            {timeline.map((ev, idx) => (
-              <div
-                key={`${ev.row.id}-${idx}`}
-                className={cn(
-                  "rounded-md border p-2.5",
-                  ev.type === "Buy"
-                    ? "border-success/30 bg-success/5"
-                    : ev.type === "Sell"
-                      ? "border-danger/30 bg-danger/5"
-                      : "border-border bg-card/50",
-                )}
-              >
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <div className="min-w-0">
-                    <TypeChip type={ev.type} />
-                    <p className="text-[0.7rem] text-muted-foreground mt-0.5 font-mono tabular-nums truncate">
-                      {tradeDateLabel(ev.row)}
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className={cn("text-sm font-semibold tabular-nums", pnlTone(ev.cashFlow))}>
-                      {fmtMoney(ev.cashFlow, { signed: true })}
-                    </p>
-                    <p className="text-[0.6rem] text-muted-foreground">
-                      {p.currency}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[0.7rem] tabular-nums">
-                  <p>
-                    <span className="text-muted-foreground">{t("myPortfolio.drill.col.shares")}: </span>
-                    {ev.shares != null ? fmtShares(ev.shares) : DASH}
-                    <span className="text-muted-foreground"> @ {fmtMoney(ev.price)}</span>
-                  </p>
-                  <p>
-                    <span className="text-muted-foreground">{t("myPortfolio.drill.col.commission")}: </span>
-                    {ev.commission > 0 ? fmtMoney(ev.commission) : DASH}
-                  </p>
-                  <p>
-                    <span className="text-muted-foreground">{t("myPortfolio.drill.col.afterShares")}: </span>
-                    <span className="font-medium">
-                      {ev.runningShares > 0 ? fmtShares(ev.runningShares) : DASH}
-                    </span>
-                  </p>
-                  <p>
-                    <span className="text-muted-foreground">{t("myPortfolio.drill.col.afterAvg")}: </span>
-                    <span className="font-medium">
-                      {ev.runningAvgCost != null ? fmtMoney(ev.runningAvgCost) : DASH}
-                    </span>
-                  </p>
-                  {ev.realizedPnl !== 0 && (
-                    <p className="col-span-2">
-                      <span className="text-muted-foreground">
-                        {t("myPortfolio.drill.col.realized")}:{" "}
-                      </span>
-                      <span className={cn("font-semibold", pnlTone(ev.realizedPnl))}>
-                        {fmtMoney(ev.realizedPnl, { signed: true })}
-                      </span>
-                    </p>
+            {timeline.map((ev, idx) => {
+              const lotUnrealized =
+                ev.type === "Buy" &&
+                p.price != null &&
+                ev.lotCostPerShare != null &&
+                ev.lotSharesRemaining != null &&
+                ev.lotSharesRemaining > 1e-9
+                  ? (p.price - ev.lotCostPerShare) * ev.lotSharesRemaining
+                  : null;
+              const lotRealized =
+                ev.type === "Buy"
+                  ? ev.lotRealizedPnl
+                  : ev.realizedPnl !== 0
+                    ? ev.realizedPnl
+                    : null;
+              return (
+                <div
+                  key={`${ev.row.id}-${idx}`}
+                  className={cn(
+                    "rounded-md border p-2.5",
+                    ev.type === "Buy"
+                      ? "border-success/30 bg-success/5"
+                      : ev.type === "Sell"
+                        ? "border-danger/30 bg-danger/5"
+                        : "border-border bg-card/50",
                   )}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <TypeChip type={ev.type} />
+                        {ev.type === "Buy" && ev.lotStatus && (
+                          <LotStatusChip status={ev.lotStatus} />
+                        )}
+                      </div>
+                      <p className="text-[0.7rem] text-muted-foreground mt-0.5 font-mono tabular-nums truncate">
+                        {tradeDateLabel(ev.row)}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={cn("text-sm font-semibold tabular-nums", pnlTone(ev.cashFlow))}>
+                        {fmtMoney(ev.cashFlow, { signed: true })}
+                      </p>
+                      <p className="text-[0.6rem] text-muted-foreground">
+                        {p.currency}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[0.7rem] tabular-nums">
+                    <p>
+                      <span className="text-muted-foreground">{t("myPortfolio.drill.col.shares")}: </span>
+                      {ev.shares != null ? fmtShares(ev.shares) : DASH}
+                      <span className="text-muted-foreground"> @ {fmtMoney(ev.price)}</span>
+                    </p>
+                    {showCommission && (
+                      <p>
+                        <span className="text-muted-foreground">{t("myPortfolio.drill.col.commission")}: </span>
+                        {ev.commission > 0 ? fmtMoney(ev.commission) : DASH}
+                      </p>
+                    )}
+                    <p>
+                      <span className="text-muted-foreground">{t("myPortfolio.drill.col.afterShares")}: </span>
+                      <span className="font-medium">
+                        {ev.runningShares > 0 ? fmtShares(ev.runningShares) : DASH}
+                      </span>
+                    </p>
+                    <p>
+                      <span className="text-muted-foreground">{t("myPortfolio.drill.col.afterAvg")}: </span>
+                      <span className="font-medium">
+                        {ev.runningAvgCost != null ? fmtMoney(ev.runningAvgCost) : DASH}
+                      </span>
+                    </p>
+                    {lotUnrealized != null && (
+                      <p>
+                        <span className="text-muted-foreground">
+                          {t("myPortfolio.drill.col.unrealized")}:{" "}
+                        </span>
+                        <span className={cn("font-semibold", pnlTone(lotUnrealized))}>
+                          {fmtMoney(lotUnrealized, { signed: true })}
+                        </span>
+                      </p>
+                    )}
+                    {lotRealized != null && lotRealized !== 0 && (
+                      <p>
+                        <span className="text-muted-foreground">
+                          {t("myPortfolio.drill.col.realized")}:{" "}
+                        </span>
+                        <span className={cn("font-semibold", pnlTone(lotRealized))}>
+                          {fmtMoney(lotRealized, { signed: true })}
+                        </span>
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <p className="text-[0.65rem] text-muted-foreground mt-2 flex items-start gap-1">
             <Info className="h-3 w-3 shrink-0 mt-0.5" />
             {t("myPortfolio.drill.timelineFootnote")}
+          </p>
+          <p className="text-[0.65rem] text-muted-foreground mt-1 flex items-start gap-1">
+            <Info className="h-3 w-3 shrink-0 mt-0.5" />
+            {t("myPortfolio.drill.lotFootnote")}
           </p>
         </div>
       )}
@@ -900,7 +1102,12 @@ type SortKey = "value" | "pnl" | "day" | "alpha";
 export function PositionsTable() {
   const t = useT();
   const router = useRouter();
-  const rows = useHoldings((s) => s.rows);
+  // Use the filtered view so forex rows never leak into the equity
+  // P&L math. Consumers who genuinely need every row (e.g. the CSV
+  // uploader's dedupe pass) still call `useHoldings` directly — see
+  // `useHoldingsView`'s docstring for the split.
+  const view = useHoldingsView();
+  const rows = view.rows;
   const currentTicker = useUi((s) => s.ticker);
   const setTicker = useUi((s) => s.setTicker);
 
@@ -991,6 +1198,35 @@ export function PositionsTable() {
     });
     return filtered;
   }, [positions, search, portfolioFilter, statusFilter, sortKey]);
+
+  // ---- Pagination ------------------------------------------------------
+  // `usePagination` handles page overrun (list shrinks under you) but
+  // NOT context change — if the user was on page 4 of an "all" listing
+  // and then applies a filter that leaves 15 results, they'd land on
+  // page 4 of a 1-page list which the hook then snaps back to page 1
+  // one render later. That flash is jarring, so we reset explicitly
+  // when the *filter identity* changes. Page-size changes are handled
+  // inside `usePagination.setPageSize` (which anchors on the current
+  // top row) so no explicit reset is needed for them.
+  //
+  // The `0` entry in `pageSizeOptions` below activates the "All"
+  // rendering — everything on one page, no scroll trap.
+  const pager = usePagination(visible, 20);
+  const setPage = pager.setPage;
+  React.useEffect(() => {
+    setPage(1);
+  }, [search, portfolioFilter, statusFilter, sortKey, setPage]);
+
+  // If the user expands a row and then moves off that page, collapse
+  // it so a returning visitor doesn't find a phantom `expandedKey`
+  // sitting invisibly on another page.
+  const pagedKeys = React.useMemo(
+    () => new Set(pager.visibleItems.map((p) => `${p.portfolio}\u0000${p.symbol}`)),
+    [pager.visibleItems],
+  );
+  React.useEffect(() => {
+    if (expandedKey && !pagedKeys.has(expandedKey)) setExpandedKey(null);
+  }, [expandedKey, pagedKeys]);
 
   // ---- Render ----------------------------------------------------------
   const isEmpty = rawPositions.length === 0;
@@ -1106,31 +1342,79 @@ export function PositionsTable() {
           </div>
         </div>
 
-        {/* Position rows */}
+        {/* Position rows.
+            Empty-state discrimination:
+              1. `isEmpty` — store has no equity rows for us to render.
+                 If the underlying store *did* contain something and it
+                 was 100 % forex hidden by the current toggle, tell the
+                 user so they don't think the page is broken (they can
+                 flip the toggle in the meta bar above).
+              2. `visible.length === 0` — we have rows but the current
+                 filter combination (search / portfolio / status) hides
+                 them all. That's usually the "closed only" case. */}
         {isEmpty ? (
-          <p className="text-sm text-muted-foreground text-center py-8">
-            {t("myPortfolio.table.emptyStore")}
-          </p>
+          view.forexRowCount > 0 && view.hideForex ? (
+            <div className="text-center py-8 space-y-1">
+              <p className="text-sm text-muted-foreground">
+                {t("myPortfolio.table.emptyForexOnly", {
+                  n: view.forexRowCount,
+                })}
+              </p>
+              <p className="text-[0.7rem] text-muted-foreground opacity-70">
+                {t("myPortfolio.table.emptyForexOnlyHint")}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              {t("myPortfolio.table.emptyStore")}
+            </p>
+          )
         ) : visible.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
             {t("myPortfolio.table.emptyFilter")}
           </p>
         ) : (
-          <div className="space-y-2">
-            {visible.map((p) => {
-              const key = `${p.portfolio}\u0000${p.symbol}`;
-              return (
-                <PositionRow
-                  key={key}
-                  position={p}
-                  onSelectTicker={openInAnalysis}
-                  active={currentTicker.toUpperCase() === p.symbol.toUpperCase()}
-                  expanded={expandedKey === key}
-                  onToggle={() => toggleExpand(key)}
+          <>
+            <div className="space-y-2">
+              {pager.visibleItems.map((p) => {
+                const key = `${p.portfolio}\u0000${p.symbol}`;
+                return (
+                  <PositionRow
+                    key={key}
+                    position={p}
+                    onSelectTicker={openInAnalysis}
+                    active={currentTicker.toUpperCase() === p.symbol.toUpperCase()}
+                    expanded={expandedKey === key}
+                    onToggle={() => toggleExpand(key)}
+                  />
+                );
+              })}
+            </div>
+
+            {/* Pagination footer — the built-in `<Pagination>` control
+                now renders the page-size selector inline, so the whole
+                "list navigation" cluster stays visually grouped without
+                a bespoke wrapper. Only shown when there's actually
+                something to page — a portfolio of 5 stocks doesn't
+                need controls. */}
+            {visible.length > 10 && (
+              <div className="pt-2 border-t border-border/60">
+                <Pagination
+                  page={pager.page}
+                  pageCount={pager.pageCount}
+                  total={pager.total}
+                  range={pager.range}
+                  onPageChange={pager.setPage}
+                  pageSize={pager.pageSize}
+                  onPageSizeChange={pager.setPageSize}
+                  pageSizeOptions={[10, 20, 50, 100, 0]}
+                  pageSizeLabel={t("pager.pageSizeLabel")}
+                  allLabel={t("pager.all")}
+                  label={t("myPortfolio.pager.positionsLabel")}
                 />
-              );
-            })}
-          </div>
+              </div>
+            )}
+          </>
         )}
 
         <p className="text-[0.65rem] text-muted-foreground flex items-start gap-1.5">

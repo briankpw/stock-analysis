@@ -1,164 +1,56 @@
 /**
- * Bot orchestration — one "tick" fetches history, evaluates every
- * enabled strategy, records signals + fires Telegram alerts.
+ * Bot orchestration — one worker loop that fans out into every alert
+ * channel we support (technical signals, 6-signal resonance,
+ * sector-level 6-signal resonance, portfolio insiders, insider stock
+ * watches, news subscriptions, portfolio-risk).
  *
- * The worker process (`worker.mjs`) calls `runForever()`; the UI's
- * "Run a single tick" button calls `runTick()`.
+ * Historically this module also ran a per-tick "strategy" pass (SMA
+ * crossover / RSI reversion / MACD cross) against the sticky sidebar
+ * ticker. That path was removed in July 2026: every one of those three
+ * strategies is already covered — and covered better — by the
+ * per-ticker Technical Signal alerts and 6-Signal Resonance alerts,
+ * both of which have proper per-ticker subscription flows, digest
+ * scheduling, and strength gates. Keeping the legacy strategy tick
+ * around only added a footgun where alerts fired for whatever ticker
+ * happened to be sticky in the sidebar.
+ *
+ * The worker process (`worker.mjs`) calls `runForever()`. There is no
+ * longer a `runTick(ticker)` — nothing runs against a single ticker at
+ * the "bot" level; every channel has its own scheduling.
  */
 
 import { settings } from "../config";
-import { fetchHistory } from "../data";
-import type { Signal } from "./strategy";
-import { STRATEGIES, type StrategyKey } from "./strategy";
 import {
-  DEFAULT_ACTIVE_STRATEGIES,
-  markNotified,
-  recordSignal,
   setState,
   STATE_KEYS,
-  shouldNotify,
   getState,
-  tryLockTick,
 } from "./store";
-import { notifySignalsBatch } from "./notifier";
 import { runPortfolioTick } from "../portfolio-watch/engine";
 import { runStockTick } from "../stock-watch/engine";
 import { runNewsTick } from "../news-watch/engine";
 import { runTechnicalTick } from "../technical-watch/engine";
 import { runResonanceTick } from "../resonance-watch/engine";
+import { runSectorResonanceTick } from "../sector-resonance-watch/engine";
+import { runSectorTechnicalTick } from "../sector-technical-watch/engine";
 import { runPortfolioRiskTick } from "../portfolio-risk/engine";
-
-export interface TickReport {
-  ok: boolean;
-  ticker: string;
-  ranAt: string;
-  strategies: string[];
-  signalsFired: number;
-  notifiesSent: number;
-  errors: string[];
-}
-
-export async function runTick(ticker: string): Promise<TickReport> {
-  const report: TickReport = {
-    ok: true,
-    ticker,
-    ranAt: new Date().toISOString(),
-    strategies: [],
-    signalsFired: 0,
-    notifiesSent: 0,
-    errors: [],
-  };
-
-  // Refuse overlapping ticks so a UI "Run now" click during the worker's
-  // 15-min loop doesn't double-fetch Yahoo or double-send Telegram.
-  const release = tryLockTick(`bot:${ticker}`);
-  if (!release) {
-    report.ok = false;
-    report.errors.push("Another tick is already running for this ticker.");
-    return report;
-  }
-  try {
-    return await runTickBody(ticker, report);
-  } finally {
-    release();
-  }
-}
-
-async function runTickBody(
-  ticker: string,
-  report: TickReport,
-): Promise<TickReport> {
-  const bars = await fetchHistory(
-    ticker,
-    settings.bot.lookbackPeriod,
-    settings.bot.lookbackInterval,
-  ).catch((err: unknown) => {
-    report.ok = false;
-    report.errors.push(`history fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
-  });
-
-  if (bars.length === 0) {
-    return report;
-  }
-
-  const active = getState<StrategyKey[]>(STATE_KEYS.ACTIVE_STRATEGIES, DEFAULT_ACTIVE_STRATEGIES);
-  report.strategies = active;
-
-  // First pass: run every strategy, classify each output into either
-  // "notify-eligible" (fresh BUY/SELL for this bar) or "record only"
-  // (HOLD, or a duplicate we already notified on this bar). We defer
-  // Telegram sends so we can batch same-ticker signals into one message
-  // — sending N separate notifications for N strategies firing at once
-  // is exactly the kind of spam we want to avoid.
-  const notifyBuffer: Array<{ key: StrategyKey; signal: Signal }> = [];
-  const recordOnly: Array<{ signal: Signal }> = [];
-
-  for (const key of active) {
-    const fn = STRATEGIES[key];
-    if (!fn) continue;
-    let signal: Signal;
-    try {
-      signal = fn(bars);
-    } catch (err) {
-      report.errors.push(`${key}: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
-    }
-    if (signal.type === "HOLD") continue;
-    report.signalsFired += 1;
-    if (shouldNotify(ticker, signal)) {
-      notifyBuffer.push({ key, signal });
-    } else {
-      recordOnly.push({ signal });
-    }
-  }
-
-  // Duplicates: persist without notifying (they were already delivered
-  // on this bar).
-  for (const { signal } of recordOnly) {
-    recordSignal(ticker, signal, { notified: false });
-  }
-
-  // Fresh signals: send ONE Telegram message covering the whole batch,
-  // then mark each individual signal as notified in the store. If the
-  // batched send fails we still record the signals (with `notified:false`)
-  // so shouldNotify() won't fire them again next tick after Telegram
-  // recovers — the same behaviour as the previous per-signal path.
-  if (notifyBuffer.length > 0) {
-    const signals = notifyBuffer.map((n) => n.signal);
-    const res = await notifySignalsBatch(ticker, signals);
-    if (res.ok) {
-      report.notifiesSent += 1;
-      for (const { signal } of notifyBuffer) {
-        recordSignal(ticker, signal, { notified: true });
-        markNotified(ticker, signal);
-      }
-    } else {
-      report.errors.push(`notify(batch:${notifyBuffer.map((n) => n.key).join(",")}): ${res.detail}`);
-      for (const { signal } of notifyBuffer) {
-        recordSignal(ticker, signal, { notified: false });
-      }
-    }
-  }
-
-  setState(STATE_KEYS.LAST_TICK_AT, report.ranAt);
-  setState(STATE_KEYS.LAST_TICK_STATUS, {
-    ok: report.ok,
-    ticker,
-    signalsFired: report.signalsFired,
-    notifiesSent: report.notifiesSent,
-    errors: report.errors,
-  });
-  return report;
-}
-
+import { runPortfolioSnapshotTick } from "../portfolios-cache/engine";
 
 /**
- * Long-running loop used by the worker process. Sleeps
- * `BOT_POLL_INTERVAL_SECONDS` between ticks and swallows any per-tick error
- * so a transient Yahoo failure never brings the loop down.
+ * Long-running worker loop. Fires every enabled sub-tick in isolation
+ * (independent `try` blocks so a bad rule on one channel can't stall
+ * any of the others) and writes a heartbeat timestamp at the end of
+ * each cycle so the UI's "Last tick" indicator stays meaningful.
+ *
+ * Sleeps `BOT_POLL_INTERVAL_SECONDS` between cycles. Reacts to
+ * SIGINT/SIGTERM within ~500 ms.
+ *
+ * The `ticker` argument used to select which symbol the removed
+ * strategy tick evaluated; it's now unused but kept in the signature
+ * so `worker.mjs` doesn't need to change. Passing `settings.ticker`
+ * (the default) is still the correct call site convention if a caller
+ * wants explicit intent.
  */
-export async function runForever(ticker: string): Promise<void> {
+export async function runForever(_ticker?: string): Promise<void> {
   const interval = Math.max(60, settings.bot.pollIntervalSeconds) * 1000;
   let stopping = false;
   const stop = () => {
@@ -174,20 +66,10 @@ export async function runForever(ticker: string): Promise<void> {
   while (!stopping) {
     const enabled = getState<boolean>(STATE_KEYS.ENABLED, true);
     if (enabled) {
-      try {
-        const report = await runTick(ticker);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[worker] tick ${report.ranAt} — ` +
-            `signals=${report.signalsFired} notified=${report.notifiesSent} errors=${report.errors.length}`,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[worker] tick threw:", err);
-      }
-      // Portfolio-watch tick runs on the same cadence as the strategy
-      // tick. Underlying report fetches are cached (portfolios TTL ~6h),
-      // so this is cheap when nothing has changed.
+      // Portfolio-watch tick — followed politicians / insiders /
+      // fund-manager filings. Underlying report fetches are cached
+      // (portfolios TTL ~6h), so this is cheap when nothing has
+      // changed.
       try {
         const pt = await runPortfolioTick();
         // eslint-disable-next-line no-console
@@ -201,8 +83,6 @@ export async function runForever(ticker: string): Promise<void> {
         console.error("[worker] portfolio-tick threw:", err);
       }
       // Stock-watch tick — per-ticker insider transaction alerts.
-      // Independent from the portfolio one so a bad watch on either
-      // side can't stall the other.
       try {
         const st = await runStockTick();
         // eslint-disable-next-line no-console
@@ -231,8 +111,7 @@ export async function runForever(ticker: string): Promise<void> {
         console.error("[worker] news-tick threw:", err);
       }
       // Technical-signal alerts — per-ticker rules for scheduled
-      // daily digests and on-change notifications. Independent of the
-      // strategy/insider/news ticks so a bad rule can't stall them.
+      // daily digests and on-change notifications.
       try {
         const tt = await runTechnicalTick();
         // eslint-disable-next-line no-console
@@ -246,9 +125,7 @@ export async function runForever(ticker: string): Promise<void> {
         console.error("[worker] technical-tick threw:", err);
       }
       // 6-Signal Resonance alerts — parallel to the technical-signal
-      // path but driven off the resonance strategy. Isolated in its
-      // own try so a bad rule doesn't cascade into either preceding
-      // channel.
+      // path but driven off the resonance strategy.
       try {
         const rt = await runResonanceTick();
         // eslint-disable-next-line no-console
@@ -261,10 +138,46 @@ export async function runForever(ticker: string): Promise<void> {
         // eslint-disable-next-line no-console
         console.error("[worker] resonance-tick threw:", err);
       }
+      // Sector 6-Signal Resonance alerts — identical shape to the
+      // per-ticker resonance tick above, but keyed by market
+      // segment. Each rule resolves its segment slug to a proxy
+      // ETF at evaluation time so the resonance math itself is
+      // reused. Kept as its own tick (rather than merged into the
+      // ticker one) so a stale sector row can't mask ticker
+      // errors and vice versa.
+      try {
+        const srt = await runSectorResonanceTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] sector-resonance-tick ${srt.ranAt} — ` +
+            `alerts=${srt.alertCount} evaluated=${srt.segmentsEvaluated} ` +
+            `digests=${srt.digestsSent} changes=${srt.changesSent} errors=${srt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] sector-resonance-tick threw:", err);
+      }
+      // Sector Technical Signal alerts — identical architecture to
+      // the sector-resonance tick above but drives the multi-
+      // indicator Technical Signal scorer instead of the 6-signal
+      // resonance strategy. Kept as its own tick so a stale sector
+      // row can't mask ticker errors and vice versa, and so a
+      // failure in one scorer's proxy fetch doesn't block the other.
+      try {
+        const stt = await runSectorTechnicalTick();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[worker] sector-technical-tick ${stt.ranAt} — ` +
+            `alerts=${stt.alertCount} evaluated=${stt.segmentsEvaluated} ` +
+            `digests=${stt.digestsSent} changes=${stt.changesSent} errors=${stt.errors.length}`,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] sector-technical-tick threw:", err);
+      }
       // Portfolio delisting / bankruptcy risk — walks every symbol
       // the client asked to monitor and fires a push when a fresh
-      // critical/high signal emerges. Isolated so a Yahoo Finance
-      // hiccup or bad ticker doesn't stall the other channels.
+      // critical/high signal emerges.
       try {
         const prt = await runPortfolioRiskTick();
         // eslint-disable-next-line no-console
@@ -276,6 +189,37 @@ export async function runForever(ticker: string): Promise<void> {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[worker] portfolio-risk-tick threw:", err);
+      }
+      // Portfolios snapshot cache — walks user-visited politician /
+      // fund / insider snapshots whose freshness window has expired
+      // and re-fetches them, so /portfolios pages open instantly on
+      // the next visit. See `lib/portfolios-cache/engine.ts` for the
+      // batching + concurrency policy (kept small so we don't
+      // starve the more time-sensitive alert ticks above).
+      try {
+        const pst = await runPortfolioSnapshotTick();
+        if (!pst.skipped) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[worker] portfolios-snapshot-tick ${pst.ranAt} — ` +
+              `due=${pst.dueCount} attempted=${pst.attempted} refreshed=${pst.refreshed} ` +
+              `upstreamDown=${pst.upstreamUnavailable} errors=${pst.errors.length}`,
+          );
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] portfolios-snapshot-tick threw:", err);
+      }
+      // Worker heartbeat. Written *after* every sub-tick so the UI's
+      // "Last tick" indicator reflects a real completed cycle rather
+      // than a start-of-cycle marker. Historically this key was
+      // owned by the removed strategy tick; repurposing it keeps the
+      // Bot Status card meaningful without an i18n rename.
+      try {
+        setState(STATE_KEYS.LAST_TICK_AT, new Date().toISOString());
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[worker] failed to write heartbeat:", err);
       }
     } else {
       // eslint-disable-next-line no-console

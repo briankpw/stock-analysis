@@ -24,7 +24,8 @@ import * as React from "react";
 import { Search, ArrowUpDown, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useHoldings } from "@/lib/holdings-state";
+import { Pagination, usePagination } from "@/components/ui/pagination";
+import { useHoldingsView } from "@/lib/holdings-state";
 import { useUi } from "@/lib/state";
 import { useT } from "@/lib/i18n";
 import type { HoldingRow, HoldingType } from "@/lib/portfolio-import";
@@ -167,7 +168,10 @@ function SymbolCell({ symbol, name, currency }: { symbol: string; name: string; 
 
 export function HoldingsTable() {
   const t = useT();
-  const rows = useHoldings((s) => s.rows);
+  // Filtered view — same forex handling as the Positions tab so both
+  // tabs stay consistent. See `useHoldingsView` for the split.
+  const view = useHoldingsView();
+  const rows = view.rows;
 
   const [filter, setFilter] = React.useState<FilterState>({
     search: "",
@@ -183,6 +187,38 @@ export function HoldingsTable() {
   }, [rows]);
 
   const visible = React.useMemo(() => filterAndSort(rows, filter), [rows, filter]);
+
+  // Some broker CSV exports (MSP with free-trade brokers, most crypto
+  // exports) never populate the Commission column. Rendering "—" in a
+  // column that's *always* empty is pure clutter, so we detect the
+  // empty case and hide the column entirely. Users whose imports DO
+  // include commission still see it — no config knob needed.
+  //
+  // Checked against `rows` (the raw store) rather than `visible` (post-
+  // filter) so applying a filter doesn't accidentally toggle the
+  // column on/off between renders — the column layout should be
+  // stable across filter changes.
+  const hasCommissionData = React.useMemo(
+    () => rows.some((r) => (r.commission ?? 0) > 0),
+    [rows],
+  );
+
+  // Pagination — transactions lists can easily hit 1000+ rows on
+  // long-lived brokerage accounts, and rendering that many <tr>s
+  // strand the page below (uploader, KeyTerms) behind a marathon
+  // scroll. Default 50/page is a reasonable dense-table sweet spot;
+  // the `0` sentinel in `pageSizeOptions` preserves the old "All"
+  // behaviour for anyone who wants it.
+  const pager = usePagination(visible, 50);
+  const setPage = pager.setPage;
+  // Reset to page 1 on filter change — otherwise the user can end
+  // up on a page that no longer exists in the new filter context
+  // (the hook clamps overrun a render later, causing a brief flash
+  // of "no rows here"). We don't reset on pageSize change because
+  // `usePagination.setPageSize` already anchors the current top row.
+  React.useEffect(() => {
+    setPage(1);
+  }, [filter, setPage]);
 
   return (
     <div className="space-y-4">
@@ -251,12 +287,22 @@ export function HoldingsTable() {
             </label>
           </div>
 
-          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground flex-wrap">
             <p>
               {t("myPortfolio.table.showing", {
                 shown: visible.length,
                 total: rows.length,
               })}
+              {view.hideForex && view.forexRowCount > 0 && (
+                <span
+                  className="ml-1 opacity-70"
+                  title={view.forexSymbols.join(", ")}
+                >
+                  {t("myPortfolio.table.forexHiddenNote", {
+                    n: view.forexRowCount,
+                  })}
+                </span>
+              )}
             </p>
             {(filter.search || filter.portfolio || filter.type !== "all") && (
               <button
@@ -310,9 +356,11 @@ export function HoldingsTable() {
                   <th className="text-right px-3 py-2 font-semibold whitespace-nowrap">
                     {t("myPortfolio.col.gross")}
                   </th>
-                  <th className="text-right px-3 py-2 font-semibold whitespace-nowrap">
-                    {t("myPortfolio.col.commission")}
-                  </th>
+                  {hasCommissionData && (
+                    <th className="text-right px-3 py-2 font-semibold whitespace-nowrap">
+                      {t("myPortfolio.col.commission")}
+                    </th>
+                  )}
                   <th className="text-left px-3 py-2 font-semibold whitespace-nowrap">
                     <span className="inline-flex items-center gap-1">
                       <ArrowUpDown className="h-3 w-3" />
@@ -328,7 +376,7 @@ export function HoldingsTable() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((r) => {
+                {pager.visibleItems.map((r) => {
                   const isMissing = r.type === null;
                   const gross =
                     r.shares !== null && r.costPerShare !== null
@@ -363,9 +411,11 @@ export function HoldingsTable() {
                       <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
                         {fmtMoney(gross)}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
-                        {fmtMoney(r.commission, 2)}
-                      </td>
+                      {hasCommissionData && (
+                        <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
+                          {fmtMoney(r.commission, 2)}
+                        </td>
+                      )}
                       <td className="px-3 py-2 whitespace-nowrap">
                         <div className="flex flex-col leading-tight">
                           <span className="font-mono tabular-nums">
@@ -392,6 +442,28 @@ export function HoldingsTable() {
               </tbody>
             </table>
           </div>
+          {/* Pagination footer for the transactions table. Only
+              rendered when there are enough rows to actually be
+              worth paging — a 20-transaction history doesn't need
+              the chrome. First/Last chevrons come for free from
+              `<Pagination>` now that they're on by default. */}
+          {visible.length > 25 && (
+            <div className="border-t border-border/60 px-3 py-2">
+              <Pagination
+                page={pager.page}
+                pageCount={pager.pageCount}
+                total={pager.total}
+                range={pager.range}
+                onPageChange={pager.setPage}
+                pageSize={pager.pageSize}
+                onPageSizeChange={pager.setPageSize}
+                pageSizeOptions={[25, 50, 100, 200, 0]}
+                pageSizeLabel={t("pager.pageSizeLabel")}
+                allLabel={t("pager.all")}
+                label={t("myPortfolio.pager.transactionsLabel")}
+              />
+            </div>
+          )}
         </Card>
       )}
     </div>

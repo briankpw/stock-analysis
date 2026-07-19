@@ -23,6 +23,13 @@ import { cn } from "@/lib/utils";
  * Pages that operate on the currently selected ticker. The `labelKey`
  * points into the i18n dictionary so the sidebar re-labels when the
  * user flips the language toggle.
+ *
+ * User-owned surfaces (My Portfolio, Paper Trading, Alert Bot) used
+ * to live at the bottom of this list because they were "your stuff
+ * about *this* ticker". That framing broke down once each of them
+ * grew into a full page with its own persistent state — so they now
+ * live in `PERSONAL_NAV` below, and this list stays true to its
+ * name: everything here is a lens on the currently-selected ticker.
  */
 const TICKER_NAV = [
   { href: "/overview",     labelKey: "nav.overview",    icon: Home },
@@ -31,13 +38,20 @@ const TICKER_NAV = [
   { href: "/signal",       labelKey: "nav.signal",      icon: Target },
   { href: "/news",         labelKey: "nav.news",        icon: Newspaper },
   { href: "/holders",      labelKey: "nav.holders",     icon: Users },
-  { href: "/paper",        labelKey: "nav.paper",       icon: Wallet },
-  // My Portfolio is user-owned data (imported CSV). Grouped with the
-  // other user-scoped views (`paper` above) rather than the market-wide
-  // section so the "your stuff" cluster reads together in the sidebar.
-  { href: "/my-portfolio", labelKey: "nav.myPortfolio", icon: Briefcase },
-  { href: "/bot",          labelKey: "nav.bot",         icon: Bot },
   { href: "/raw",          labelKey: "nav.raw",         icon: ChartBar },
+] as const;
+
+/**
+ * User-owned surfaces. Each one operates on data the user has
+ * imported, simulated, or subscribed to — none of them are locked to
+ * the sidebar's active ticker. Grouped together so the "your stuff"
+ * cluster reads at a glance and doesn't confuse newcomers into
+ * thinking Alert Bot is "alerts *about the current ticker only*".
+ */
+const PERSONAL_NAV = [
+  { href: "/my-portfolio", labelKey: "nav.myPortfolio", icon: Briefcase },
+  { href: "/paper",        labelKey: "nav.paper",       icon: Wallet },
+  { href: "/bot",          labelKey: "nav.bot",         icon: Bot },
 ] as const;
 
 /**
@@ -257,12 +271,38 @@ export function Sidebar() {
               <Briefcase className="h-3.5 w-3.5 text-primary shrink-0" />
               <p className="metric-label flex-1 truncate">{t("sidebar.portfolios")}</p>
             </div>
-            <PortfoliosRail />
+            <PortfoliosRail onSelect={closeMobile} />
           </nav>
         ) : (
           <nav className="flex-1 overflow-y-auto p-3 space-y-1">
             <p className="metric-label px-3 pb-1.5">{t("sidebar.ticker")}</p>
             {TICKER_NAV.map((item) => {
+              const Icon = item.icon;
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {t(item.labelKey)}
+                </Link>
+              );
+            })}
+
+            {/* Personal / user-owned surfaces. Deliberately sits BETWEEN
+                the per-ticker analysis pages and the market-wide
+                indicators — the reading order goes "this ticker →
+                your stuff → the whole market", which mirrors how
+                users typically drill in and out of a decision. */}
+            <p className="metric-label px-3 pt-3 pb-1.5">{t("sidebar.personal")}</p>
+            {PERSONAL_NAV.map((item) => {
               const Icon = item.icon;
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return (

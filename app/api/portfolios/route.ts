@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
+import { listPresets } from "@/lib/portfolios";
 import {
   DataSourceUnavailableError,
-  fetchFund13F,
-  fetchPersonInsiderReport,
-  fetchPoliticianTrades,
-  listPresets,
-} from "@/lib/portfolios";
+  getCachedFund,
+  getCachedPerson,
+  getCachedPolitician,
+  type CachedPayload,
+} from "@/lib/portfolios-cache/coordinator";
 import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -19,7 +20,19 @@ export const dynamic = "force-dynamic";
  *   GET /api/portfolios?type=fund&id=berkshire       → fund 13F holdings
  *   GET /api/portfolios?type=person&id=musk          → individual's Form 3/4/5 insider holdings
  *
- * Everything is cached server-side; see `lib/portfolios.ts`.
+ * Detail reads (`type=…`) go through the SQLite-backed
+ * stale-while-revalidate coordinator in `lib/portfolios-cache/`
+ * so a cold cache is a one-time cost per (kind, id) pair — every
+ * subsequent visit returns instantly and, if the freshness
+ * window has expired, kicks off a fire-and-forget background
+ * refresh. The background bot worker also walks visited rows and
+ * refreshes them on its own cadence, so a truly idle app stays
+ * warm.
+ *
+ * Response shape for detail reads gains a `_cache` sidecar with
+ * `fetchedAt` / `stale` / `lastError` so the client can render
+ * an "as of X" hint without another request. The main report
+ * payload lives at the root, unchanged.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -46,12 +59,12 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "invalid id" }, { status: 400 });
     }
     if (type === "politician") {
-      const report = await fetchPoliticianTrades(id, limit);
-      return NextResponse.json(report);
+      const cached = await getCachedPolitician(id, limit);
+      return NextResponse.json(withCacheEnvelope(cached));
     }
     if (type === "fund") {
-      const report = await fetchFund13F(id);
-      return NextResponse.json(report);
+      const cached = await getCachedFund(id);
+      return NextResponse.json(withCacheEnvelope(cached));
     }
     if (type === "person") {
       // Person route uses a tighter default (30) — each filing is one SEC XML
@@ -59,8 +72,8 @@ export async function GET(req: Request) {
       const personLimit = Number.isFinite(parsedLimit)
         ? Math.max(5, Math.min(120, parsedLimit))
         : 30;
-      const report = await fetchPersonInsiderReport(id, personLimit);
-      return NextResponse.json(report);
+      const cached = await getCachedPerson(id, personLimit);
+      return NextResponse.json(withCacheEnvelope(cached));
     }
     return NextResponse.json({ error: `unknown type: ${type}` }, { status: 400 });
   } catch (e) {
@@ -78,4 +91,19 @@ export async function GET(req: Request) {
     const r = redactError(e, 502, "Portfolio data unavailable");
     return NextResponse.json({ error: r.message }, { status: r.status });
   }
+}
+
+/**
+ * Flattens the cached payload back to its original shape at the
+ * top level while tucking cache metadata under `_cache`. This
+ * keeps the existing client code (which expects the report's
+ * fields at the root — `data.filings`, `data.holdings`, etc.) as
+ * a zero-cost migration; the client can start reading `_cache`
+ * later when it wants to render the "cached, refreshing in
+ * background" hint.
+ */
+function withCacheEnvelope<T extends object>(
+  cached: CachedPayload<T>,
+): T & { _cache: CachedPayload<T>["meta"] } {
+  return { ...cached.payload, _cache: cached.meta };
 }

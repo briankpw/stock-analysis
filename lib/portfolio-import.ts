@@ -406,6 +406,48 @@ export function parseHoldingsCsv(text: string): HoldingsParseResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Yahoo Finance forex pairs are symbols with an `=X` suffix — e.g.
+ * `EURUSD=X`, `USDJPY=X`, `USDCNH=X`. Some broker CSV exports (MSP
+ * especially) will list a user's cash balances or FX conversions as
+ * these pairs, which then pollute the equity-focused "my portfolio"
+ * view: currency pairs have no cost basis, no dividends, no realized
+ * / unrealized P&L in the equity sense, and no risk framework can
+ * meaningfully evaluate them.
+ *
+ * The `portfolio-risk` engine has its own local copy of this test.
+ * That's intentional — the risk engine can be called from server-side
+ * code with no client dependencies, and duplicating a 30-byte regex is
+ * cheaper than refactoring for cross-boundary imports. Any future
+ * change to the pattern should be reflected in both.
+ */
+export function isForexSymbol(symbol: string): boolean {
+  return /=X$/i.test(symbol);
+}
+
+/**
+ * Split a set of holdings into equity rows and forex rows, preserving
+ * the original order within each partition. Used by the UI layer to
+ * hide forex from tables without losing the raw store data — the user
+ * can flip the "show forex" toggle to bring them back at any time.
+ */
+export interface HoldingsPartition<T> {
+  rows: T[];
+  forexRows: T[];
+}
+
+export function partitionForexRows<T extends { symbol: string }>(
+  rows: readonly T[],
+): HoldingsPartition<T> {
+  const kept: T[] = [];
+  const forex: T[] = [];
+  for (const r of rows) {
+    if (isForexSymbol(r.symbol)) forex.push(r);
+    else kept.push(r);
+  }
+  return { rows: kept, forexRows: forex };
+}
+
+/**
  * Deterministic identity fingerprint for a row. Two rows with the same
  * fingerprint are "the same transaction" and safe to de-duplicate across
  * successive CSV uploads.

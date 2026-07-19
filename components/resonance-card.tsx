@@ -505,7 +505,44 @@ function ScoreExplainer({ result }: { result: ResonanceResult }) {
 // Main card
 // ---------------------------------------------------------------------------
 
-export function ResonanceCard({ result }: { result: ResonanceResult }) {
+/**
+ * Props for the shared `<ResonanceCard>`.
+ *
+ * The card was originally hard-wired to a single-ticker context — it
+ * always rendered `<ResonanceAlertControl>` (which binds to the sticky
+ * ticker in the sidebar) and used the generic "6-Signal Resonance"
+ * title. Sector pages need to hide the alert bell (per-ticker alerts
+ * don't map to a whole sector) and swap in "Sector resonance"
+ * copy, so those two knobs are now optional overrides.
+ */
+export interface ResonanceCardProps {
+  result: ResonanceResult;
+  /** When false, hides the `<ResonanceAlertControl>` bell. Use on
+   *  sector pages where the sidebar ticker doesn't match the shown
+   *  resonance target. Ignored when `headerAction` is provided.
+   *  Defaults to true. */
+  showAlertControl?: boolean;
+  /** Overrides the default `t("resonance.title")` heading. */
+  title?: React.ReactNode;
+  /** Overrides the default `t("resonance.subtitle")` sub-heading. */
+  subtitle?: string;
+  /** Custom node rendered in the header action slot where the
+   *  default bell would sit. Sector pages inject a
+   *  `<SectorResonanceAlertControl>` here so users can subscribe
+   *  to alerts on the whole segment (measured on its proxy ETF)
+   *  rather than on a single sidebar ticker. When set, this
+   *  suppresses the default per-ticker `<ResonanceAlertControl>`
+   *  regardless of `showAlertControl`. */
+  headerAction?: React.ReactNode;
+}
+
+export function ResonanceCard({
+  result,
+  showAlertControl = true,
+  title,
+  subtitle,
+  headerAction,
+}: ResonanceCardProps) {
   const t = useT();
   const s = VERDICT_STYLE[result.verdict];
   // Progress bar tracks whichever side currently dominates — bullish
@@ -536,14 +573,16 @@ export function ResonanceCard({ result }: { result: ResonanceResult }) {
       <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
         <div className="min-w-0">
           <CardTitle className="flex items-center gap-2">
-            <TermTip term="6-Signal Resonance">{t("resonance.title")}</TermTip>
+            <TermTip term="6-Signal Resonance">
+              {title ?? t("resonance.title")}
+            </TermTip>
           </CardTitle>
           <p className="text-xs text-muted-foreground mt-1 max-w-xl">
-            {t("resonance.subtitle")}
+            {subtitle ?? t("resonance.subtitle")}
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <ResonanceAlertControl />
+          {headerAction ?? (showAlertControl && <ResonanceAlertControl />)}
           <Tooltip>
             <TooltipTrigger asChild>
               <button

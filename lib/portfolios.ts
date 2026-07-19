@@ -8,6 +8,36 @@
  * server-side (SEC in particular blocks browser-origin CORS requests) and
  * cached aggressively — the underlying datasets update daily (politicians)
  * or quarterly (13F).
+ *
+ * ---------------------------------------------------------------------------
+ * Two-layer caching
+ * ---------------------------------------------------------------------------
+ *
+ * The functions here (`fetchPoliticianTrades` / `fetchFund13F` /
+ * `fetchPersonInsiderReport`) are the *raw* upstream pipeline. They
+ * use a process-local in-memory TTL cache (`createTtlCache` below)
+ * so hot in-process reads deduplicate. That cache is lost on process
+ * restart, which used to mean every fresh worker/UI boot re-fetched
+ * everything from SEC on the next visit.
+ *
+ * The Portfolios page no longer calls these functions directly —
+ * it goes through `lib/portfolios-cache/coordinator.ts`, which layers
+ * a persistent SQLite snapshot on top with stale-while-revalidate
+ * semantics and a background refresh worker
+ * (`lib/portfolios-cache/engine.ts`). That means:
+ *
+ *   * The user always sees an instant response, even after a
+ *     restart.
+ *   * The bot worker keeps visited snapshots warm on the
+ *     kind-specific TTL (see `REFRESH_TTL_SECONDS` in
+ *     `coordinator.ts`) — politicians every 6h, insiders every
+ *     2h, 13F funds every 24h.
+ *   * The functions below are still called for the underlying
+ *     fetch; they just live behind the coordinator now.
+ *
+ * If you need to bypass the SQLite cache (e.g. a script that wants a
+ * guaranteed-fresh pull), import from `./portfolios` directly.
+ * Otherwise, import from `./portfolios-cache/coordinator`.
  */
 
 import { unzipSync, strFromU8 } from "fflate";
@@ -20,6 +50,7 @@ import {
 } from "./portfolio-presets";
 import { timedFetch } from "./http";
 import { createTtlCache } from "./utils";
+import { resolveTickersForIssuers } from "./sec-ticker-map";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,6 +96,30 @@ export interface PersonPreset {
  * to surface those rows (see `PoliticianTrade`), but keep the filing-level
  * metadata here so the UI can group / link back to the source.
  */
+/**
+ * Per-filing parse outcome. Attached to each `PoliticianFiling` so the
+ * UI can tell users why an individual filing didn't produce trade rows,
+ * rather than lumping every not-parsed filing under a single
+ * "scanned/handwritten" warning.
+ *
+ *   ok          — parsed and at least one stock-trade row surfaced
+ *   no_rows     — PDF text read cleanly, but nothing matched our
+ *                 (TICKER) + $X-$Y schema. Common cause: filing lists
+ *                 only bonds / mutual funds / options / private equity,
+ *                 none of which have an exchange ticker.
+ *   fetch_failed — the PDF wouldn't fetch or unpdf couldn't extract
+ *                 any text (network error, rate limit, truly scanned
+ *                 PDF).
+ *   unparsed    — this filing sits beyond the `parseLimit` window, so
+ *                 we didn't even try. Not an error; UI just shows it
+ *                 as "not analysed".
+ */
+export type PoliticianFilingStatus =
+  | "ok"
+  | "no_rows"
+  | "fetch_failed"
+  | "unparsed";
+
 export interface PoliticianFiling {
   docId: string;
   filingType: string;         // "P" for Periodic Transaction Report
@@ -72,6 +127,7 @@ export interface PoliticianFiling {
   year: number;
   stateDst: string | null;
   pdfUrl: string;
+  parseStatus: PoliticianFilingStatus;
 }
 
 /**
@@ -128,8 +184,28 @@ export interface PoliticianReport {
   totalCount: number;
   parsedTrades: PoliticianTrade[];    // flat, most recent first
   holdings: PoliticianHolding[];      // aggregated per ticker, largest activity first
-  filingsParsed: number;              // number of PDFs successfully parsed
-  filingsSkipped: number;             // fetch error, empty text, or no rows found
+  filingsParsed: number;              // number of PDFs where we extracted stock trades
+  /**
+   * PDFs we successfully fetched + extracted, but that yielded zero
+   * matching stock-trade rows. Almost always benign — filing reported
+   * only bonds / mutual funds / options / private equity, none of
+   * which have an exchange ticker we can surface. Was previously
+   * bundled into `filingsSkipped`, which made the UI blame these on
+   * scanned PDFs even though the user could read them fine.
+   */
+  filingsNoStockRows: number;
+  /**
+   * PDFs that failed to fetch or that unpdf couldn't get any text out
+   * of. This is the "real" scanned-or-network-error bucket — the
+   * only one where "open the PDF manually" is the right advice.
+   */
+  filingsFetchFailed: number;
+  /**
+   * Backward-compat alias == filingsNoStockRows + filingsFetchFailed.
+   * Kept so any external caller / snapshot still reads a sensible
+   * total, but internal UI code should prefer the split fields above.
+   */
+  filingsSkipped: number;
   fetchedAt: string;
   source: string;
   /**
@@ -149,6 +225,23 @@ export interface FundHolding {
   putCall: string | null;
   pctOfPortfolio: number | null;
   investmentDiscretion: string | null;
+  /**
+   * Ticker symbol resolved server-side from the SEC company-tickers
+   * file by normalized-name match against `issuer`. Populated when
+   * we found a confident match; `null` for holdings whose issuer
+   * name doesn't cleanly map (foreign listings, private placements,
+   * warrants, etc.). Enables the fund manager holdings UI to render
+   * a one-click "Add to watchlist" button instead of the manual-
+   * entry popover fallback. See `lib/sec-ticker-map.ts` for the
+   * matching strategy.
+   */
+  resolvedTicker: string | null;
+  /** Exchange code from the SEC file (e.g. "Nasdaq", "NYSE"). */
+  resolvedExchange: string | null;
+  /** Whether the ticker match was on the raw issuer name (`exact`)
+   *  or after normalization / suffix stripping (`normalized`). Kept
+   *  so the UI could later add a "high vs. medium confidence" hint. */
+  resolvedConfidence: "exact" | "normalized" | null;
 }
 
 export interface FundReport {
@@ -215,10 +308,16 @@ export interface PersonReport {
   preset: PersonPreset;
   holdings: InsiderHolding[];
   recentTransactions: InsiderTransaction[];
-  /** How many Form 3/4/5 XMLs we successfully parsed for this report. */
+  /** Filings we successfully parsed AND that contained at least one
+   * non-derivative row (common / preferred stock). */
   filingsParsed: number;
-  /** How many were skipped (fetch error, unparseable, no common-stock rows). */
+  /** Filings we couldn't fetch or parse at all (network / rate-limit /
+   * malformed XML). Distinct from `filingsDerivativeOnly` so the empty-
+   * state UI can tell users whether we saw the data or not. */
   filingsSkipped: number;
+  /** Filings that parsed cleanly but reported only derivative rows
+   * (options, warrants, RSUs) — very common for tech-executive Form 4s. */
+  filingsDerivativeOnly: number;
   fetchedAt: string;
   source: string;
 }
@@ -535,6 +634,8 @@ export async function fetchPoliticianTrades(
       parsedTrades: [],
       holdings: [],
       filingsParsed: 0,
+      filingsNoStockRows: 0,
+      filingsFetchFailed: 0,
       filingsSkipped: 0,
       fetchedAt: new Date().toISOString(),
       source: "https://efdsearch.senate.gov/search/",
@@ -567,18 +668,31 @@ export async function fetchPoliticianTrades(
       year: r.year,
       stateDst: r.stateDst || null,
       pdfUrl: HOUSE_CLERK_PTR_PDF(r.year, r.docId),
+      // Default assumes we won't try to parse this filing (it may
+      // sit beyond the parseLimit window). The subsequent parse pass
+      // upgrades the status for filings inside the window.
+      parseStatus: "unparsed" as PoliticianFilingStatus,
     }))
     .sort((a, b) => (b.filingDate ?? "").localeCompare(a.filingDate ?? ""));
 
   // Parse the top-N PDFs into per-trade rows. Concurrency capped so we
-  // don't hammer the House Clerk site.
+  // don't hammer the House Clerk site. We key results back to the
+  // filing so we can attach a per-filing `parseStatus` for the UI.
   const toParse = filings.slice(0, Math.max(0, parseLimit));
+  const statusByDocId = new Map<string, PoliticianFilingStatus>();
   const parseResults = await mapConcurrent(toParse, 4, async (f) => {
     try {
-      const trades = await parsePoliticianPtr(f);
-      return { trades, ok: trades.length > 0 };
+      const outcome = await parsePoliticianPtr(f);
+      const status: PoliticianFilingStatus = !outcome.extracted
+        ? "fetch_failed"
+        : outcome.trades.length === 0
+          ? "no_rows"
+          : "ok";
+      statusByDocId.set(f.docId, status);
+      return { trades: outcome.trades, status };
     } catch {
-      return { trades: [] as PoliticianTrade[], ok: false };
+      statusByDocId.set(f.docId, "fetch_failed");
+      return { trades: [] as PoliticianTrade[], status: "fetch_failed" as PoliticianFilingStatus };
     }
   });
 
@@ -590,17 +704,29 @@ export async function fetchPoliticianTrades(
       return bd.localeCompare(ad);
     });
 
-  const filingsParsed = parseResults.filter((r) => r.ok).length;
-  const filingsSkipped = parseResults.length - filingsParsed;
+  const filingsParsed = parseResults.filter((r) => r.status === "ok").length;
+  const filingsNoStockRows = parseResults.filter((r) => r.status === "no_rows").length;
+  const filingsFetchFailed = parseResults.filter((r) => r.status === "fetch_failed").length;
+  // `filingsSkipped` is retained as the sum of the two non-OK
+  // buckets so external callers reading the old field still see the
+  // same total, but the UI now consumes the split fields.
+  const filingsSkipped = filingsNoStockRows + filingsFetchFailed;
   const holdings = summarisePoliticianTrades(parsedTrades);
+
+  const withStatuses = filings.map((f) => ({
+    ...f,
+    parseStatus: statusByDocId.get(f.docId) ?? ("unparsed" as PoliticianFilingStatus),
+  }));
 
   const report: PoliticianReport = {
     preset,
-    filings: filings.slice(0, limit),
+    filings: withStatuses.slice(0, limit),
     totalCount: filings.length,
     parsedTrades,
     holdings,
     filingsParsed,
+    filingsNoStockRows,
+    filingsFetchFailed,
     filingsSkipped,
     fetchedAt: new Date().toISOString(),
     source: `${HOUSE_CLERK_BASE}/FinancialDisclosure`,
@@ -728,8 +854,13 @@ function parsePtrText(
     const preTicker = normalized.slice(blockStart, cur.index);
 
     // Amount range — the strongest signal a transaction actually occurred.
-    // Format is always "$X,XXX - $Y,YYY" (with or without spaces around dash).
-    const amtMatch = /\$([0-9][0-9,]*)\s*[-–]\s*\$?([0-9][0-9,]*)/.exec(post);
+    // Canonical form is "$X,XXX - $Y,YYY" but the House Clerk PDFs
+    // (and pdf.js text extraction) can substitute the plain hyphen
+    // with an en-dash `–`, em-dash `—`, minus sign `−`, or the
+    // vertical-bar `|` used by their newer templates. Accept any of
+    // them. Also allow the leading `$` to be missing — occasionally
+    // the glyph fails to extract but the digits still land.
+    const amtMatch = /\$?([0-9][0-9,]*)\s*[-–—−|]\s*\$?([0-9][0-9,]*)/.exec(post);
     if (!amtMatch) continue;
     const amountLow = Number(amtMatch[1]!.replace(/,/g, ""));
     const amountHigh = Number(amtMatch[2]!.replace(/,/g, ""));
@@ -807,10 +938,29 @@ function parsePtrText(
   return trades;
 }
 
-async function parsePoliticianPtr(filing: PoliticianFiling): Promise<PoliticianTrade[]> {
+/**
+ * Result shape for a single PTR parse. Callers need to distinguish
+ * three outcomes — cleanly parsed rows, "we could read the PDF but
+ * it had no stock rows we understand" (bonds / mutual funds /
+ * options-only / parser gap), and "the PDF didn't fetch or extract"
+ * (rate limit / really-scanned PDF / network hiccup) — so they can
+ * show the user the right diagnostic. Collapsing all three into a
+ * single boolean is what made the old "scanned/handwritten"
+ * warning fire on filings the user could open perfectly well in a
+ * browser.
+ */
+interface PtrParseOutcome {
+  trades: PoliticianTrade[];
+  /** True when `fetchPtrPdfText` returned non-empty text. False on
+   *  network errors, HTTP failures, empty PDFs, and PDFs that unpdf
+   *  couldn't extract text from (scanned / handwritten). */
+  extracted: boolean;
+}
+
+async function parsePoliticianPtr(filing: PoliticianFiling): Promise<PtrParseOutcome> {
   const text = await fetchPtrPdfText(filing.pdfUrl);
-  if (!text) return [];
-  return parsePtrText(text, filing);
+  if (!text) return { trades: [], extracted: false };
+  return { trades: parsePtrText(text, filing), extracted: true };
 }
 
 /**
@@ -892,7 +1042,148 @@ export function secHeaders(): HeadersInit {
     // that includes contact info. Rate-limited to 10 requests per second.
     "User-Agent": settings.portfolios.secUserAgent,
     "Accept": "application/json,text/xml,application/xml,*/*;q=0.5",
+    // Some SEC endpoints get grumpy without an Accept-Encoding hint and
+    // will occasionally return truncated bodies. `fetch` decompresses
+    // automatically, so this is safe to advertise.
+    "Accept-Encoding": "gzip, deflate",
   };
+}
+
+// ---------------------------------------------------------------------------
+// SEC Archives fetcher — retry + immutable-XML cache
+// ---------------------------------------------------------------------------
+//
+// The submissions index at `data.sec.gov` and the per-filing XMLs at
+// `www.sec.gov/Archives/…` are two *separate* SEC services with different
+// throttle budgets. A person like Bezos with 120 Form 4s will hammer the
+// Archives endpoint with 120 requests in a burst. Without retries, a
+// single 429 blast marks every filing as `fetchFailed` — and because
+// filings are immutable, refetching the same URL a second later would
+// succeed, so simple retry with backoff recovers cleanly.
+//
+// We also cache successful XML text in-process forever (filings on SEC
+// are immutable once accepted; the accessionNumber is a permanent id).
+// This means a partial failure on the first request becomes a full
+// success on the second, because only the previously-failed URLs
+// actually re-hit SEC.
+
+/** Bounded LRU-ish cache of successfully-fetched SEC XML bodies. */
+const _secXmlCache = new Map<string, string>();
+const _SEC_XML_CACHE_MAX = 800;
+
+function _secXmlCacheSet(url: string, xml: string): void {
+  if (_secXmlCache.size >= _SEC_XML_CACHE_MAX) {
+    // Drop the oldest entry (Map preserves insertion order).
+    const oldestKey = _secXmlCache.keys().next().value;
+    if (oldestKey !== undefined) _secXmlCache.delete(oldestKey);
+  }
+  _secXmlCache.set(url, xml);
+}
+
+/** Result of a SEC XML fetch — success carries the body, failure carries a reason. */
+export interface SecFetchResult {
+  ok: boolean;
+  xml: string;
+  status: number;
+  /** Only set on failure. */
+  reason?: "throttled" | "notFound" | "network" | "server" | "forbidden";
+}
+
+function _secBackoffMs(attempt: number): number {
+  // 500ms → 1s → 2s, plus 0-250ms jitter to de-correlate parallel workers.
+  const base = [500, 1_000, 2_000][Math.min(attempt - 1, 2)] ?? 2_000;
+  return base + Math.floor(Math.random() * 250);
+}
+
+function _parseRetryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const asSeconds = Number(header);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    // Cap at 30s so a misbehaving upstream can't stall the whole request.
+    return Math.min(asSeconds * 1_000, 30_000);
+  }
+  const asDate = Date.parse(header);
+  if (!Number.isNaN(asDate)) {
+    return Math.max(0, Math.min(asDate - Date.now(), 30_000));
+  }
+  return null;
+}
+
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch a SEC XML document with retries on 429/5xx and long-lived caching.
+ *
+ * The cache is content-addressed by URL and never invalidated: SEC's
+ * accessionNumber-based paths are immutable, so a byte returned once will
+ * always be the same byte. This gives us free per-filing memoisation
+ * across requests within a single Node process — a huge win on cold
+ * fetches for popular presets (Musk, Bezos, Cook) that share filings.
+ */
+export async function secFetchXmlWithRetry(
+  url: string,
+  opts?: { maxAttempts?: number; timeoutMs?: number },
+): Promise<SecFetchResult> {
+  const cached = _secXmlCache.get(url);
+  if (cached !== undefined) return { ok: true, xml: cached, status: 200 };
+
+  const maxAttempts = Math.max(1, opts?.maxAttempts ?? 3);
+  const timeoutMs = opts?.timeoutMs ?? 20_000;
+
+  let lastStatus = 0;
+  let lastReason: SecFetchResult["reason"] = "network";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await timedFetch(url, {
+        headers: secHeaders(),
+        cache: "no-store",
+        timeoutMs,
+      });
+      lastStatus = res.status;
+
+      if (res.ok) {
+        const xml = await res.text();
+        _secXmlCacheSet(url, xml);
+        return { ok: true, xml, status: res.status };
+      }
+
+      // 404 is a permanent failure — the accession folder exists but this
+      // specific filename doesn't. Don't waste retries on it.
+      if (res.status === 404) {
+        return { ok: false, xml: "", status: 404, reason: "notFound" };
+      }
+
+      // 403 usually means the User-Agent is bad (still set to the
+      // placeholder `example.com`, or SEC has blocked it). Retrying
+      // won't help; short-circuit with a distinct reason so the operator
+      // sees "forbidden" in the logs and knows what to fix.
+      if (res.status === 403) {
+        return { ok: false, xml: "", status: 403, reason: "forbidden" };
+      }
+
+      // 429 / 5xx are the interesting ones — worth retrying.
+      if (res.status === 429 || res.status >= 500) {
+        lastReason = res.status === 429 ? "throttled" : "server";
+        if (attempt >= maxAttempts) break;
+        const retryAfter = _parseRetryAfterMs(res.headers.get("retry-after"));
+        await _sleep(retryAfter ?? _secBackoffMs(attempt));
+        continue;
+      }
+
+      // Anything else (400, 401, …) — give up.
+      return { ok: false, xml: "", status: res.status, reason: "server" };
+    } catch {
+      // Network error, DNS failure, or AbortSignal.timeout — retry.
+      lastReason = "network";
+      if (attempt >= maxAttempts) break;
+      await _sleep(_secBackoffMs(attempt));
+    }
+  }
+
+  return { ok: false, xml: "", status: lastStatus, reason: lastReason };
 }
 
 export interface SubmissionsRecent {
@@ -1016,6 +1307,14 @@ function parse13FXml(xml: string): FundHolding[] {
       putCall: putCall ?? null,
       pctOfPortfolio: null, // filled below once total is known
       investmentDiscretion,
+      // Ticker fields default to null and are populated by the
+      // fetch orchestrator (fetchFund13F) via the SEC name→ticker
+      // resolver. Doing it here in the parser would make the
+      // parse function async / dependent on a network map load,
+      // which isn't worth the added coupling.
+      resolvedTicker: null,
+      resolvedExchange: null,
+      resolvedConfidence: null,
     });
   }
   if (total > 0) {
@@ -1034,7 +1333,11 @@ export async function fetchFund13F(id: string): Promise<FundReport> {
   const preset = findFundPreset(id);
   if (!preset) throw new Error(`Unknown fund preset: ${id}`);
 
-  const key = `portfolios:fund:${preset.id}`;
+  // Cache key is versioned so the ticker-enrichment migration
+  // invalidates any in-memory payloads written by an earlier build
+  // that lacked `resolvedTicker` on FundHolding. Bump `v2` when we
+  // next change the FundReport shape.
+  const key = `portfolios:fund:v2:${preset.id}`;
   const cached = cacheGet<FundReport>(key);
   if (cached) return cached;
 
@@ -1076,6 +1379,48 @@ export async function fetchFund13F(id: string): Promise<FundReport> {
 
   holdings.sort((a, b) => b.value - a.value);
   const totalValue = holdings.reduce((sum, h) => sum + h.value, 0);
+
+  // Resolve tickers from issuer names in a single batch — one SEC
+  // company-tickers file load covers every holding, no per-holding
+  // network fan-out. `resolveTickersForIssuers` handles caching
+  // internally and never throws (returns nulls on failure). If SEC
+  // is unreachable, holdings just render without tickers and the
+  // manual-entry popover remains as the fallback add-to-watchlist
+  // path — the UI degrades gracefully.
+  try {
+    const resolutions = await resolveTickersForIssuers(
+      holdings.map((h) => h.issuer),
+    );
+    for (let i = 0; i < holdings.length; i++) {
+      const r = resolutions[i];
+      const h = holdings[i]!;
+      if (r) {
+        h.resolvedTicker = r.ticker;
+        h.resolvedExchange = r.exchange;
+        h.resolvedConfidence = r.confidence;
+      }
+      // We intentionally do NOT try to resolve tickers for option
+      // holdings (putCall !== null) — the underlying issuer name
+      // matches an equity ticker, but the row represents an option
+      // contract on that equity, so a one-click "add to watchlist"
+      // for that ticker would silently misrepresent what the fund
+      // actually holds. The manual popover fallback still works if
+      // the user genuinely wants to watch the underlying.
+      if (h.putCall) {
+        h.resolvedTicker = null;
+        h.resolvedExchange = null;
+        h.resolvedConfidence = null;
+      }
+    }
+  } catch (err) {
+    // Belt-and-braces — resolveTickersForIssuers already swallows
+    // its own errors, but if something unexpected propagates we
+    // still want to return the 13F report to the user.
+    console.warn(
+      "[portfolios] 13F ticker resolution failed (holdings served without tickers):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   const report: FundReport = {
     preset,
@@ -1371,6 +1716,7 @@ export async function fetchPersonInsiderReport(
       recentTransactions: [],
       filingsParsed: 0,
       filingsSkipped: 0,
+      filingsDerivativeOnly: 0,
       fetchedAt: new Date().toISOString(),
       source: submissionsUrl,
     };
@@ -1396,30 +1742,67 @@ export async function fetchPersonInsiderReport(
   // Step 2 — fetch and parse each filing. XMLs live at the accession
   // folder under the plain filename (stripping any `xslF345X..*/`
   // stylesheet prefix in `primaryDocument`).
-  interface ParseResult { txs: InsiderTransaction[]; ok: boolean }
-  const results = await mapConcurrent<InsiderFilingIdent, ParseResult>(filings, 4, async (f) => {
+  //
+  // Track a three-way outcome per filing so the empty-state UI can
+  // discriminate "we couldn't fetch/parse this" from "we parsed it fine
+  // but it was pure options/RSUs." Both used to collapse into a single
+  // `filingsSkipped` counter, which made the diagnostic message
+  // impossible to write accurately.
+  type ParseOutcome = "parsed" | "derivativeOnly" | "fetchFailed";
+  interface ParseResult { txs: InsiderTransaction[]; outcome: ParseOutcome }
+  // Concurrency of 2 keeps us well under SEC's 10 req/sec Archives budget
+  // even after `secFetchXmlWithRetry` fires its own backoff sleeps. Was
+  // 4, which combined with 3-attempt retries could burst well past the
+  // budget for popular presets with 100+ filings (Musk, Bezos, Cook).
+  const results = await mapConcurrent<InsiderFilingIdent, ParseResult>(filings, 2, async (f) => {
     const accessionDashless = f.accessionNumber.replace(/-/g, "");
     const xmlFilename = f.primaryDocument.split("/").pop() ?? f.primaryDocument;
     const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${xmlFilename}`;
     const filingUrl = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${preset.cik}&type=${f.form.replace("/A", "")}&dateb=&owner=include&count=40`;
+
+    const fetched = await secFetchXmlWithRetry(xmlUrl);
+    if (!fetched.ok) {
+      // Surface the actual failure reason to operator logs — previously
+      // every non-ok response was silently swallowed, which made the
+      // "all N filings skipped" UI state impossible to debug.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[portfolios] SEC filing skipped: ${preset.name} ${f.form} ` +
+          `${f.accessionNumber} — status=${fetched.status} reason=${fetched.reason ?? "unknown"}`,
+      );
+      return { txs: [], outcome: "fetchFailed" };
+    }
+
     try {
-      const res = await timedFetch(xmlUrl, {
-        headers: secHeaders(),
-        cache: "no-store",
-        timeoutMs: 20_000,
-      });
-      if (!res.ok) return { txs: [], ok: false };
-      const xml = await res.text();
-      const { transactions } = parseForm4Xml(xml, f.form, f.filingDate, f.accessionNumber, filingUrl);
-      return { txs: transactions, ok: transactions.length > 0 };
-    } catch {
-      return { txs: [], ok: false };
+      const { transactions } = parseForm4Xml(
+        fetched.xml,
+        f.form,
+        f.filingDate,
+        f.accessionNumber,
+        filingUrl,
+      );
+      return {
+        txs: transactions,
+        outcome: transactions.length > 0 ? "parsed" : "derivativeOnly",
+      };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[portfolios] SEC filing parse threw: ${preset.name} ${f.form} ` +
+          `${f.accessionNumber} — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { txs: [], outcome: "fetchFailed" };
     }
   });
 
   const allTx = results.flatMap((r) => r.txs);
-  const filingsParsed = results.filter((r) => r.ok).length;
-  const filingsSkipped = results.length - filingsParsed;
+  const filingsParsed = results.filter((r) => r.outcome === "parsed").length;
+  const filingsDerivativeOnly = results.filter((r) => r.outcome === "derivativeOnly").length;
+  const filingsFetchFailed = results.filter((r) => r.outcome === "fetchFailed").length;
+  // Keep the legacy field pointed at real failures only, so the counter
+  // in the UI now means "couldn't read" rather than "couldn't read OR
+  // was empty." `filingsDerivativeOnly` gets its own slot on the report.
+  const filingsSkipped = filingsFetchFailed;
 
   // Newest first for the "recent transactions" list.
   const recentTransactions = [...allTx].sort((a, b) => {
@@ -1437,10 +1820,28 @@ export async function fetchPersonInsiderReport(
     recentTransactions,
     filingsParsed,
     filingsSkipped,
+    filingsDerivativeOnly,
     fetchedAt: new Date().toISOString(),
     source: submissionsUrl,
   };
-  cacheSet(key, report);
+
+  // Cache TTL discrimination:
+  //   * Full success or partial success → keep for the configured 6h.
+  //   * *Every* filing failed to fetch → keep for only 60s. Otherwise the
+  //     UI's "retry in a minute" copy is a lie: the empty report would be
+  //     pinned in cache for 6h, so clicking again would return the same
+  //     failure until the next server restart. The 60s window is still
+  //     enough to coalesce React-strict-mode double-mounts and useEffect
+  //     dependency rerenders — the goal is just to let a genuine retry
+  //     actually hit SEC again.
+  const everyFilingFailed =
+    filings.length > 0 && filingsParsed === 0 && filingsFetchFailed === filings.length;
+  if (everyFilingFailed) {
+    cacheSet(key, report, 60);
+  } else {
+    cacheSet(key, report);
+  }
+
   // Respect the caller's requested limit even on cold-fetch — otherwise
   // the first call would return `MAX_LIMIT` entries and subsequent calls
   // (from cache) would return `requestedLimit`.
@@ -1500,27 +1901,57 @@ export function listPresets(): PortfolioIndex {
 // ---------------------------------------------------------------------------
 
 /**
- * One row shown in the add-preset autocomplete. `cik` is always zero-padded
- * to 10 digits (EDGAR's canonical form). `companies` is the top few
- * counterparties surfaced across the person's filings — the issuer of the
- * shares for insider filings, or the fund entity itself for 13F filings.
+ * One row shown in the add-preset autocomplete.
+ *
+ * For `person` / `fund` results: `cik` is always zero-padded to 10 digits
+ * (EDGAR's canonical form), and `companies` is the top few counterparties
+ * surfaced across the person's filings — the issuer of the shares for
+ * insider filings, or the fund entity itself for 13F filings.
+ *
+ * For `politician` results: `cik` is intentionally the empty string (the
+ * House Clerk data is name-matched, not CIK-matched), and the optional
+ * `state` / `chamber` fields identify the seat. `companies` is unused for
+ * politicians. `filingCount` counts every disclosure they've filed in the
+ * last two years, and `formTypes` maps House filing-type codes to readable
+ * labels ("PTR", "Annual", …).
  */
 export interface EntitySearchResult {
-  kind: "person" | "fund";
+  kind: "person" | "fund" | "politician";
+  /** SEC CIK for person/fund. Empty string for politicians. */
   cik: string;
+  /**
+   * Display name in the source's native casing (SEC often ALL-CAPS for
+   * individuals; House Clerk usually mixed-case). The UI runs it through
+   * `titleCase()` before rendering.
+   */
   name: string;
   /**
    * For `person`: recent issuers this insider has filed against, most
    * frequent first. For `fund`: usually just the filing entity itself,
-   * so this is typically empty for 13F results.
+   * so this is typically empty for 13F results. Unused for politicians.
    */
   companies: string[];
   /** Number of matching filings (used to rank results). */
   filingCount: number;
   /** Most-recent filing date across the matches, ISO. */
   latestFilingDate: string | null;
-  /** Distinct SEC form types observed (e.g. ["4","3"] or ["13F-HR"]). */
+  /**
+   * Distinct filing types observed. SEC form codes for person/fund
+   * (e.g. ["4","3"] or ["13F-HR"]); short human-readable labels for
+   * politicians ("PTR", "Annual", "Termination", "Blind Trust").
+   */
   formTypes: string[];
+  /** Politician-only: 2-letter state / district code, e.g. "CA". */
+  state?: string;
+  /**
+   * Politician-only: always "House" for now (Senate disclosures require
+   * a session-cookie handshake we haven't wired up yet, so the House
+   * Clerk feed is the only searchable source).
+   */
+  chamber?: "House" | "Senate";
+  /** Politician-only: parsed first + last so the form can pre-fill fields. */
+  firstName?: string;
+  lastName?: string;
 }
 
 const EDGAR_FTS_URL = "https://efts.sec.gov/LATEST/search-index";
@@ -1659,10 +2090,15 @@ function aggregateHits(
  */
 export async function searchEntities(
   query: string,
-  kind: "person" | "fund",
+  kind: "person" | "fund" | "politician",
 ): Promise<EntitySearchResult[]> {
   const q = query.trim();
   if (q.length < 2) return [];
+
+  // Politicians are name-matched against the (already-cached) House
+  // Clerk XML feed rather than against SEC EDGAR — different upstream,
+  // different result shape, so route through a dedicated helper.
+  if (kind === "politician") return searchPoliticians(q);
 
   const cacheKey = `entity-search:${kind}:${q.toLowerCase()}`;
   const cached = cacheGet<EntitySearchResult[]>(cacheKey);
@@ -1709,6 +2145,152 @@ export async function searchEntities(
       latestFilingDate: e.latest || null,
       formTypes: Array.from(e.formTypes),
     }));
+
+  cacheSet(cacheKey, results, 60 * 15);
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Politician search — powered by the same House Clerk XML feed that
+// `fetchPoliticianTrades()` walks. The feed is aggressively cached (24h
+// TTL, ~700 KB per year), so the first search may take ~1s on a cold
+// cache but every subsequent one is a synchronous in-memory filter.
+//
+// Only House members appear here — the Senate uses a session-cookie
+// portal we can't scrape. The UI surfaces a "not in the list? add
+// manually" affordance to cover senators and rare House members whose
+// disclosures haven't been posted yet.
+// ---------------------------------------------------------------------------
+
+/**
+ * Map single-letter House Clerk `FilingType` codes to short readable
+ * labels shown in the search dropdown. The full list from the House
+ * Ethics Committee's coding guide is longer, but the four codes below
+ * cover ~99% of what the feed emits — anything unrecognised is passed
+ * through so operators can spot new values in the wild.
+ */
+const HOUSE_FILING_LABELS: Record<string, string> = {
+  P: "PTR",
+  A: "Annual",
+  T: "Termination",
+  B: "Blind Trust",
+  C: "Candidate",
+  N: "New Employee",
+  D: "Due Date Extension",
+  X: "Amendment",
+};
+function houseFilingLabel(code: string): string {
+  return HOUSE_FILING_LABELS[code] ?? code;
+}
+
+interface PolAggEntry {
+  first: string;
+  last: string;
+  suffix: string;
+  state: string;
+  filingCount: number;
+  ptrCount: number;
+  latest: string;
+  formTypes: Set<string>;
+}
+
+/**
+ * Search the (cached) House Clerk feed for politicians whose name
+ * matches every whitespace-separated token in `query`.
+ *
+ * Ranking bias: PTR-filing count wins over total filing count, so a
+ * search for "Nancy" surfaces Nancy Pelosi (many PTRs) above Nancy
+ * Mace (fewer). Ties are broken by most-recent filing date so newly-
+ * active members don't get buried behind historically-prolific ones
+ * who have since retired.
+ *
+ * A cache-miss on the underlying feed is surfaced as
+ * `DataSourceUnavailableError`, matching the person/fund path — the
+ * route handler already knows how to render that.
+ */
+async function searchPoliticians(
+  query: string,
+): Promise<EntitySearchResult[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+
+  const cacheKey = `entity-search:politician:${q.toLowerCase()}`;
+  const cached = cacheGet<EntitySearchResult[]>(cacheKey);
+  if (cached) return cached;
+
+  const tokens = q
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+
+  const rows = await fetchRecentHouseFilings();
+
+  // Aggregate by (last, first, suffix) — the identity we render — so
+  // the same politician's 15 filings collapse into one search row.
+  // The state column can drift over years (redistricting, mid-term
+  // moves); we retain the most-recent one via the `latest` tracker.
+  const agg = new Map<string, PolAggEntry>();
+  for (const r of rows) {
+    const first = r.first.trim();
+    const last = r.last.trim();
+    if (!first && !last) continue;
+    const suffix = r.suffix.trim();
+    const composed = `${first} ${last}${suffix ? ` ${suffix}` : ""}`;
+    const haystack = composed.toLowerCase();
+    // Every token must appear as a substring — this is what makes
+    // "pel" match "Pelosi" and "nancy pel" narrow to Pelosi rather
+    // than every "Nancy" in the House.
+    if (!tokens.every((t) => haystack.includes(t))) continue;
+
+    const key = `${last}|${first}|${suffix}`.toLowerCase();
+    let entry = agg.get(key);
+    if (!entry) {
+      entry = {
+        first,
+        last,
+        suffix,
+        state: r.stateDst || "",
+        filingCount: 0,
+        ptrCount: 0,
+        latest: "",
+        formTypes: new Set<string>(),
+      };
+      agg.set(key, entry);
+    }
+    entry.filingCount++;
+    if (r.filingType === "P") entry.ptrCount++;
+    const filingDate = r.filingDate ?? "";
+    if (filingDate > entry.latest) {
+      entry.latest = filingDate;
+      // Prefer the state on the most-recent filing when it moves.
+      if (r.stateDst) entry.state = r.stateDst;
+    }
+    if (r.filingType) entry.formTypes.add(r.filingType);
+  }
+
+  const results: EntitySearchResult[] = Array.from(agg.values())
+    .sort((a, b) => {
+      if (b.ptrCount !== a.ptrCount) return b.ptrCount - a.ptrCount;
+      if (b.filingCount !== a.filingCount) return b.filingCount - a.filingCount;
+      return b.latest.localeCompare(a.latest);
+    })
+    .slice(0, 20)
+    .map((e) => {
+      const composed = [e.first, e.last, e.suffix].filter(Boolean).join(" ");
+      return {
+        kind: "politician" as const,
+        cik: "",
+        name: composed,
+        firstName: e.first,
+        lastName: e.last,
+        companies: [],
+        filingCount: e.filingCount,
+        latestFilingDate: e.latest || null,
+        formTypes: Array.from(e.formTypes).map(houseFilingLabel),
+        state: e.state || undefined,
+        chamber: "House" as const,
+      };
+    });
 
   cacheSet(cacheKey, results, 60 * 15);
   return results;

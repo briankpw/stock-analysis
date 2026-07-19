@@ -37,6 +37,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import {
   Tooltip,
   TooltipContent,
@@ -699,6 +700,11 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
 function MonitorSection({ assessments }: { assessments: RiskAssessment[] }) {
   const t = useT();
   const [open, setOpen] = React.useState(false);
+  // Cap the visible cards at 10 so a portfolio with 200 medium-risk
+  // holdings doesn't render a 5000-pixel-tall collapsed panel. Anyone
+  // who wants to scan the whole set can still page through — most
+  // users just want the top of the pile.
+  const pager = usePagination(assessments, 10);
   return (
     <details
       className="rounded-lg border border-border/60 bg-card/40 open:bg-card/60"
@@ -721,9 +727,24 @@ function MonitorSection({ assessments }: { assessments: RiskAssessment[] }) {
         </span>
       </summary>
       <div className="px-4 pb-3 space-y-2">
-        {assessments.map((a) => (
+        {pager.visibleItems.map((a) => (
           <RiskCard key={a.ticker} assessment={a} />
         ))}
+        <Pagination
+          page={pager.page}
+          pageCount={pager.pageCount}
+          total={pager.total}
+          range={pager.range}
+          onPageChange={pager.setPage}
+          pageSize={pager.pageSize}
+          onPageSizeChange={pager.setPageSize}
+          pageSizeOptions={[10, 25, 50, 100]}
+          pageSizeLabel={t("pager.pageSizeLabel")}
+          allLabel={t("pager.all")}
+          label={t("portfolioRisk.pager.label")}
+          hideWhenSingle
+          className="pt-2"
+        />
       </div>
     </details>
   );

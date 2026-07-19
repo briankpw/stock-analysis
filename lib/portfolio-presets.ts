@@ -78,9 +78,27 @@ export function addCustomPerson(preset: PersonPreset): void {
  * stored in the code, not in this table, so this cannot delete them —
  * useful safety guarantee since the UI shares one "delete" affordance
  * across both source kinds.
+ *
+ * Also purges any cached snapshot for this preset so we don't leave
+ * orphan rows in `portfolio_snapshots` (they'd never be visited
+ * again, and would occupy DB pages indefinitely). The snapshot
+ * table uses the same `(category, id)` key so the delete is a
+ * single SQL statement.
  */
 export function removeCustomPreset(category: PresetCategory, id: string): void {
-  getDb()
-    .prepare("DELETE FROM portfolio_presets WHERE category = ? AND id = ?")
-    .run(category, id);
+  const db = getDb();
+  db.prepare("DELETE FROM portfolio_presets WHERE category = ? AND id = ?").run(
+    category,
+    id,
+  );
+  // Snapshot rows use `preset_kind` as their column name, but the
+  // enum values are identical to `PresetCategory` — kept in lockstep
+  // by the CHECK constraint in migration v9. Direct DELETE here (rather
+  // than importing `deleteSnapshot` from the cache store) avoids a
+  // dependency cycle: `portfolios-cache/store.ts` transitively imports
+  // `lib/portfolios.ts` which is a heavy module we don't want to pull
+  // into the preset CRUD path.
+  db.prepare(
+    "DELETE FROM portfolio_snapshots WHERE preset_kind = ? AND preset_id = ?",
+  ).run(category, id);
 }

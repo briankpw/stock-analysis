@@ -8,15 +8,28 @@
  * into a single number per (portfolio × symbol) pair, then optionally
  * roll those up per currency for grand totals.
  *
- * Cost-basis method: **weighted average cost** (not FIFO/LIFO).
- *   • Simplest to reason about visually.
- *   • Matches what most retail brokers show ("average cost per share").
- *   • Handles partial sells cleanly — a sell doesn't change the average
- *     cost of the shares still held, it just realizes the diff between
- *     the sell price and the current average.
+ * Cost-basis method: **FIFO** (First-In-First-Out).
+ *   • Matches what US retail brokers (MooMoo, Schwab, Fidelity, IBKR,
+ *     Robinhood, etc.) report on their statements and tax forms, so
+ *     the app's realized-P&L number reconciles cleanly with what the
+ *     user sees in their broker account.
+ *   • Sells consume the oldest lots first; realized P&L is computed
+ *     against each consumed lot's own cost basis (not a running
+ *     weighted average).
+ *   • The `avgCost` field shown on the position card is the *weighted
+ *     average of the remaining open lots* — i.e. the true cost basis
+ *     of the shares still held, not a historical mean that ignores
+ *     which lots were already sold.
+ *   • Note: FIFO and weighted-average produce the SAME total P&L
+ *     (`realized + unrealized`) over the life of a position — they
+ *     only differ in when gain is booked. This app was previously
+ *     weighted-average, so on a fresh import the "realized" and
+ *     "avg cost" columns will shift for any position that has had at
+ *     least one sell; the total ("realized + unrealized") stays the
+ *     same.
  *
  * The rows are ordered chronologically before folding so that sells
- * following buys realize against the correct running average.
+ * consume lots in the order they were bought.
  *
  * All math stays in the security's own currency — no FX conversion.
  * Grand totals are therefore bucketed *per currency* (USD / HKD / SGD /
@@ -45,7 +58,19 @@ import type { HoldingRow } from "./portfolio-import";
  * by-bar without redoing the fold in the UI.
  *
  * `realizedPnl` is non-zero only on Sell rows. On Buy / Watch rows it
- * stays 0 — realized P&L is booked at the moment of a sell.
+ * stays 0 — realized P&L is booked at the moment of a sell. The value
+ * is the sum over FIFO-consumed lots of
+ * `(sellPrice − lotCostPerShare) × chunkShares` minus a proportional
+ * share of the sell commission — i.e. the sell row books exactly the
+ * P&L attributed to the specific lots it closed.
+ *
+ * The `lot*` fields (populated on Buy rows only) are the parallel
+ * "which of my earlier buys made money?" view. They trace which
+ * sells later consumed shares from this specific lot and attribute
+ * the per-share realized P&L back to the buy. Because we're on FIFO
+ * everywhere, the sum of every `lotRealizedPnl` across a position's
+ * Buy rows equals the sum of every `realizedPnl` across its Sell rows
+ * — the two views are just different lenses on the same numbers.
  */
 export interface TradeEvent {
   /** Original CSV row this event was derived from — passed through so
@@ -74,6 +99,28 @@ export interface TradeEvent {
   runningAvgCost: number | null;
   /** Cumulative realized P&L up to and including this trade. */
   runningRealizedPnl: number;
+
+  // --- FIFO lot attribution (Buy rows only; null on Sell / Watch) ------
+
+  /** Shares originally bought in this lot (same as `shares` for Buys).
+   *  Kept as a separate field so the UI can compute "sold X of Y". */
+  lotOriginalShares: number | null;
+  /** Shares from this buy lot that were later consumed by FIFO sells. */
+  lotSharesSold: number | null;
+  /** Shares from this buy lot still open (originalShares − sharesSold). */
+  lotSharesRemaining: number | null;
+  /** Cost basis per share for this lot, including this buy's commission
+   *  folded in (matches the position-level convention). */
+  lotCostPerShare: number | null;
+  /** Realized P&L attributable to this specific buy lot: sum over
+   *  every sell chunk that consumed FIFO shares from this lot of
+   *  `(sellPrice − lotCostPerShare) × chunkShares − proportional
+   *  sellCommission`. Positive = this buy ended up profitable when
+   *  sold, negative = this buy was sold at a loss. */
+  lotRealizedPnl: number | null;
+  /** `open` (nothing sold), `partial` (some sold, some held), or
+   *  `closed` (fully drained by later sells). */
+  lotStatus: "open" | "partial" | "closed" | null;
 }
 
 export interface Position {
@@ -103,9 +150,13 @@ export interface Position {
   sellCount: number;
 
   /**
-   * Weighted-average cost per share of the currently-held shares. Null
-   * when `netShares === 0` (fully closed) — a cost basis on zero shares
-   * is a divide-by-zero we deliberately don't fudge.
+   * Weighted average cost per share of the currently-held (i.e. still-
+   * open under FIFO) shares. Sells reduce this by draining oldest
+   * lots first, so after a partial sell the number reflects only the
+   * lots that survived — not a historical mean across every share
+   * ever bought. Null when `netShares === 0` (fully closed) — a cost
+   * basis on zero shares is a divide-by-zero we deliberately don't
+   * fudge.
    */
   avgCost: number | null;
   /** Dollar amount currently deployed in the position (avgCost × netShares). */
@@ -121,9 +172,11 @@ export interface Position {
   totalCommission: number;
 
   /**
-   * Profit already booked from sells, computed against the running
-   * average cost at the moment of each sell. Positive = took profit,
-   * negative = took loss.
+   * Profit already booked from sells. Each sell realizes P&L against
+   * the cost basis of the specific FIFO lots it consumed (oldest
+   * first), so this number matches what a US retail broker reports
+   * on the same trade sequence. Positive = took profit, negative =
+   * took loss.
    */
   realizedPnl: number;
 
@@ -292,6 +345,23 @@ function reducePosition(bucket: HoldingRow[]): Position {
   // "at this point you held X shares at avg $Y" without redoing math.
   const trades: TradeEvent[] = [];
 
+  // Parallel FIFO lot queue for `lot*` attribution. Each buy pushes a
+  // lot; sells drain the oldest lots first. When shares are drained
+  // from a lot we attribute the realized P&L back to the buy event
+  // that opened that lot (mutating the already-pushed TradeEvent by
+  // its index — safe because we're the sole reference during the
+  // fold). Lots are NOT shifted out of the array when depleted (we
+  // just skip them) so their eventIndex stays valid for later
+  // attribution.
+  interface Lot {
+    eventIdx: number;
+    originalShares: number;
+    costPerShare: number; // includes buy commission per share
+    remainingShares: number;
+    attributedRealized: number;
+  }
+  const lots: Lot[] = [];
+
   for (const row of sorted) {
     if (row.transactionDate) {
       firstTradeDate ??= row.transactionDate;
@@ -302,6 +372,9 @@ function reducePosition(bucket: HoldingRow[]): Position {
 
     let realizedThisTrade = 0;
     let cashFlow: number | null = null;
+    // Snapshot the event index we're about to push — used below to
+    // set the lot's `eventIdx` back-reference on Buys.
+    const eventIdx = trades.length;
 
     if (row.type === "Buy" && row.shares != null && row.costPerShare != null) {
       const spend = row.shares * row.costPerShare + commission;
@@ -320,25 +393,77 @@ function reducePosition(bucket: HoldingRow[]): Position {
       netShares += row.shares;
       boughtShares += row.shares;
       buyCount += 1;
+
+      // Open a new FIFO lot mirroring this buy.
+      lots.push({
+        eventIdx,
+        originalShares: row.shares,
+        costPerShare: newCostPerShare,
+        remainingShares: row.shares,
+        attributedRealized: 0,
+      });
     } else if (row.type === "Sell" && row.shares != null && row.costPerShare != null) {
       const proceeds = row.shares * row.costPerShare - commission;
       totalProceeds += proceeds;
       cashFlow = proceeds;
 
-      // Realize P&L against the running average cost of the currently-
-      // held shares. If the user oversells (data error / short) we
-      // still record proceeds but skip the P&L (avgCost is null / stale).
-      if (avgCost != null && netShares > 0) {
-        const soldFromHoldings = Math.min(row.shares, netShares);
-        realizedThisTrade = (row.costPerShare - avgCost) * soldFromHoldings - commission;
+      // FIFO lot drain — walk the lots oldest-first, consuming shares
+      // until this sell is filled. Realized P&L is computed on each
+      // consumed chunk using that specific lot's own cost basis (the
+      // whole point of FIFO). Sell commission is split proportionally
+      // across the consumed lots so nothing is double-counted.
+      let toSell = row.shares;
+      const consumed: Array<{ lot: Lot; shares: number }> = [];
+      for (const lot of lots) {
+        if (toSell <= 1e-9) break;
+        if (lot.remainingShares <= 1e-9) continue;
+        const take = Math.min(lot.remainingShares, toSell);
+        lot.remainingShares -= take;
+        consumed.push({ lot, shares: take });
+        toSell -= take;
+      }
+      const totalConsumed = consumed.reduce((s, c) => s + c.shares, 0);
+      // Book realized P&L on the drained shares. If the user oversells
+      // (data error / short-selling that we don't fully model) we
+      // simply book P&L on whatever we could drain; the excess sale is
+      // treated as a bare cash flow with no cost basis to net against.
+      if (totalConsumed > 1e-9) {
+        for (const c of consumed) {
+          const grossPnl = (row.costPerShare - c.lot.costPerShare) * c.shares;
+          const commissionShare = commission * (c.shares / totalConsumed);
+          const chunkPnl = grossPnl - commissionShare;
+          c.lot.attributedRealized += chunkPnl;
+          realizedThisTrade += chunkPnl;
+        }
         realizedPnl += realizedThisTrade;
       }
+
       netShares -= row.shares;
       soldShares += row.shares;
       sellCount += 1;
-      // When the position closes, clear the running cost so a
-      // subsequent re-buy establishes a fresh basis.
-      if (netShares <= 1e-9) {
+
+      // Under FIFO, the sold shares came from specific lots, so the
+      // remaining shares' cost basis is the weighted mean of what's
+      // LEFT — not the pre-sell running average. Recompute from the
+      // surviving lots so the position card and the sell row's
+      // "After · avg" column both reflect the true basis of what the
+      // user still holds. This is the crucial FIFO-vs-weighted-avg
+      // divergence: weighted-avg would leave `avgCost` unchanged
+      // after a sell, hiding the fact that (say) selling the cheap
+      // shares first pushed the remaining basis up.
+      if (netShares > 1e-9) {
+        let sumCost = 0;
+        let sumShares = 0;
+        for (const lot of lots) {
+          if (lot.remainingShares > 1e-9) {
+            sumCost += lot.remainingShares * lot.costPerShare;
+            sumShares += lot.remainingShares;
+          }
+        }
+        avgCost = sumShares > 1e-9 ? sumCost / sumShares : null;
+      } else {
+        // Position fully closed — clear the basis so a subsequent
+        // re-buy establishes a fresh one.
         netShares = Math.max(netShares, 0);
         avgCost = null;
       }
@@ -356,7 +481,35 @@ function reducePosition(bucket: HoldingRow[]): Position {
       runningShares: netShares,
       runningAvgCost: avgCost,
       runningRealizedPnl: realizedPnl,
+      // Lot fields default to null and get filled in below for Buys.
+      lotOriginalShares: null,
+      lotSharesSold: null,
+      lotSharesRemaining: null,
+      lotCostPerShare: null,
+      lotRealizedPnl: null,
+      lotStatus: null,
     });
+  }
+
+  // Fold FIFO lot attribution back onto each Buy event. We do this
+  // as a post-pass rather than inline so the lot's `attributedRealized`
+  // includes every sell up to *end of history*, not just what had
+  // happened by the moment of the buy.
+  for (const lot of lots) {
+    const ev = trades[lot.eventIdx];
+    if (!ev) continue;
+    const sold = lot.originalShares - lot.remainingShares;
+    ev.lotOriginalShares = lot.originalShares;
+    ev.lotSharesSold = sold;
+    ev.lotSharesRemaining = lot.remainingShares;
+    ev.lotCostPerShare = lot.costPerShare;
+    ev.lotRealizedPnl = lot.attributedRealized;
+    ev.lotStatus =
+      lot.remainingShares <= 1e-9
+        ? "closed"
+        : sold > 1e-9
+          ? "partial"
+          : "open";
   }
 
   const investedNow = avgCost != null ? avgCost * netShares : 0;

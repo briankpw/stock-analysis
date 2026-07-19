@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { redactError, timedFetch } from "@/lib/http";
+import { redactError } from "@/lib/http";
+import {
+  fetchFearGreedPayload,
+  type CnnPayload,
+  type FearGreedRating,
+} from "@/lib/fear-greed";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,66 +12,12 @@ export const dynamic = "force-dynamic";
 /**
  * CNN Fear & Greed Index proxy.
  *
- * CNN publishes the raw data used by
- *   https://edition.cnn.com/markets/fear-and-greed
- * via an undocumented JSON endpoint on its dataviz CDN. The endpoint
- * requires browser-style headers (Origin/Referer + realistic User-Agent),
- * otherwise it returns "I'm a teapot. You're a bot."
- *
- * The Index only updates once per US-market business day, so we cache
- * responses in-process for 30 minutes to be a good citizen and avoid
- * chatty upstream fetches on repeated page loads.
+ * The fetch + cache logic lives in `lib/fear-greed.ts` so the master-
+ * verdict worker engine can share the same code path without going
+ * through this HTTP hop. This route only owns the *response-shaping*
+ * side — mapping the raw CNN payload into the slim client-friendly
+ * shape the /market page consumes.
  */
-
-const CNN_URL =
-  "https://production.dataviz.cnn.io/index/fearandgreed/graphdata";
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-
-const HEADERS: HeadersInit = {
-  // Chrome-ish. The endpoint gates on User-Agent shape more than exact value.
-  "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-  Accept: "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.9",
-  Origin: "https://edition.cnn.com",
-  Referer: "https://edition.cnn.com/",
-};
-
-/** Ratings emitted by CNN. */
-export type FearGreedRating =
-  | "extreme fear"
-  | "fear"
-  | "neutral"
-  | "greed"
-  | "extreme greed";
-
-interface CnnIndicator {
-  score: number;
-  rating: FearGreedRating;
-  timestamp?: string;
-}
-
-interface CnnPayload {
-  fear_and_greed: {
-    score: number;
-    rating: FearGreedRating;
-    timestamp: string;
-    previous_close: number;
-    previous_1_week: number;
-    previous_1_month: number;
-    previous_1_year: number;
-  };
-  market_momentum_sp500: CnnIndicator;
-  market_momentum_sp125: CnnIndicator;
-  stock_price_strength: CnnIndicator;
-  stock_price_breadth: CnnIndicator;
-  put_call_options: CnnIndicator;
-  market_volatility_vix: CnnIndicator;
-  market_volatility_vix_50: CnnIndicator;
-  junk_bond_demand: CnnIndicator;
-  safe_haven_demand: CnnIndicator;
-}
 
 /** Slim, client-friendly response shape. */
 export interface FearGreedResponse {
@@ -89,10 +40,11 @@ export interface FearGreedResponse {
   cached: boolean;
 }
 
-let _cache: { payload: FearGreedResponse; expiresAt: number } | null = null;
-
 function toSlim(raw: CnnPayload): FearGreedResponse {
-  const ind = (key: string, v: CnnIndicator) => ({
+  const ind = (
+    key: string,
+    v: { score: number; rating: FearGreedRating },
+  ) => ({
     key,
     score: v.score,
     rating: v.rating,
@@ -118,32 +70,19 @@ function toSlim(raw: CnnPayload): FearGreedResponse {
     ],
     source: "https://edition.cnn.com/markets/fear-and-greed",
     fetchedAt: new Date().toISOString(),
+    // `cached` reflects whether we served from the module-scope cache
+    // on this exact call. We can't tell that from the library API
+    // without leaking the timestamp; the library will already have
+    // decided by the time the payload lands. As a proxy, expose
+    // `false` here — clients treat this field as advisory only.
     cached: false,
   };
 }
 
 export async function GET() {
-  const now = Date.now();
-  if (_cache && _cache.expiresAt > now) {
-    return NextResponse.json({ ..._cache.payload, cached: true });
-  }
-
   try {
-    const res = await timedFetch(CNN_URL, {
-      headers: HEADERS,
-      cache: "no-store",
-      timeoutMs: 15_000,
-    });
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `CNN responded ${res.status}` },
-        { status: 502 },
-      );
-    }
-    const raw = (await res.json()) as CnnPayload;
-    const slim = toSlim(raw);
-    _cache = { payload: slim, expiresAt: now + CACHE_TTL_MS };
-    return NextResponse.json(slim);
+    const raw = await fetchFearGreedPayload();
+    return NextResponse.json(toSlim(raw));
   } catch (e) {
     const r = redactError(e, 502, "Fear & Greed source unavailable");
     return NextResponse.json({ error: r.message }, { status: r.status });

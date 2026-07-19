@@ -199,16 +199,20 @@ export function fundEvents(report: FundReport): PortfolioEvent[] {
       h.cusip,
     ].join(":");
 
-    // 13F holdings only carry CUSIPs, not tickers. We surface the CUSIP
-    // in `companyName` so the Telegram message tells the user which
-    // security this refers to; users can look up the ticker manually
-    // (see the "Look up" column in the fund detail view).
+    // 13F holdings historically only carried CUSIPs. Now that the
+    // fetch orchestrator resolves issuer names → tickers via the
+    // SEC company-tickers file (see `lib/sec-ticker-map.ts`), we
+    // can surface a real ticker when we have one — that lets
+    // ticker-scoped watchers (e.g. "notify me when any fund I
+    // follow files NVDA") match against these events and puts a
+    // useful symbol in the Telegram message. Falls back to `null`
+    // for unresolved holdings, preserving the pre-existing behaviour.
     out.push({
       id,
       category: "funds",
       presetId: report.preset.id,
       presetName: `${report.preset.manager} (${report.preset.firm})`,
-      ticker: null, // 13F rows don't include ticker; user will resolve on-app
+      ticker: h.resolvedTicker,
       companyName: h.issuer,
       action: "BUY", // Coarse: any 13F position is a long position → treat as BUY
       actionLabel: "13F position",

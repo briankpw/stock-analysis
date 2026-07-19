@@ -468,6 +468,258 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
         ON portfolio_risk_watches(created_at DESC);
     `);
   },
+  // v7: server-side storage for the user's imported portfolio (CSV
+  // holdings). Before this migration the same data lived only in the
+  // browser's localStorage — meaning a user who uploaded on their
+  // desktop couldn't see anything on their phone. Now the server is
+  // the source of truth and every device pulls from `/api/holdings`,
+  // giving us cross-device sync at the cost of one HTTP round-trip
+  // on page load.
+  //
+  //   * `holdings.fingerprint` — deduplicated natural key computed by
+  //     `fingerprintRow()` in `lib/portfolio-import.ts`. Using it as
+  //     the PK means our server-side merge path is a straight
+  //     `INSERT OR IGNORE` per row — the DB itself enforces "one row
+  //     per unique trade" without any read-then-write dance.
+  //   * `holdings.row_json` — the whole `HoldingRow` blob. Serialising
+  //     as JSON keeps the schema forward-compatible with any future
+  //     row-shape evolution in `lib/portfolio-import.ts`; we don't
+  //     have to migrate this table again just because someone adds
+  //     a new column to the CSV parser.
+  //   * `holdings_meta` — one-row table (id CHECK 1, same pattern as
+  //     `paper_portfolio`) holding the import metadata bar's fields.
+  //     Kept separate from `bot_state` so `getState<>()` doesn't get
+  //     polluted with a large user-controlled blob, and so wiping the
+  //     portfolio is a clean DELETE from two tables without touching
+  //     unrelated worker state.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS holdings (
+        fingerprint TEXT PRIMARY KEY,
+        row_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_holdings_created
+        ON holdings(created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS holdings_meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        source_filename TEXT NOT NULL,
+        imported_at TEXT NOT NULL,
+        row_count INTEGER NOT NULL,
+        last_mode TEXT,
+        last_added_count INTEGER,
+        last_skipped_count INTEGER,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  },
+  // v8: per-ticker Master Verdict alert rules. Structurally identical
+  // to `technical_alerts` (see v4) — same daily-digest + on-change
+  // channels, same `AlertStrength` gate, same 5-band `Verdict` — but
+  // driven off the *fused* master score instead of the pure technical
+  // score. Two separate tables (rather than a `source` column on
+  // `technical_alerts`) so users can independently enable/disable each
+  // layer without overloading a single rule.
+  //
+  //   * `daily_time` / `timezone` — same semantics as v4.
+  //   * `notify_on_change` / `min_strength` — same semantics as v4.
+  //   * `last_verdict` — the previously-notified master band, used to
+  //     detect crossings on the on-change path.
+  //   * `last_score` — score at the last notification (for the "was
+  //     +42, now -18" delta the notifier body includes).
+  //   * `last_coverage` — snapshot of `MasterVerdict.coverage` so the
+  //     digest can show "coverage rose from 60% to 85% overnight" when
+  //     news/sentiment fills back in.
+  //   * `last_digest_local_date` — YYYY-MM-DD in `timezone`; prevents
+  //     duplicate digests on the same local day.
+  //   * `last_notified_at` — ISO timestamp of the most recent send of
+  //     either channel (useful for /bot debugging + throttling).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS master_alerts (
+        ticker TEXT PRIMARY KEY,
+        daily_time TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        notify_on_change INTEGER NOT NULL DEFAULT 1,
+        min_strength TEXT NOT NULL DEFAULT 'buy_sell',
+        last_verdict TEXT,
+        last_score REAL,
+        last_coverage REAL,
+        last_digest_local_date TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_master_alerts_created
+        ON master_alerts(created_at DESC);
+    `);
+  },
+  // v9: persistent snapshot cache for the Portfolios page.
+  //
+  // Historically every visit to /portfolios (politicians, funds,
+  // insiders) triggered a live fetch against SEC EDGAR + the House
+  // Clerk ZIP + individual PTR PDFs, kept warm only in a
+  // process-local in-memory TTL cache. That worked while the tab
+  // was hot, but every process restart (Docker redeploy, dev
+  // reload, worker crash) meant the next user waited 5-30 seconds
+  // for the pipeline to warm back up — bad UX for a page that most
+  // people just want to eyeball.
+  //
+  // This table gives us a stale-while-revalidate layer that
+  // survives restarts:
+  //
+  //   * The API route reads the row synchronously and returns the
+  //     `payload_json` immediately. No user-visible fetch.
+  //   * If `next_refresh_at <= now`, the coordinator ALSO kicks off
+  //     a background refresh — but the response is already on its
+  //     way to the client.
+  //   * The bot worker's dedicated tick (see
+  //     `lib/portfolios-cache/engine.ts`) walks rows where
+  //     `next_refresh_at <= now` and refreshes them, so even a
+  //     truly idle app keeps the snapshots warm.
+  //
+  //   * `payload_json` — the whole report blob. Storing as JSON
+  //     keeps this migration one-shot regardless of how the report
+  //     shapes evolve (PoliticianReport gained `parseStatus` /
+  //     `filingsNoStockRows` recently; we don't want a schema
+  //     migration every time).
+  //   * `fetched_at` — last successful upstream fetch.
+  //   * `next_refresh_at` — TTL horizon. Different kinds get
+  //     different TTLs (see the coordinator) because politician
+  //     data updates daily, 13Fs quarterly, insider filings a few
+  //     times a week.
+  //   * `last_error` / `last_error_at` — on refresh failure we
+  //     KEEP the stale payload so the UI still renders, but we
+  //     record why the last fetch failed and push
+  //     `next_refresh_at` out by a short backoff. Setting these to
+  //     NULL is the definition of "healthy row".
+  //   * `visit_count` / `last_visited_at` — the bot worker only
+  //     refreshes rows the user has actually opened; a row with
+  //     `visit_count = 0` is defensive (a coordinator write path
+  //     that fired without a preceding read) but the engine treats
+  //     it as "worth keeping fresh anyway".
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        preset_kind      TEXT NOT NULL
+          CHECK (preset_kind IN ('politician','person','fund')),
+        preset_id        TEXT NOT NULL,
+        payload_json     TEXT NOT NULL,
+        fetched_at       TEXT NOT NULL,
+        next_refresh_at  TEXT NOT NULL,
+        last_error       TEXT,
+        last_error_at    TEXT,
+        visit_count      INTEGER NOT NULL DEFAULT 0,
+        last_visited_at  TEXT,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL,
+        PRIMARY KEY (preset_kind, preset_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_refresh
+        ON portfolio_snapshots(next_refresh_at);
+      CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_kind_visit
+        ON portfolio_snapshots(preset_kind, last_visited_at DESC);
+    `);
+  },
+  // v10: per-market-segment 6-Signal Resonance alert rules.
+  //
+  // Structurally identical to `resonance_alerts` (v5) but keyed by
+  // `segment_id` (e.g. `ai`, `semiconductors`) instead of `ticker`.
+  // We could have overloaded `resonance_alerts` with a nullable
+  // segment column, but that would:
+  //   * conflate two conceptually distinct subscriptions in one row
+  //     (a user might legitimately want both "AI sector" AND a
+  //     straight `AIQ` alert with different strength gates), and
+  //   * force every read of a per-ticker rule to remember to filter
+  //     out segment rows — a foot-gun waiting to trip a future
+  //     refactor.
+  //
+  // Everything else — daily digest, on-change gate, strength enum,
+  // last-verdict bookkeeping — follows the ticker table exactly so
+  // the two engines can be kept in lockstep. The alert content is
+  // computed off the segment's proxy ETF (resolved via `findSegment`
+  // in `lib/segments.ts`), so the resonance math is identical; only
+  // the display name and cache key differ.
+  //
+  //   * `segment_id` — stable slug from `lib/segments.ts` (`ai`,
+  //     `cybersecurity`, ...). Never mutated once a rule exists.
+  //   * `min_strength` — same `all` | `trigger_only` | `strong_only`
+  //     enum as the per-ticker table. Kept identical so the UI can
+  //     share one strength-picker component.
+  //   * `last_verdict` / `last_aligned_count` / `last_bearish_count`
+  //     — snapshots for on-change detection, mirroring the ticker
+  //     table.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sector_resonance_alerts (
+        segment_id TEXT PRIMARY KEY,
+        daily_time TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        notify_on_change INTEGER NOT NULL DEFAULT 1,
+        min_strength TEXT NOT NULL DEFAULT 'trigger_only',
+        last_verdict TEXT,
+        last_aligned_count INTEGER,
+        last_bearish_count INTEGER,
+        last_digest_local_date TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sector_resonance_alerts_created
+        ON sector_resonance_alerts(created_at DESC);
+    `);
+  },
+  // v11: per-market-segment Technical Signal alert rules.
+  //
+  // Structural mirror of `technical_alerts` (v4) but keyed by
+  // `segment_id` instead of `ticker`. Same "daily digest + on-change"
+  // schema, same strength enum (`all` / `buy_sell` / `strong_only`),
+  // same last-verdict bookkeeping. The engine resolves each
+  // `segment_id` to its proxy ETF at tick time and evaluates the
+  // technical scorer on that ETF's bars — so the compute path is
+  // identical to the per-ticker one, only the notification headline
+  // (segment name + proxy tag) differs.
+  //
+  // A separate table (rather than a nullable `segment_id` on
+  // `technical_alerts`) is used for the same reasons as
+  // `sector_resonance_alerts` (v10): a user may legitimately want
+  // both "AI sector" AND a straight `AIQ` alert with different
+  // strength gates, and every read of a per-ticker rule would
+  // otherwise need to remember to filter segment rows.
+  //
+  //   * `segment_id` — stable slug from `lib/segments.ts` (`ai`,
+  //     `cybersecurity`, ...). Never mutated once a rule exists.
+  //   * `min_strength` — `all` | `buy_sell` | `strong_only` enum
+  //     matches the per-ticker table so both tables can share one
+  //     strength-picker component.
+  //   * `last_verdict` / `last_score` — snapshots for on-change
+  //     detection, mirroring the ticker table.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sector_technical_alerts (
+        segment_id TEXT PRIMARY KEY,
+        daily_time TEXT,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        notify_on_change INTEGER NOT NULL DEFAULT 1,
+        min_strength TEXT NOT NULL DEFAULT 'buy_sell',
+        last_verdict TEXT,
+        last_score REAL,
+        last_digest_local_date TEXT,
+        last_notified_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sector_technical_alerts_created
+        ON sector_technical_alerts(created_at DESC);
+    `);
+  },
 ];
 
 /** Testing / cleanup helper. */

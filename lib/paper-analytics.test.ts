@@ -452,3 +452,152 @@ describe("computePaperAnalytics — return type", () => {
     expect(enriched.costBasisSold).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// FIFO lot attribution
+// ---------------------------------------------------------------------------
+//
+// The `lot*` fields on `EnrichedTrade` are a second lens on the same
+// data: instead of "how much did *this sell* realize?", they answer
+// "how much did *this specific buy* end up making?" by tracing which
+// sells later drained shares from this buy lot (FIFO) and attributing
+// per-lot P&L back to the buy row.
+//
+// These invariants matter more than most: if the FIFO math is off,
+// the user will look at a buy and mis-read it as profitable when it
+// wasn't (or vice-versa), and there's no easy way for them to spot
+// the bug from the UI.
+
+describe("computePaperAnalytics — FIFO lot attribution", () => {
+  it("fresh buy has open lot status and zero attributed P&L", () => {
+    resetIds();
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy", shares: 10, price: 100 }),
+    ]);
+    const buy = res.enrichedTrades[0];
+    expect(buy.lotStatus).toBe("open");
+    expect(buy.lotOriginalShares).toBe(10);
+    expect(buy.lotSharesSold).toBe(0);
+    expect(buy.lotSharesRemaining).toBe(10);
+    expect(buy.lotCostPerShare).toBe(100);
+    expect(buy.lotRealizedPnl).toBe(0);
+  });
+
+  it("fully-closed single buy has closed status and total sell P&L attributed to it", () => {
+    resetIds();
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy", shares: 10, price: 100, createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 120, createdAt: "2026-01-02T00:00:00Z" }),
+    ]);
+    const buy = res.enrichedTrades.find((t) => t.side === "buy")!;
+    const sell = res.enrichedTrades.find((t) => t.side === "sell")!;
+    expect(buy.lotStatus).toBe("closed");
+    expect(buy.lotSharesSold).toBe(10);
+    expect(buy.lotSharesRemaining).toBe(0);
+    expect(buy.lotRealizedPnl).toBe(200); // 10 * (120 - 100)
+    // Sell's own realized (weighted-avg) still populated and matches
+    // the pure per-lot P&L in this single-lot scenario.
+    expect(sell.realizedPnl).toBe(200);
+    // Sells never carry a lot themselves.
+    expect(sell.lotOriginalShares).toBeNull();
+    expect(sell.lotStatus).toBeNull();
+  });
+
+  it("partially-sold buy has partial status and P&L only on the sold portion", () => {
+    resetIds();
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy", shares: 10, price: 100, createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 6, price: 130, createdAt: "2026-01-02T00:00:00Z" }),
+    ]);
+    const buy = res.enrichedTrades.find((t) => t.side === "buy")!;
+    expect(buy.lotStatus).toBe("partial");
+    expect(buy.lotSharesSold).toBe(6);
+    expect(buy.lotSharesRemaining).toBe(4);
+    expect(buy.lotRealizedPnl).toBe(180); // 6 * (130 - 100)
+  });
+
+  it("FIFO drains the OLDEST lot first — cheap shares go before expensive ones", () => {
+    resetIds();
+    // Buy 10 @ $50, then 10 @ $80 → sell 10 @ $100. FIFO says the
+    // sell consumes the $50 lot entirely; the $80 lot is untouched.
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy",  shares: 10, price: 50,  createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "buy",  shares: 10, price: 80,  createdAt: "2026-01-02T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 100, createdAt: "2026-01-03T00:00:00Z" }),
+    ]);
+    const buys = res.enrichedTrades.filter((t) => t.side === "buy");
+    // Sort by createdAt for stable indexing regardless of input order.
+    buys.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    // First (cheap) buy: fully drained, attributed $500 (10 × $50).
+    expect(buys[0].lotStatus).toBe("closed");
+    expect(buys[0].lotSharesSold).toBe(10);
+    expect(buys[0].lotRealizedPnl).toBe(500);
+    // Second (expensive) buy: untouched, no realized attribution.
+    expect(buys[1].lotStatus).toBe("open");
+    expect(buys[1].lotSharesSold).toBe(0);
+    expect(buys[1].lotRealizedPnl).toBe(0);
+  });
+
+  it("sell spanning multiple lots splits P&L per lot at each lot's own cost", () => {
+    resetIds();
+    // Buy 5 @ $50 + Buy 5 @ $80, then sell 10 @ $100 → FIFO consumes
+    // 5 from the $50 lot (P&L = 5 × 50 = $250) and 5 from the $80
+    // lot (P&L = 5 × 20 = $100). Each buy gets its own share.
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy",  shares: 5,  price: 50,  createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "buy",  shares: 5,  price: 80,  createdAt: "2026-01-02T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 100, createdAt: "2026-01-03T00:00:00Z" }),
+    ]);
+    const buys = res.enrichedTrades.filter((t) => t.side === "buy");
+    buys.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    expect(buys[0].lotStatus).toBe("closed");
+    expect(buys[0].lotRealizedPnl).toBe(250);
+    expect(buys[1].lotStatus).toBe("closed");
+    expect(buys[1].lotRealizedPnl).toBe(100);
+    // FIFO totals sum to the same magnitude as the weighted-avg
+    // realized on the sell row (they must agree when all buys are
+    // fully consumed — the reconciliation only diverges on partial
+    // fills). 350 both ways in this scenario.
+    expect(buys[0].lotRealizedPnl! + buys[1].lotRealizedPnl!).toBe(350);
+    const sell = res.enrichedTrades.find((t) => t.side === "sell")!;
+    expect(sell.realizedPnl).toBe(350); // 10 * (100 - avg $65)
+  });
+
+  it("distributes sell commission proportionally across consumed lots", () => {
+    resetIds();
+    // Buy 5 @ $50 + Buy 5 @ $80, then sell 10 @ $100 with $10 commission.
+    // Each lot supplies half the sold shares, so each absorbs half
+    // ($5) of the commission.
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy",  shares: 5,  price: 50,  createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "buy",  shares: 5,  price: 80,  createdAt: "2026-01-02T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 100, commission: 10, createdAt: "2026-01-03T00:00:00Z" }),
+    ]);
+    const buys = res.enrichedTrades.filter((t) => t.side === "buy");
+    buys.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    // Lot 1: gross $250 − $5 commission share = $245.
+    expect(nearly(buys[0].lotRealizedPnl!)).toBe(245);
+    // Lot 2: gross $100 − $5 commission share = $95.
+    expect(nearly(buys[1].lotRealizedPnl!)).toBe(95);
+  });
+
+  it("a Buy after the position went flat starts a fresh lot — no cross-cycle bleed", () => {
+    resetIds();
+    // Round trip 1: Buy 10 @ $50, sell 10 @ $70 (P&L $200).
+    // Then round trip 2: Buy 10 @ $60, sell 10 @ $80 (P&L $200).
+    // Each buy should be attributed only to sells that consumed
+    // from it — no leakage from cycle 1 into cycle 2 or vice-versa.
+    const res = computePaperAnalytics([
+      trade({ symbol: "AAPL", side: "buy",  shares: 10, price: 50, createdAt: "2026-01-01T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 70, createdAt: "2026-01-02T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "buy",  shares: 10, price: 60, createdAt: "2026-01-03T00:00:00Z" }),
+      trade({ symbol: "AAPL", side: "sell", shares: 10, price: 80, createdAt: "2026-01-04T00:00:00Z" }),
+    ]);
+    const buys = res.enrichedTrades.filter((t) => t.side === "buy");
+    buys.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    expect(buys[0].lotRealizedPnl).toBe(200); // 10 × ($70-$50)
+    expect(buys[1].lotRealizedPnl).toBe(200); // 10 × ($80-$60)
+    expect(buys[0].lotStatus).toBe("closed");
+    expect(buys[1].lotStatus).toBe("closed");
+  });
+});

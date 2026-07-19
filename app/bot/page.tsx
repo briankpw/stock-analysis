@@ -1,20 +1,17 @@
 "use client";
 
 import * as React from "react";
-import { Bell, BellOff, CheckCircle2, ExternalLink, Play, Smartphone, Trash2, XCircle, TrendingDown, TrendingUp, Minus, Send } from "lucide-react";
+import { AlertOctagon, Bell, BellOff, CheckCircle2, ExternalLink, Globe2, Newspaper, Play, Smartphone, Target, Trash2, TrendingUp, Users, XCircle, Send, HelpCircle, ChevronDown, Minus } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PageIntro } from "@/components/page-intro";
 import { KeyTerms } from "@/components/key-terms";
-import { TermTip } from "@/components/term-tip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
-import { useUi } from "@/lib/state";
 import { useT } from "@/lib/i18n";
-import { relativeTime, fmtCurrency } from "@/lib/format";
-import type { StoredSignal } from "@/lib/bot/store";
-import type { StrategyKey } from "@/lib/bot/strategy";
-import { humanName } from "@/lib/bot/strategy";
+import { relativeTime } from "@/lib/format";
 import { usePortfolioWatches } from "@/hooks/use-portfolio-watches";
 import type {
   StoredNotification,
@@ -28,22 +25,27 @@ import type {
   StoredNewsNotification,
 } from "@/lib/news-watch/store";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
+import type { PushSupportDiagnostics, PermissionState } from "@/hooks/use-push-notifications";
 import { SignalAlertsPanel } from "@/components/signal-alerts-panel";
+import { PortfolioRiskAlertsPanel } from "@/components/portfolio-risk-alerts-panel";
 import { cn } from "@/lib/utils";
 
+/**
+ * Status payload returned by `/api/bot` — trimmed after the legacy
+ * strategy checkboxes (SMA/RSI/MACD) were removed. The remaining fields
+ * are the *shared* worker heartbeat: whether the worker loop is enabled,
+ * when it last completed a full cycle, whether Telegram is configured,
+ * and the poll cadence. Per-channel status (portfolio / news / stock /
+ * technical / resonance / risk) lives in each panel's own hook.
+ */
 interface BotStatus {
   enabled: boolean;
-  activeStrategies: StrategyKey[];
-  availableStrategies: StrategyKey[];
   lastTickAt: string | null;
-  lastTickStatus: { ok: boolean; ticker: string; signalsFired: number; notifiesSent: number; errors: string[] } | null;
   telegramConfigured: boolean;
-  signals: StoredSignal[];
   pollIntervalSeconds: number;
 }
 
 function useBot() {
-  const ticker = useUi((s) => s.ticker);
   const [data, setData] = React.useState<BotStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -55,7 +57,7 @@ function useBot() {
     setLoading(true);
     (async () => {
       try {
-        const res = await fetch(`/api/bot?ticker=${encodeURIComponent(ticker)}${nonce > 0 ? `&_=${nonce}` : ""}`, { cache: "no-store" });
+        const res = await fetch(`/api/bot${nonce > 0 ? `?_=${nonce}` : ""}`, { cache: "no-store" });
         const body = await res.json();
         if (cancelled) return;
         if (!res.ok) setError(body?.error ?? `HTTP ${res.status}`);
@@ -67,7 +69,7 @@ function useBot() {
       }
     })();
     return () => { cancelled = true; };
-  }, [ticker, nonce]);
+  }, [nonce]);
 
   return { data, loading, error, reload };
 }
@@ -84,54 +86,78 @@ function post(body: Record<string, unknown>) {
   });
 }
 
-function SignalRow({ s }: { s: StoredSignal }) {
-  const t = useT();
-  const icon = s.type === "BUY" ? <TrendingUp className="h-3.5 w-3.5" />
-             : s.type === "SELL" ? <TrendingDown className="h-3.5 w-3.5" />
-             :                     <Minus className="h-3.5 w-3.5" />;
-  const label =
-    s.type === "BUY" ? t("bot.signal.buy") :
-    s.type === "SELL" ? t("bot.signal.sell") :
-    t("bot.signal.hold");
-  return (
-    <li className="glass rounded-lg p-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className={cn(
-          "chip",
-          s.type === "BUY" ? "chip-bull" : s.type === "SELL" ? "chip-bear" : "chip-neu",
-        )}>{icon} {label}</span>
-        <span className="text-sm font-semibold">{s.ticker}</span>
-        <span className="text-xs text-muted-foreground">{s.strategy}</span>
-        <span className="text-xs text-muted-foreground ml-auto">{relativeTime(s.createdAt)}</span>
-      </div>
-      <p className="text-xs text-muted-foreground mt-1.5">
-        {s.reason}
-        {s.price !== null && <> · <strong>{fmtCurrency(s.price)}</strong></>}
-      </p>
-      {s.notified && (
-        <p className="text-[0.65rem] uppercase tracking-wider text-primary mt-1">
-          <Send className="h-2.5 w-2.5 inline" /> {t("bot.alertedViaTelegram")}
-        </p>
-      )}
-    </li>
-  );
+// Persist the alert-tab selection so refreshes / navigating back-and-forth
+// don't dump users on the default panel every time. Read lazily inside
+// `getInitialAlertTab()` because this file also renders on the server
+// (Next.js RSC prerender pass), where `localStorage` doesn't exist.
+const ALERT_TAB_STORAGE_KEY = "bot.alerts.tab";
+const ALERT_TAB_VALUES = new Set([
+  "ticker",
+  "market",
+  "portfolio",
+  "insider",
+  "news",
+  "risks",
+]);
+
+type AlertTab =
+  | "ticker"
+  | "market"
+  | "portfolio"
+  | "insider"
+  | "news"
+  | "risks";
+
+function getInitialAlertTab(): AlertTab {
+  if (typeof window === "undefined") return "ticker";
+  try {
+    const raw = localStorage.getItem(ALERT_TAB_STORAGE_KEY);
+    // Legacy "signal" tab (pre-Jul-2026 split) → land on Ticker,
+    // which is where Master/Technical/Resonance subscriptions moved.
+    // Rewriting the stored key here means the user only pays the
+    // one-time migration on their first visit post-upgrade.
+    if (raw === "signal") {
+      try {
+        localStorage.setItem(ALERT_TAB_STORAGE_KEY, "ticker");
+      } catch {
+        /* ignore – see catch below */
+      }
+      return "ticker";
+    }
+    if (raw && ALERT_TAB_VALUES.has(raw)) {
+      return raw as AlertTab;
+    }
+  } catch {
+    /* private mode / storage access denied — fall through to default */
+  }
+  return "ticker";
 }
 
 export default function BotPage() {
   const { data, loading, error, reload } = useBot();
-  const ticker = useUi((s) => s.ticker);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
   const t = useT();
+
+  // Controlled tab state so SSR always renders `"ticker"` and hydration
+  // matches. Restoring the persisted tab happens in a mount effect below;
+  // reading localStorage inside `useState`'s initializer would work in
+  // isolation but reintroduces the SSR-vs-client render mismatch that
+  // makes React scream in the console.
+  const [alertTab, setAlertTab] = React.useState<AlertTab>("ticker");
+  React.useEffect(() => {
+    // `getInitialAlertTab()` migrates the legacy `"signal"` value to
+    // `"ticker"` on read, so the returned value is always one of the
+    // current AlertTab members — no extra guard needed here.
+    setAlertTab(getInitialAlertTab());
+  }, []);
 
   const run = async (action: string, extra: Record<string, unknown> = {}) => {
     setBusy(action);
     setMessage(null);
     try {
       const res = await post({ action, ...extra });
-      if (res?.report) {
-        setMessage(t("bot.tickComplete", { signals: res.report.signalsFired, alerts: res.report.notifiesSent }));
-      } else if (res?.detail) {
+      if (res?.detail) {
         setMessage(res.detail);
       } else {
         setMessage(t("common.done"));
@@ -144,14 +170,6 @@ export default function BotPage() {
     }
   };
 
-  const toggleStrategy = async (key: StrategyKey) => {
-    if (!data) return;
-    const next = data.activeStrategies.includes(key)
-      ? data.activeStrategies.filter((k) => k !== key)
-      : [...data.activeStrategies, key];
-    await run("set-strategies", { strategies: next });
-  };
-
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader pageTitleKey="nav.bot" />
@@ -160,10 +178,111 @@ export default function BotPage() {
       {error && <ErrorBanner message={error} retry={reload} />}
       {!data && !error && loading && <LoadingPage label={t("loading.botStatus")} />}
 
-      {data && (
-        <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr] animate-fade-in">
-          {/* Left column: config */}
-          <div className="space-y-4">
+      {/*
+        Alert-channel tabs come first — they're what users open /bot for.
+        The Bot Status + Push Notification cards used to sit above the
+        tabs but got demoted below in Jul 2026: they're infrastructure
+        (worker heartbeat + device delivery setup) and only need
+        attention when something's wrong. Everyday users care about
+        "did any of my alerts fire?", which is the tabs.
+
+        Five independent notification systems live in their own SQLite
+        tables and have their own tick loops. Tabbing them keeps the
+        /bot page short (each panel is ~200px tall when populated) and
+        mirrors the mental model users already have: "I want to check
+        my signal alerts" vs "I want to review news alerts" is a single
+        click instead of a scroll-and-hunt through five stacked cards.
+
+        Each panel keeps its own Card wrapper so the visual weight of the
+        alert section matches the surrounding cards; the tabs themselves
+        sit above the active card as a plain strip.
+
+        Storing the active tab in `localStorage` keeps the last-viewed tab
+        stable across reloads — a small quality-of-life win because most
+        users only care about one or two channels day-to-day.
+      */}
+      <Tabs
+        value={alertTab}
+        onValueChange={(v) => {
+          if (!ALERT_TAB_VALUES.has(v)) return;
+          setAlertTab(v as typeof alertTab);
+          try {
+            localStorage.setItem(ALERT_TAB_STORAGE_KEY, v);
+          } catch {
+            /* private mode / quota-exceeded — the tab still works,
+               we just lose the persistence. */
+          }
+        }}
+      >
+        {/*
+          The old single "Signal" tab was split into "Ticker signal"
+          and "Market signal" in Jul 2026 — users kept confusing
+          per-symbol subscriptions (Master / Technical / Resonance)
+          with market-segment subscriptions (Sector Resonance).
+          Keeping them side by side but as distinct tabs makes the
+          scope of each row unambiguous.
+        */}
+        <TabsList className="w-full sm:w-auto">
+          <TabsTrigger value="ticker" className="gap-1.5">
+            <Target className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.ticker")}</span>
+          </TabsTrigger>
+          <TabsTrigger value="market" className="gap-1.5">
+            <Globe2 className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.market")}</span>
+          </TabsTrigger>
+          <TabsTrigger value="portfolio" className="gap-1.5">
+            <Users className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.portfolio")}</span>
+          </TabsTrigger>
+          <TabsTrigger value="insider" className="gap-1.5">
+            <TrendingUp className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.insider")}</span>
+          </TabsTrigger>
+          <TabsTrigger value="news" className="gap-1.5">
+            <Newspaper className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.news")}</span>
+          </TabsTrigger>
+          <TabsTrigger value="risks" className="gap-1.5">
+            <AlertOctagon className="h-3.5 w-3.5" />
+            <span>{t("bot.tabs.risks")}</span>
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="ticker"><SignalAlertsPanel scope="ticker" /></TabsContent>
+        <TabsContent value="market"><SignalAlertsPanel scope="market" /></TabsContent>
+        <TabsContent value="portfolio"><PortfolioAlertsPanel /></TabsContent>
+        <TabsContent value="insider"><StockAlertsPanel /></TabsContent>
+        <TabsContent value="news"><NewsAlertsPanel /></TabsContent>
+        <TabsContent value="risks"><PortfolioRiskAlertsPanel /></TabsContent>
+      </Tabs>
+
+      {/*
+        Infrastructure / delivery cards — demoted below the alert tabs
+        in Jul 2026. Bot Status is the worker heartbeat + Telegram test
+        button; Push Alerts is browser/device push setup. Neither is
+        actionable in the "did my alert fire?" workflow, so they live
+        down here as a small "Setup & delivery" appendix. A subtle
+        heading separates them from the tabs above.
+      */}
+      <div className="mt-8 space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="h-px flex-1 bg-border" />
+          <span className="metric-label text-muted-foreground">
+            {t("bot.infra.title")}
+          </span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("bot.infra.hint")}
+        </p>
+
+        {data && (
+          <div className="animate-fade-in">
+            {/* Bot worker status — the shared heartbeat / on-off toggle
+                that gates *all* alert channels (Technical Signal,
+                6-Signal Resonance, Portfolio, Stock, News,
+                Portfolio-Risk). Each channel has its own detailed
+                panel in the tabs above. */}
             <Card>
               <CardHeader><CardTitle>{t("bot.status")}</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
@@ -194,103 +313,23 @@ export default function BotPage() {
                   <span>{t("bot.lastTick")}</span>
                   <span>{data.lastTickAt ? relativeTime(data.lastTickAt) : "—"}</span>
                 </div>
-                {data.lastTickStatus?.errors && data.lastTickStatus.errors.length > 0 && (
-                  <div>
-                    <p className="metric-label mb-1">{t("bot.lastErrors")}</p>
-                    <ul className="space-y-1 text-xs text-danger">
-                      {data.lastTickStatus.errors.map((e, i) => <li key={i}>{e}</li>)}
-                    </ul>
-                  </div>
-                )}
                 {message && <p className="text-xs text-primary">{message}</p>}
-                <div className="flex flex-col gap-2 pt-1">
-                  <Button size="sm" variant="outline" onClick={() => run("run-tick", { ticker })} disabled={!!busy}>
-                    {t("bot.runTickNow")}
-                  </Button>
+                <div className="pt-1">
                   <Button size="sm" variant="outline" onClick={() => run("test")} disabled={!data.telegramConfigured || !!busy}>
                     {t("bot.sendTest")}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => run("clear-history", { ticker })} disabled={!!busy}>
-                    {t("bot.clearHistory", { ticker })}
                   </Button>
                 </div>
               </CardContent>
             </Card>
-
-            <Card>
-              <CardHeader><CardTitle>{t("bot.strategies")}</CardTitle></CardHeader>
-              <CardContent className="space-y-2">
-                {data.availableStrategies.map((k) => {
-                  const termKey =
-                    k === "sma_crossover" ? "SMA Crossover" :
-                    k === "rsi_reversion" ? "RSI Reversion" :
-                    k === "macd_cross"    ? "MACD Cross" :
-                    "";
-                  const localized =
-                    k === "sma_crossover" ? t("bot.strategy.sma") :
-                    k === "rsi_reversion" ? t("bot.strategy.rsi") :
-                    k === "macd_cross"    ? t("bot.strategy.macd") :
-                    humanName(k);
-                  return (
-                    <label key={k} className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/30 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={data.activeStrategies.includes(k)}
-                        onChange={() => toggleStrategy(k)}
-                        className="h-4 w-4"
-                      />
-                      <span className="text-sm">
-                        {termKey ? (
-                          <TermTip term={termKey}>{localized}</TermTip>
-                        ) : (
-                          localized
-                        )}
-                      </span>
-                    </label>
-                  );
-                })}
-              </CardContent>
-            </Card>
           </div>
+        )}
 
-          {/* Right column: history */}
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                <TermTip term="Signal">{t("bot.signalHistory", { ticker })}</TermTip>
-              </CardTitle>
-              <p className="text-xs text-muted-foreground">
-                {t("bot.signalHistoryHint")}
-              </p>
-            </CardHeader>
-            <CardContent>
-              {data.signals.length === 0 ? (
-                <p className="text-sm text-muted-foreground">{t("bot.noSignals")}</p>
-              ) : (
-                <ul className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
-                  {data.signals.map((s) => <SignalRow key={s.id} s={s} />)}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      <PushAlertsPanel />
-      <SignalAlertsPanel />
-      <PortfolioAlertsPanel />
-      <StockAlertsPanel />
-      <NewsAlertsPanel />
+        <PushAlertsPanel />
+      </div>
 
       <KeyTerms
         terms={[
           "Signal",
-          "Cross Event",
-          "SMA Crossover",
-          "RSI Reversion",
-          "MACD Cross",
-          "Golden Cross",
-          "Death Cross",
           "SMA",
           "RSI",
           "MACD",
@@ -415,7 +454,7 @@ function PortfolioAlertsPanel() {
   };
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-2 flex-wrap">
           <Bell className="h-4 w-4 text-primary" />
@@ -508,25 +547,63 @@ function PortfolioAlertsPanel() {
         </div>
 
         {/* Recent notifications */}
-        <div>
-          <div className="metric-label mb-2">
-            Recent notifications ({state?.notifications.length ?? 0})
-          </div>
-          {(!state || state.notifications.length === 0) ? (
-            <p className="text-xs text-muted-foreground">
-              No alerts fired yet. Alerts will appear here (and get pushed to your Telegram
-              chat) once the poller catches a new trade matching one of your watches.
-            </p>
-          ) : (
-            <ul className="space-y-1.5 max-h-[26rem] overflow-y-auto pr-1">
-              {state.notifications.slice(0, 40).map((n) => (
-                <NotificationRow key={n.eventId} n={n} />
-              ))}
-            </ul>
-          )}
-        </div>
+        <PortfolioNotificationsList
+          notifications={state?.notifications ?? null}
+        />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Paginated view of the portfolio-alert notification history. Split into
+ * its own component so the pagination state stays local — it wouldn't
+ * make sense to reset the parent's tab state or refetch when the user
+ * just wants page 2. Page size (10) is a compromise between "see enough
+ * context at a glance" and "don't push the summary metrics off-screen."
+ */
+function PortfolioNotificationsList({
+  notifications,
+}: {
+  notifications: StoredNotification[] | null;
+}) {
+  const t = useT();
+  const list = notifications ?? [];
+  const pager = usePagination(list, 10);
+  return (
+    <div>
+      <div className="metric-label mb-2">
+        Recent notifications ({list.length})
+      </div>
+      {list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No alerts fired yet. Alerts will appear here (and get pushed to your Telegram
+          chat) once the poller catches a new trade matching one of your watches.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {pager.visibleItems.map((n) => (
+              <NotificationRow key={n.eventId} n={n} />
+            ))}
+          </ul>
+          <Pagination
+            page={pager.page}
+            pageCount={pager.pageCount}
+            total={pager.total}
+            range={pager.range}
+            onPageChange={pager.setPage}
+            pageSize={pager.pageSize}
+            onPageSizeChange={pager.setPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            pageSizeLabel={t("pager.pageSizeLabel")}
+            allLabel={t("pager.all")}
+            className="mt-3"
+            label={t("pager.notifications")}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -688,7 +765,7 @@ function StockAlertsPanel() {
   };
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-2 flex-wrap">
           <Bell className="h-4 w-4 text-primary" />
@@ -773,25 +850,54 @@ function StockAlertsPanel() {
           )}
         </div>
 
-        <div>
-          <div className="metric-label mb-2">
-            Recent insider notifications ({state?.notifications.length ?? 0})
-          </div>
-          {(!state || state.notifications.length === 0) ? (
-            <p className="text-xs text-muted-foreground">
-              No alerts fired yet. Once someone at a watched company files Form 4,
-              you'll see it here and in your Telegram chat.
-            </p>
-          ) : (
-            <ul className="space-y-1.5 max-h-[26rem] overflow-y-auto pr-1">
-              {state.notifications.slice(0, 40).map((n) => (
-                <StockNotificationRow key={n.eventId} n={n} />
-              ))}
-            </ul>
-          )}
-        </div>
+        <StockNotificationsList notifications={state?.notifications ?? null} />
       </CardContent>
     </Card>
+  );
+}
+
+function StockNotificationsList({
+  notifications,
+}: {
+  notifications: StoredStockNotification[] | null;
+}) {
+  const t = useT();
+  const list = notifications ?? [];
+  const pager = usePagination(list, 10);
+  return (
+    <div>
+      <div className="metric-label mb-2">
+        Recent insider notifications ({list.length})
+      </div>
+      {list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No alerts fired yet. Once someone at a watched company files Form 4,
+          you'll see it here and in your Telegram chat.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {pager.visibleItems.map((n) => (
+              <StockNotificationRow key={n.eventId} n={n} />
+            ))}
+          </ul>
+          <Pagination
+            page={pager.page}
+            pageCount={pager.pageCount}
+            total={pager.total}
+            range={pager.range}
+            onPageChange={pager.setPage}
+            pageSize={pager.pageSize}
+            onPageSizeChange={pager.setPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            pageSizeLabel={t("pager.pageSizeLabel")}
+            allLabel={t("pager.all")}
+            className="mt-3"
+            label={t("pager.notifications")}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -960,7 +1066,7 @@ function NewsAlertsPanel() {
   };
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-2 flex-wrap">
           <Bell className="h-4 w-4 text-primary" />
@@ -1034,25 +1140,54 @@ function NewsAlertsPanel() {
           )}
         </div>
 
-        <div>
-          <div className="metric-label mb-2">
-            Recent news notifications ({state?.notifications.length ?? 0})
-          </div>
-          {(!state || state.notifications.length === 0) ? (
-            <p className="text-xs text-muted-foreground">
-              No alerts fired yet. Once a new headline appears for a subscribed ticker,
-              you'll see it here and in your Telegram chat.
-            </p>
-          ) : (
-            <ul className="space-y-1.5 max-h-[26rem] overflow-y-auto pr-1">
-              {state.notifications.slice(0, 40).map((n) => (
-                <NewsNotificationRow key={n.eventId} n={n} />
-              ))}
-            </ul>
-          )}
-        </div>
+        <NewsNotificationsList notifications={state?.notifications ?? null} />
       </CardContent>
     </Card>
+  );
+}
+
+function NewsNotificationsList({
+  notifications,
+}: {
+  notifications: StoredNewsNotification[] | null;
+}) {
+  const t = useT();
+  const list = notifications ?? [];
+  const pager = usePagination(list, 10);
+  return (
+    <div>
+      <div className="metric-label mb-2">
+        Recent news notifications ({list.length})
+      </div>
+      {list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No alerts fired yet. Once a new headline appears for a subscribed ticker,
+          you'll see it here and in your Telegram chat.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {pager.visibleItems.map((n) => (
+              <NewsNotificationRow key={n.eventId} n={n} />
+            ))}
+          </ul>
+          <Pagination
+            page={pager.page}
+            pageCount={pager.pageCount}
+            total={pager.total}
+            range={pager.range}
+            onPageChange={pager.setPage}
+            pageSize={pager.pageSize}
+            onPageSizeChange={pager.setPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            pageSizeLabel={t("pager.pageSizeLabel")}
+            allLabel={t("pager.all")}
+            className="mt-3"
+            label={t("pager.notifications")}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1145,8 +1280,12 @@ function PushAlertsPanel() {
     }
   };
 
+  // No `mt-6` on this card — the parent `<div>` in the page shell owns
+  // the vertical rhythm via `space-y-4` so this panel slots in cleanly
+  // whether it's the first or the last child of the infrastructure
+  // section.
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader>
         <div className="flex items-center gap-2 flex-wrap">
           <Smartphone className="h-4 w-4 text-primary" />
@@ -1157,18 +1296,12 @@ function PushAlertsPanel() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        {/* Support state */}
+        {/* Targeted "why is Enable disabled?" banner. Users hitting a
+            mobile browser almost always fail one specific check (HTTPS,
+            iOS-not-PWA, permission denied); showing the exact reason
+            beats a generic "not supported". */}
         {!status.supported && !status.loading && (
-          <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs">
-            <p className="font-medium text-warning">
-              Push isn't supported in this browser.
-            </p>
-            <p className="mt-1 text-muted-foreground">
-              You need a secure connection (HTTPS or localhost) and a browser that supports the
-              Push API. On iPhone / iPad, first tap <em>Share → Add to Home Screen</em>, then
-              open the app from your home screen and try again.
-            </p>
-          </div>
+          <PushBlockerBanner diagnostics={status.diagnostics} />
         )}
 
         {status.supported && showIosHint && !status.subscribed && (
@@ -1191,6 +1324,12 @@ function PushAlertsPanel() {
             </p>
           </div>
         )}
+
+        {/* Always-visible diagnostic strip — collapsed by default. Lets
+            users on any device inspect exactly which browser capability
+            is (or isn't) available without opening devtools. */}
+        <PushDiagnosticsDetails diagnostics={status.diagnostics} permission={status.permission} />
+
 
         {/* This-device controls */}
         <div className="flex flex-col gap-2">
@@ -1285,5 +1424,181 @@ function PushAlertsPanel() {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Push blocker banner — picks the single most-actionable reason the Enable
+// button is disabled and renders a targeted fix.
+//
+// Precedence matters: if the transport is insecure (HTTP over LAN), no
+// amount of iOS or permission tweaking helps, so we surface that first.
+// The permission-denied banner is intentionally rendered separately by
+// the parent (it applies even when supported=true), so we don't duplicate
+// it here.
+// ---------------------------------------------------------------------------
+
+function PushBlockerBanner({ diagnostics: d }: { diagnostics: PushSupportDiagnostics }) {
+  let title: string;
+  let body: React.ReactNode;
+  let tone: "warning" | "danger" | "primary" = "warning";
+
+  if (!d.isSecureContext) {
+    tone = "danger";
+    title = "This page isn't served over HTTPS.";
+    body = (
+      <>
+        Web Push only works on <strong>HTTPS</strong> or <strong>http://localhost</strong>.
+        Your phone is loading this app over an insecure LAN IP, so the browser is
+        refusing to expose the Push API. Put the app behind HTTPS (Caddy, Cloudflare
+        Tunnel, ngrok, Tailscale Funnel, or a reverse proxy with a real certificate)
+        and reopen it from your phone.
+      </>
+    );
+  } else if (d.isIosSafariNotPwa) {
+    tone = "primary";
+    title = "iOS needs the app on your Home Screen first.";
+    body = (
+      <>
+        Apple only delivers Web Push to installed PWAs. In Safari, tap the{" "}
+        <em>Share</em> icon → <em>Add to Home Screen</em> → open the app from
+        your Home Screen, then come back to this page and tap Enable.
+      </>
+    );
+  } else if (!d.hasServiceWorker) {
+    title = "Service Workers are unavailable in this browser.";
+    body = (
+      <>
+        Chrome, Edge, Firefox, and Safari all ship with Service Worker support —
+        if your browser doesn't, it's likely an in-app WeChat / Line / Instagram
+        webview or a very old build. Open this URL in the real system browser
+        (Chrome / Safari) instead.
+      </>
+    );
+  } else if (!d.hasPushManager) {
+    title = "This browser doesn't expose the Push API.";
+    body = (
+      <>
+        Some older Chromium forks and privacy-first browsers strip out{" "}
+        <code>PushManager</code>. Try Chrome, Edge, Firefox, or Safari 16.4+.
+      </>
+    );
+  } else if (!d.hasNotificationApi) {
+    title = "This browser doesn't expose the Notification API.";
+    body = (
+      <>
+        The Notification API is missing from this browser. Try Chrome, Edge,
+        Firefox, or Safari 16.4+ in a normal (non-in-app) window.
+      </>
+    );
+  } else {
+    title = "Push isn't available in this browser.";
+    body = (
+      <>
+        Try opening this page in Chrome, Edge, Firefox, or Safari 16.4+ over
+        HTTPS. On iPhone / iPad, first add the app to your Home Screen.
+      </>
+    );
+  }
+
+  const border =
+    tone === "danger"
+      ? "border-danger/40 bg-danger/10"
+      : tone === "primary"
+        ? "border-primary/40 bg-primary/5"
+        : "border-warning/40 bg-warning/10";
+  const titleColor =
+    tone === "danger"
+      ? "text-danger"
+      : tone === "primary"
+        ? "text-primary"
+        : "text-warning";
+
+  return (
+    <div className={cn("rounded-md border p-3 text-xs", border)}>
+      <p className={cn("font-medium", titleColor)}>{title}</p>
+      <p className="mt-1 text-muted-foreground">{body}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Collapsible "why is my browser blocking push?" panel. Renders every
+// capability check as a green/red row so users can copy this into a bug
+// report or share it with support.
+// ---------------------------------------------------------------------------
+
+function PushDiagnosticsDetails({
+  diagnostics: d,
+  permission,
+}: {
+  diagnostics: PushSupportDiagnostics;
+  permission: PermissionState;
+}) {
+  return (
+    <details className="rounded-md border border-border/60 bg-muted/20 text-xs">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 select-none">
+        <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="font-medium">Why is Enable disabled? (browser diagnostics)</span>
+        <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+      </summary>
+      <ul className="space-y-1 px-3 pb-3">
+        <DiagRow ok={d.isSecureContext} label="Secure context (HTTPS or localhost)" hint="Web Push refuses to run over plain HTTP LAN IPs." />
+        <DiagRow ok={d.hasServiceWorker} label="Service Worker API available" hint="Required to receive pushes in the background." />
+        <DiagRow ok={d.hasPushManager} label="Push API available" hint="Provides pushManager.subscribe()." />
+        <DiagRow ok={d.hasNotificationApi} label="Notification API available" hint="Required to show OS-level alerts." />
+        <DiagRow
+          ok={!d.isIos || d.isStandalone}
+          label={d.isIos ? "iOS Home Screen install" : "iOS not detected"}
+          hint={
+            d.isIos
+              ? "iOS only delivers push to PWAs installed via Share → Add to Home Screen."
+              : "This device isn't iOS, so the Home Screen install rule doesn't apply."
+          }
+          neutral={!d.isIos}
+        />
+        <DiagRow
+          ok={permission === "granted"}
+          neutral={permission === "default"}
+          label={`Notification permission: ${permission}`}
+          hint={
+            permission === "denied"
+              ? "You (or a previous visit) blocked notifications for this site — re-allow it in browser settings."
+              : permission === "granted"
+                ? "You've already granted permission."
+                : "You'll be asked when you click Enable."
+          }
+        />
+      </ul>
+    </details>
+  );
+}
+
+function DiagRow({
+  ok,
+  neutral,
+  label,
+  hint,
+}: {
+  ok: boolean;
+  neutral?: boolean;
+  label: string;
+  hint: string;
+}) {
+  const icon = neutral ? (
+    <Minus className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+  ) : ok ? (
+    <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />
+  ) : (
+    <XCircle className="h-3.5 w-3.5 text-danger shrink-0" />
+  );
+  return (
+    <li className="flex items-start gap-2">
+      {icon}
+      <div className="min-w-0">
+        <div className="font-medium">{label}</div>
+        <div className="text-[0.7rem] text-muted-foreground">{hint}</div>
+      </div>
+    </li>
   );
 }

@@ -1,43 +1,37 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { runTick } from "@/lib/bot/engine";
 import { testConnection } from "@/lib/bot/notifier";
-import {
-  clearHistory,
-  DEFAULT_ACTIVE_STRATEGIES,
-  getState,
-  recentSignals,
-  setState,
-  STATE_KEYS,
-} from "@/lib/bot/store";
-import { STRATEGIES, type StrategyKey } from "@/lib/bot/strategy";
+import { getState, setState, STATE_KEYS } from "@/lib/bot/store";
 import { settings, telegramConfigured } from "@/lib/config";
 import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CFG_STRAT_KEYS = Object.keys(STRATEGIES) as StrategyKey[];
+/**
+ * Bot control endpoint.
+ *
+ * Now a tiny surface: the worker loop is on/off, and the user can
+ * send a Telegram test message. Everything else — per-ticker signal
+ * subscriptions, portfolio watches, insider watches, news, portfolio
+ * risk — lives in its own route with its own hook/UI.
+ *
+ * (Historically this route also exposed `set-strategies`, `run-tick`,
+ * and `clear-history` for the legacy SMA/RSI/MACD strategy tick. That
+ * tick was retired in July 2026 — see the comment in
+ * `lib/bot/engine.ts` for the rationale.)
+ */
 
 const configSchema = z.object({
-  action: z.enum(["set-enabled", "set-strategies", "run-tick", "test", "clear-history"]),
+  action: z.enum(["set-enabled", "test"]),
   enabled: z.boolean().optional(),
-  strategies: z.array(z.enum(CFG_STRAT_KEYS as [StrategyKey, ...StrategyKey[]])).optional(),
-  ticker: z.string().optional(),
 });
 
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const ticker = url.searchParams.get("ticker") ?? null;
-
+export async function GET() {
   return NextResponse.json({
     enabled: getState<boolean>(STATE_KEYS.ENABLED, true),
-    activeStrategies: getState<StrategyKey[]>(STATE_KEYS.ACTIVE_STRATEGIES, DEFAULT_ACTIVE_STRATEGIES),
-    availableStrategies: CFG_STRAT_KEYS,
     lastTickAt: getState<string | null>(STATE_KEYS.LAST_TICK_AT, null),
-    lastTickStatus: getState(STATE_KEYS.LAST_TICK_STATUS, null),
     telegramConfigured: telegramConfigured(),
-    signals: recentSignals(ticker, 50),
     pollIntervalSeconds: settings.bot.pollIntervalSeconds,
   });
 }
@@ -49,22 +43,9 @@ export async function POST(req: Request) {
       case "set-enabled":
         setState(STATE_KEYS.ENABLED, body.enabled ?? true);
         return NextResponse.json({ ok: true });
-      case "set-strategies":
-        setState(STATE_KEYS.ACTIVE_STRATEGIES, body.strategies ?? DEFAULT_ACTIVE_STRATEGIES);
-        return NextResponse.json({ ok: true });
-      case "run-tick": {
-        const t = (body.ticker ?? settings.ticker).toUpperCase();
-        const report = await runTick(t);
-        return NextResponse.json({ ok: true, report });
-      }
       case "test": {
         const res = await testConnection();
         return NextResponse.json({ ok: res.ok, detail: res.detail });
-      }
-      case "clear-history": {
-        const t = body.ticker?.toUpperCase();
-        const removed = clearHistory(t);
-        return NextResponse.json({ ok: true, removed });
       }
     }
   } catch (e) {

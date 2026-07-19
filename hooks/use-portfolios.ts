@@ -158,12 +158,36 @@ type Detail<T> = {
   reload: () => void;
 };
 
+// ---------------------------------------------------------------------------
+// Module-scoped detail cache. The server already keeps a persistent
+// SQLite snapshot per preset (see `lib/portfolios-cache/`), so the
+// network round-trip is fast — but re-mounts of the same preset
+// were still triggering a fetch + spinner + re-layout. Caching the
+// last successful payload in-module means the second visit to the
+// same preset renders instantly and does a silent re-fetch in the
+// background, matching the server-side stale-while-revalidate
+// story end-to-end.
+// ---------------------------------------------------------------------------
+
+type CacheKey = string; // `${kind}:${id}`
+const _detailCache = new Map<CacheKey, unknown>();
+
+function cacheKey(kind: string, id: string): CacheKey {
+  return `${kind}:${id}`;
+}
+
 function useDetail<T>(
   kind: "politician" | "fund" | "person",
   preset: PoliticianPreset | FundPreset | PersonPreset | null,
 ): Detail<T> {
-  const [data, setData] = React.useState<T | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  const initial = preset
+    ? (_detailCache.get(cacheKey(kind, preset.id)) as T | undefined) ?? null
+    : null;
+  const [data, setData] = React.useState<T | null>(initial);
+  // Cache hits skip the loading state entirely — the previous
+  // payload is displayed while a background refresh happens. Only
+  // cold fetches (no cache) show a spinner.
+  const [loading, setLoading] = React.useState(initial === null);
   const [error, setError] = React.useState<string | null>(null);
   const [sourceUnavailable, setSourceUnavailable] = React.useState(false);
   const [nonce, setNonce] = React.useState(0);
@@ -175,10 +199,21 @@ function useDetail<T>(
       setData(null);
       setSourceUnavailable(false);
       setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    const key = cacheKey(kind, preset.id);
+    // Seed with any prior payload for this preset so switching
+    // between politicians never blanks the screen.
+    const seeded = _detailCache.get(key) as T | undefined;
+    if (seeded !== undefined) {
+      setData(seeded);
+      setLoading(false);
+    } else {
+      setData(null);
+      setLoading(true);
+    }
     setError(null);
     setSourceUnavailable(false);
     (async () => {
@@ -194,8 +229,11 @@ function useDetail<T>(
           } else {
             setError(body?.error ?? `HTTP ${res.status}`);
           }
-          setData(null);
+          // Only clear the payload on cold errors — if we already
+          // had a cached value we'd rather keep showing it.
+          if (seeded === undefined) setData(null);
         } else {
+          _detailCache.set(key, body);
           setData(body as T);
         }
       } catch (e) {
@@ -205,6 +243,10 @@ function useDetail<T>(
       }
     })();
     return () => { cancelled = true; };
+    // `preset` is a stable-per-selection object from the parent's
+    // preset picker — safe to depend on the reference. `preset.id`
+    // is included in the fetch, so switching presets triggers a
+    // new effect naturally.
   }, [kind, preset, nonce]);
 
   return { data, loading, error, sourceUnavailable, reload };
