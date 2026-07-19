@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
+import { headers } from "next/headers";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { AppShell } from "@/components/app-shell";
+
 
 export const metadata: Metadata = {
   title: "Stock Analysis",
@@ -34,11 +36,27 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  // `middleware.ts` sets a per-request CSP nonce and mirrors it onto
+  // the `x-nonce` request header (see `passThrough` there). We read
+  // it here so every inline script the app emits — currently just
+  // `next-themes`' FOUC guard and Next.js's own hydration bootstrap —
+  // can be nonced under `'strict-dynamic'`, keeping the CSP strict
+  // in production without breaking themes or hydration.
+  //
+  // The header is absent for the tiny handful of static-asset
+  // requests that bypass middleware (see IGNORED_PREFIXES). Those
+  // don't render script, so an empty nonce is fine — the `nonce=""`
+  // attribute just doesn't match anything and browsers ignore it.
+  const nonce = (await headers()).get("x-nonce") ?? "";
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen antialiased">
-        <Providers>
+        <Providers nonce={nonce}>
           {/* AppShell is a client wrapper so the grid template can react
               to the persisted `sidebarDesktopCollapsed` preference —
               layout.tsx itself stays a Server Component (required for
@@ -46,25 +64,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AppShell>{children}</AppShell>
         </Providers>
         {/*
-          Service-worker registrar. Using next/script keeps the app CSP-clean
-          because Next.js emits it as a hashed inline script during build,
-          rather than the raw `dangerouslySetInnerHTML` bag of characters.
+          Service-worker registrar. Externalised to /public/sw-register.js
+          (a static file) so we don't need `script-src 'unsafe-inline'`
+          in the production CSP. `next/script` with a `src` still gives us
+          the `afterInteractive` load strategy without inlining anything.
         */}
-        <Script id="sw-register" strategy="afterInteractive">
-          {`if ('serviceWorker' in navigator) {
-              window.addEventListener('load', function () {
-                // updateViaCache: 'none' bypasses the HTTP cache for the SW
-                // script itself, so a bumped service-worker.js is picked up
-                // on the next reload instead of after 24h. .update() then
-                // asks the browser to check for a byte-difference right
-                // now — cheap when unchanged.
-                navigator.serviceWorker
-                  .register('/service-worker.js', { updateViaCache: 'none' })
-                  .then(function (reg) { reg.update().catch(function () {}); })
-                  .catch(function () {});
-              });
-            }`}
-        </Script>
+        <Script
+          src="/sw-register.js"
+          strategy="afterInteractive"
+          nonce={nonce}
+        />
       </body>
     </html>
   );

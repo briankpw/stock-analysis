@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { redactError } from "@/lib/http";
 import {
-  fetchFearGreedPayload,
+  fetchFearGreedWithProvenance,
   type CnnPayload,
   type FearGreedRating,
 } from "@/lib/fear-greed";
@@ -38,9 +38,28 @@ export interface FearGreedResponse {
   source: string;
   fetchedAt: string;
   cached: boolean;
+  /**
+   * True when the response is served from the persistent
+   * last-known-good store because CNN was unreachable / returned a
+   * broken payload. Clients render a "stale" badge in this case.
+   */
+  stale: boolean;
+  /**
+   * Machine-readable reason we fell back, when we did (`"network"`,
+   * `"http_error"`, `"schema_drift"`), otherwise `null`. Kept
+   * separately from `stale` so telemetry can group failures without
+   * parsing free-form strings.
+   */
+  fallbackReason: "network" | "http_error" | "schema_drift" | null;
 }
 
-function toSlim(raw: CnnPayload): FearGreedResponse {
+function toSlim(
+  raw: CnnPayload,
+  provenance: {
+    stale: boolean;
+    fallbackReason: "network" | "http_error" | "schema_drift" | null;
+  },
+): FearGreedResponse {
   const ind = (
     key: string,
     v: { score: number; rating: FearGreedRating },
@@ -76,13 +95,16 @@ function toSlim(raw: CnnPayload): FearGreedResponse {
     // decided by the time the payload lands. As a proxy, expose
     // `false` here — clients treat this field as advisory only.
     cached: false,
+    stale: provenance.stale,
+    fallbackReason: provenance.fallbackReason,
   };
 }
 
 export async function GET() {
   try {
-    const raw = await fetchFearGreedPayload();
-    return NextResponse.json(toSlim(raw));
+    const { payload, stale, fallbackReason } =
+      await fetchFearGreedWithProvenance();
+    return NextResponse.json(toSlim(payload, { stale, fallbackReason }));
   } catch (e) {
     const r = redactError(e, 502, "Fear & Greed source unavailable");
     return NextResponse.json({ error: r.message }, { status: r.status });

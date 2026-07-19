@@ -76,6 +76,9 @@ export const STATE_KEYS = {
   /** ISO timestamp of the last successful retention prune. Used by
    *  `lib/bot/retention.ts` to enforce the once-per-day gate. */
   LAST_RETENTION_PRUNE_AT: "bot.last_retention_prune_at",
+  /** ISO timestamp of the last successful SQLite hot-backup. Used
+   *  by `lib/bot/backup.ts` to enforce its once-per-day gate. */
+  LAST_BACKUP_AT: "bot.last_backup_at",
 } as const;
 
 

@@ -118,6 +118,93 @@ function isPermanent(err: unknown): boolean {
 }
 
 
+// -------- Cross-ticker circuit breaker ---------------------------------------
+/**
+ * When Yahoo starts rate-limiting us, the failure is almost never
+ * scoped to a single ticker — a 429 or "Too Many Requests" comes
+ * back for the *whole IP*. Without a circuit breaker, every
+ * subsequent per-ticker fetch fires its own 4-attempt retry
+ * schedule (worst case 1.5s + 3s + 6s ≈ 10.5s per ticker) while
+ * Yahoo keeps saying no. For a page that loads a watchlist of 20
+ * tickers that's ~3.5 minutes of pointless work.
+ *
+ * The breaker records every rate-limit failure in a rolling
+ * `CB_WINDOW_MS` window across ALL tickers/endpoints. Once the
+ * window contains `CB_THRESHOLD` events the circuit is considered
+ * open — any new call short-circuits immediately with a
+ * `RateLimitedError` so callers can render the "Yahoo is
+ * throttling us" state without waiting for their own retries to
+ * play out. As events age out of the window the breaker closes
+ * itself naturally, which gives us leaky-bucket semantics without
+ * needing an explicit half-open state.
+ *
+ * The window and threshold are tuned so:
+ *   * A single flaky 429 doesn't trip the breaker (background
+ *     jitter alone routinely produces 1–2 events in a minute).
+ *   * A genuine hostname-wide throttle (5+ failures in a minute)
+ *     opens the breaker and gates the rest of the fleet for the
+ *     next ~60s.
+ */
+const CB_WINDOW_MS = 60_000;
+const CB_THRESHOLD = 5;
+let _rateLimitEvents: number[] = [];
+let _circuitOpenAnnouncedAt = 0;
+
+function _pruneCircuitEvents(now: number): void {
+  const cutoff = now - CB_WINDOW_MS;
+  // Drop old entries in place — the array is short (≤ CB_THRESHOLD
+  // + a few), so O(n) filtering per call is fine and keeps GC
+  // pressure minimal versus repeatedly reallocating.
+  _rateLimitEvents = _rateLimitEvents.filter((t) => t >= cutoff);
+}
+
+function _isCircuitOpen(): boolean {
+  _pruneCircuitEvents(Date.now());
+  return _rateLimitEvents.length >= CB_THRESHOLD;
+}
+
+function _recordRateLimitEvent(): void {
+  const now = Date.now();
+  _rateLimitEvents.push(now);
+  _pruneCircuitEvents(now);
+  if (
+    _rateLimitEvents.length >= CB_THRESHOLD &&
+    now - _circuitOpenAnnouncedAt > CB_WINDOW_MS
+  ) {
+    // Log once per open-window so operators see the transition in
+    // container logs without spamming the console for every
+    // subsequent short-circuited call.
+    _circuitOpenAnnouncedAt = now;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[yahoo] circuit breaker OPEN — ${_rateLimitEvents.length} rate-limit failures in the last ${CB_WINDOW_MS / 1000}s. ` +
+        `Short-circuiting subsequent calls until events age out.`,
+    );
+  }
+}
+
+/**
+ * Expose the current state for /api/health-style diagnostics.
+ * Kept intentionally minimal — the object is a snapshot, not a
+ * live view, so callers can render it without worrying about
+ * concurrent mutation.
+ */
+export function getYahooCircuitState(): {
+  open: boolean;
+  recentFailures: number;
+  windowMs: number;
+  threshold: number;
+} {
+  _pruneCircuitEvents(Date.now());
+  return {
+    open: _rateLimitEvents.length >= CB_THRESHOLD,
+    recentFailures: _rateLimitEvents.length,
+    windowMs: CB_WINDOW_MS,
+    threshold: CB_THRESHOLD,
+  };
+}
+
+
 // -------- Retry helper (mirrors Python's `_retry`) ---------------------------
 async function retry<T>(
   fn: () => Promise<T>,
@@ -127,6 +214,15 @@ async function retry<T>(
   const baseDelay = opts.baseDelayMs ?? 1500;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    // Fast-path: if the cross-ticker breaker is open, don't burn
+    // another retry attempt against an upstream we already know is
+    // saying no. Surfaces as the same `RateLimitedError` a real 429
+    // would, so callers already handle this state.
+    if (_isCircuitOpen()) {
+      throw new RateLimitedError(
+        "Yahoo Finance circuit breaker open (cross-ticker cooldown in effect)",
+      );
+    }
     try {
       return await fn();
     } catch (err) {
@@ -134,6 +230,11 @@ async function retry<T>(
       // Permanent failures (invalid ticker, 404, ...) surface immediately;
       // there is nothing a retry can fix and each attempt burns quota.
       if (isPermanent(err)) break;
+      // Rate-limit failures feed the cross-ticker breaker so once
+      // Yahoo starts throttling us fleet-wide, the next call
+      // short-circuits at the top of the loop instead of waiting
+      // for its own exponential backoff to play out.
+      if (isRateLimit(err)) _recordRateLimitEvent();
       if (attempt === attempts) break;
       const jitter = Math.random() * 500;
       const wait = baseDelay * 2 ** (attempt - 1) + jitter;

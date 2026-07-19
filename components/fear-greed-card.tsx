@@ -256,6 +256,18 @@ export function FearGreedCard() {
               <p className="text-[0.7rem] text-muted-foreground mt-0.5 text-center">
                 {t("fg.updated", { time: new Date(data.updatedAt).toLocaleDateString() })}
               </p>
+              {data.stale && (
+                <p
+                  className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[0.68rem] text-amber-200 text-center"
+                  title={
+                    data.fallbackReason
+                      ? `CNN Fear & Greed fetch failed (${data.fallbackReason}); showing last known good value.`
+                      : "Showing last known good value."
+                  }
+                >
+                  {t("fg.stale")}
+                </p>
+              )}
             </div>
 
             <div className="space-y-4">

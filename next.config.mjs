@@ -31,69 +31,33 @@ const nextConfig = {
   // partly triggered by our old MIME-type problems \u2014 Next.js handles this
   // natively, but we harden it here anyway).
   async headers() {
-    // A pragmatic CSP for a same-origin Next.js dashboard:
-    //  * default-src 'self'   — nothing loads from third parties by default
-    //  * script-src 'self' 'unsafe-inline'  — Next.js emits some inline
-    //    scripts for hydration/routing; keep 'unsafe-inline' unless we
-    //    later add nonces (blocked on Next 15.2+ headers().nonce)
-    //  * connect-src 'self'   — the only network egress from the browser
-    //    is /api/*. External data sources go through server routes.
-    //  * img-src 'self' data: blob:   — allow inline SVG data URIs and
-    //    canvas exports used by lightweight-charts
-    //  * frame-ancestors 'self'  — same-origin embedding only (blocks
-    //    cross-site clickjacking but allows the app to iframe its own
-    //    API responses, e.g. the /portfolios PDF proxy)
+    // Content-Security-Policy is set **per-request** in `middleware.ts`
+    // because it embeds a fresh nonce for each response
+    // (`'nonce-<n>' 'strict-dynamic'`). Doing so here would give
+    // every response the same static nonce, which is worse than no
+    // nonce at all — an attacker could copy it into an injected
+    // inline script.
     //
-    // Dev-only relaxations (`npm run dev` == `NODE_ENV === "development"`):
-    //  * script-src adds 'unsafe-eval' because Next.js's Fast Refresh
-    //    runtime uses `eval()` to swap components on save. Without it,
-    //    the *first* client script throws EvalError, React never hydrates,
-    //    and every `useEffect`/data fetch is silently dead — the page
-    //    looks stuck on the loading spinner and no /api/* calls fire.
-    //  * connect-src adds `ws:` and `wss:` for the HMR websocket
-    //    (`ws://localhost:5001/_next/webpack-hmr`), otherwise Fast Refresh
-    //    disconnects and you have to full-reload after every save.
-    // Neither concession applies to `next start` / prod, where React
-    // Refresh is stripped from the bundle.
-    const isDev = process.env.NODE_ENV !== "production";
-    const scriptSrc = isDev
-      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
-      : "script-src 'self' 'unsafe-inline'";
-    const connectSrc = isDev
-      ? "connect-src 'self' ws: wss:"
-      : "connect-src 'self'";
-
-    const csp = [
-      "default-src 'self'",
-      "base-uri 'self'",
-      scriptSrc,
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
-      "font-src 'self' data:",
-      connectSrc,
-      "worker-src 'self' blob:",
-      "manifest-src 'self'",
-      // `frame-ancestors 'self'` (not `'none'`) so our own pages can
-      // legitimately iframe our own API responses — specifically the
-      // PDF proxy at /api/portfolios/ptr-pdf, which the politician
-      // filings page embeds inline. Cross-origin embedding (the actual
-      // clickjacking threat) is still blocked; only same-origin
-      // embedding is permitted, which is the standard security
-      // posture for a single-origin app.
-      "frame-ancestors 'self'",
-      "form-action 'self'",
-      "object-src 'none'",
-    ].join("; ");
-
+    // Strict-Transport-Security is likewise middleware-owned so it
+    // ships alongside the CSP as a coherent security-headers layer.
+    //
+    // Everything below is safe to declare statically because it
+    // doesn't depend on per-request state:
+    //   * X-Content-Type-Options — MIME-sniff hardening.
+    //   * Referrer-Policy — strip URL query on cross-origin nav.
+    //   * X-Frame-Options — clickjacking defence (mirrors CSP
+    //     frame-ancestors).
+    //   * Permissions-Policy — turns off browser features we never
+    //     use so third-party subresources can't opt themselves in.
     const securityHeaders = [
-      { key: "Content-Security-Policy", value: csp },
       { key: "X-Content-Type-Options", value: "nosniff" },
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
       // `SAMEORIGIN` (not `DENY`) matches the CSP `frame-ancestors
-      // 'self'` above — same rationale. `DENY` would forbid even the
-      // app iframing its own PDF proxy, which breaks the politician
-      // filings preview. `SAMEORIGIN` still hard-blocks cross-site
-      // clickjacking, which is the only real threat here.
+      // 'self'` set in middleware — same rationale. `DENY` would
+      // forbid even the app iframing its own PDF proxy, which
+      // breaks the politician filings preview. `SAMEORIGIN` still
+      // hard-blocks cross-site clickjacking, which is the only real
+      // threat here.
       { key: "X-Frame-Options", value: "SAMEORIGIN" },
       {
         key: "Permissions-Policy",

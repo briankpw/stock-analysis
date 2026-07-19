@@ -25,6 +25,103 @@ import { authRequired, validatePresentedSecret } from "@/lib/auth";
 
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const AUTH_ENABLED = authRequired();
+const IS_DEV = process.env.NODE_ENV !== "production";
+
+/**
+ * Build the per-request Content-Security-Policy header value.
+ *
+ * Modern browsers use `'strict-dynamic'` + per-request nonce and
+ * ignore `'unsafe-inline'` / `'unsafe-eval'` when strict-dynamic is
+ * present, so the policy is strict on evergreen browsers while still
+ * degrading gracefully on old ones. The nonce is required for every
+ * inline `<script>` the app emits (currently just the
+ * `next-themes` FOUC guard).
+ *
+ * In development we deliberately keep `'unsafe-inline'` +
+ * `'unsafe-eval'` active for the whole `script-src` — Next.js's
+ * Fast Refresh runtime uses `eval()` and its dev-only HMR
+ * bootstrap contains inline scripts without a nonce we can inject.
+ * Without those relaxations, `npm run dev` renders a blank page
+ * and every network request silently fails (see the retro in
+ * `next.config.mjs`). Production strips React Refresh, so neither
+ * concession applies there.
+ */
+function buildCsp(nonce: string): string {
+  const scriptSrc = IS_DEV
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : // Strict CSP pattern: strict-dynamic + nonce is honoured by
+      // modern browsers, which then ignore 'unsafe-inline'; older
+      // browsers fall back to unsafe-inline and still work.
+      // 'unsafe-eval' is intentionally NOT included in prod — no
+      // library the app ships uses eval() in production builds.
+      `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline' https:`;
+  const connectSrc = IS_DEV
+    ? "connect-src 'self' ws: wss:"
+    : "connect-src 'self'";
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    scriptSrc,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    connectSrc,
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    // `frame-ancestors 'self'` (not `'none'`) so the app's own
+    // pages can iframe the PDF proxy at /api/portfolios/ptr-pdf.
+    // See next.config.mjs for the full rationale.
+    "frame-ancestors 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join("; ");
+}
+
+/**
+ * Cryptographically random base64 nonce (16 bytes → 22 base64 chars).
+ * Uses the Web Crypto API which is available in Next.js edge/Node
+ * runtimes without extra imports.
+ */
+function generateNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  // Convert to base64 without padding.
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  return btoa(bin).replace(/=+$/, "");
+}
+
+/**
+ * Attach the security headers we set per-request (CSP + HSTS) to
+ * `res`. Called at every return path in `middleware()` so no page
+ * navigation escapes the policy — the previous static-config
+ * approach in next.config.mjs couldn't participate in a per-request
+ * nonce, so it's been consolidated here.
+ *
+ * `nonce` is embedded in the CSP header so browsers can enforce it,
+ * and mirrored to `x-nonce` on the *request* headers we pass
+ * downstream. Server Components read `x-nonce` via `headers()` and
+ * forward it to `<Script>` / `<ThemeProvider nonce>` so their
+ * inline scripts execute under strict-dynamic.
+ */
+function applySecurityHeaders(
+  res: NextResponse,
+  nonce: string,
+): NextResponse {
+  res.headers.set("Content-Security-Policy", buildCsp(nonce));
+  // HSTS: 6 months, all subdomains, preload-eligible. Only meaningful
+  // when the site is served over HTTPS — a browser that first sees
+  // HSTS over HTTP will ignore it, and containers reachable only via
+  // a reverse proxy (nginx / Caddy / Cloudflare) inherit the proxy's
+  // TLS. Kept short of a full year while operators verify TLS is
+  // stable end-to-end; extend to 63072000 (2y) with `preload` after a
+  // clean rollout if you plan to submit to hstspreload.org.
+  res.headers.set(
+    "Strict-Transport-Security",
+    "max-age=15552000; includeSubDomains",
+  );
+  return res;
+}
 
 /**
  * When APP_URL is set, we accept it as an authoritative same-origin
@@ -104,21 +201,23 @@ function isSameOrigin(req: NextRequest): boolean {
   return check(req.headers.get("origin")) || check(req.headers.get("referer"));
 }
 
-function unauthorized(reason: string): NextResponse {
-  return NextResponse.json({ error: reason }, { status: 401 });
+function unauthorized(reason: string, nonce: string): NextResponse {
+  const res = NextResponse.json({ error: reason }, { status: 401 });
+  return applySecurityHeaders(res, nonce);
 }
 
-function forbidden(reason: string): NextResponse {
-  return NextResponse.json({ error: reason }, { status: 403 });
+function forbidden(reason: string, nonce: string): NextResponse {
+  const res = NextResponse.json({ error: reason }, { status: 403 });
+  return applySecurityHeaders(res, nonce);
 }
 
-function tooManyRequests(retryAfterMs: number): NextResponse {
+function tooManyRequests(retryAfterMs: number, nonce: string): NextResponse {
   const res = NextResponse.json(
     { error: "Rate limit exceeded" },
     { status: 429 },
   );
   res.headers.set("Retry-After", String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
-  return res;
+  return applySecurityHeaders(res, nonce);
 }
 
 /**
@@ -175,23 +274,44 @@ function isPageRequest(req: NextRequest): boolean {
   return accept.includes("text/html");
 }
 
-function redirectToLogin(req: NextRequest): NextResponse {
+function redirectToLogin(req: NextRequest, nonce: string): NextResponse {
   const url = req.nextUrl.clone();
   const original = req.nextUrl.pathname + req.nextUrl.search;
   url.pathname = "/login";
   url.search = original && original !== "/" ? `?next=${encodeURIComponent(original)}` : "";
-  return NextResponse.redirect(url);
+  const res = NextResponse.redirect(url);
+  return applySecurityHeaders(res, nonce);
+}
+
+/**
+ * Attach the CSP+HSTS headers to a pass-through response. Used at
+ * every "request looks fine, forward it" branch of `middleware()`
+ * so no navigation escapes the security-header layer. Also copies
+ * the nonce onto the *request* headers so Server Components can
+ * pick it up via `headers()`.
+ */
+function passThrough(req: NextRequest, nonce: string): NextResponse {
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set("x-nonce", nonce);
+  const res = NextResponse.next({ request: { headers: requestHeaders } });
+  return applySecurityHeaders(res, nonce);
 }
 
 export function middleware(req: NextRequest): NextResponse | undefined {
   const { pathname } = req.nextUrl;
   const method = req.method.toUpperCase();
+  const nonce = generateNonce();
 
   // ---- Ignored prefixes ---------------------------------------------
   // Cheap prefix check up front so we don't run any logic against
   // static assets. The matcher below already filters most of these,
   // but keeping the explicit list here makes the exclusion contract
   // grep-able and makes middleware-unit-testing straightforward.
+  //
+  // Ignored assets bypass CSP too — a font/image/service-worker
+  // response doesn't render script and therefore doesn't need a
+  // per-request nonce; leaving the static header from next.config.mjs
+  // is fine.
   for (const prefix of IGNORED_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(prefix)) return undefined;
   }
@@ -214,7 +334,7 @@ export function middleware(req: NextRequest): NextResponse | undefined {
       capacity: LOGIN_RATE.capacity,
       refillPerSec: LOGIN_RATE.refillPerSec,
     });
-    if (!r.ok) return tooManyRequests(r.retryAfterMs);
+    if (!r.ok) return tooManyRequests(r.retryAfterMs, nonce);
   }
 
   // ---- 0. Unprotected probe / auth endpoints -------------------------
@@ -223,8 +343,11 @@ export function middleware(req: NextRequest): NextResponse | undefined {
   // loop. The login endpoint must be reachable so users can obtain a
   // cookie in the first place; the status endpoint answers "is auth
   // needed?" for the login page without leaking any secret.
-  if (UNPROTECTED_PATHS.has(pathname)) return undefined;
-  if (UNPROTECTED_PAGES.has(pathname)) return undefined;
+  //
+  // These still get the CSP+HSTS layer (login page renders inline
+  // scripts too).
+  if (UNPROTECTED_PATHS.has(pathname)) return passThrough(req, nonce);
+  if (UNPROTECTED_PAGES.has(pathname)) return passThrough(req, nonce);
 
   // ---- 1. Optional session check (covers /api/* AND page routes) ----
   // When APP_TOKEN (or APP_USERNAME+APP_PASSWORD) is configured, we
@@ -240,19 +363,23 @@ export function middleware(req: NextRequest): NextResponse | undefined {
   if (AUTH_ENABLED) {
     const presented = extractToken(req);
     if (!presented || !validatePresentedSecret(presented)) {
-      if (isPageRequest(req)) return redirectToLogin(req);
-      return unauthorized(presented ? "Invalid credentials" : "Missing credentials");
+      if (isPageRequest(req)) return redirectToLogin(req, nonce);
+      return unauthorized(
+        presented ? "Invalid credentials" : "Missing credentials",
+        nonce,
+      );
     }
   }
 
   // Below this point we only apply the CSRF + rate-limit guards to
-  // /api/* — those don't make sense for regular page GETs.
-  if (!pathname.startsWith("/api/")) return undefined;
+  // /api/* — those don't make sense for regular page GETs. Pages
+  // still get the security-headers layer.
+  if (!pathname.startsWith("/api/")) return passThrough(req, nonce);
 
   // ---- 2. Same-origin CSRF check on mutations ------------------------
   if (MUTATION_METHODS.has(method)) {
     if (!isSameOrigin(req)) {
-      return forbidden("Cross-origin request rejected");
+      return forbidden("Cross-origin request rejected", nonce);
     }
   }
 
@@ -269,7 +396,7 @@ export function middleware(req: NextRequest): NextResponse | undefined {
         capacity: MUTATION_RATE.capacity,
         refillPerSec: MUTATION_RATE.refillPerSec,
       });
-      if (!r.ok) return tooManyRequests(r.retryAfterMs);
+      if (!r.ok) return tooManyRequests(r.retryAfterMs, nonce);
     }
 
     // Search endpoint fans out to SEC — tighter budget.
@@ -280,7 +407,7 @@ export function middleware(req: NextRequest): NextResponse | undefined {
         capacity: SEARCH_RATE.capacity,
         refillPerSec: SEARCH_RATE.refillPerSec,
       });
-      if (!r.ok) return tooManyRequests(r.retryAfterMs);
+      if (!r.ok) return tooManyRequests(r.retryAfterMs, nonce);
     }
 
     // Manual "run tick" actions kick off expensive external work. Cap at
@@ -299,11 +426,11 @@ export function middleware(req: NextRequest): NextResponse | undefined {
         capacity: TICK_RATE.capacity,
         refillPerSec: TICK_RATE.refillPerSec,
       });
-      if (!r.ok) return tooManyRequests(r.retryAfterMs);
+      if (!r.ok) return tooManyRequests(r.retryAfterMs, nonce);
     }
   }
 
-  return undefined;
+  return passThrough(req, nonce);
 }
 
 export const config = {

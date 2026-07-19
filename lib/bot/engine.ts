@@ -37,6 +37,7 @@ import { runSectorTechnicalTick } from "../sector-technical-watch/engine";
 import { runPortfolioRiskTick } from "../portfolio-risk/engine";
 import { runPortfolioSnapshotTick } from "../portfolios-cache/engine";
 import { runRetentionTick } from "./retention";
+import { runBackupTick } from "./backup";
 
 /**
  * Long-running worker loop. Fires every enabled sub-tick in isolation
@@ -132,6 +133,19 @@ export async function runForever(_ticker?: string): Promise<void> {
             .map(([k, v]) => `${k}=${v}`)
             .join(" ");
           return `deleted=${total} (${perTable}) errors=${r.errors.length}`;
+        }),
+        runTick("sqlite-backup", runBackupTick, (r) => {
+          // Backup runs at most once per 24 h; on skipped ticks
+          // stay quiet, same rationale as the retention prune
+          // above. Failures log at info level (the outer catch in
+          // `runTick` would double-log if we returned an error
+          // line here).
+          if (r.skippedNotDue || r.skippedLocked) return null;
+          if (r.failed) return `FAILED: ${r.error ?? "unknown"}`;
+          return (
+            `wrote=${r.writtenTo ?? "?"} ` +
+            `bytes=${r.writtenBytes ?? "?"} rotated=${r.rotatedOut}`
+          );
         }),
       ]);
       // Worker heartbeat. Written *after* every sub-tick so the UI's

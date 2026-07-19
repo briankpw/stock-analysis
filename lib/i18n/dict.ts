@@ -1069,6 +1069,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "fg.error":                     { en: "Couldn't load Fear & Greed",   "zh-CN": "无法加载恐惧与贪婪指数" },
   "fg.updated":                   { en: "As of {time}",                 "zh-CN": "截至 {time}" },
   "fg.cachedNote":                { en: "Served from server cache.",    "zh-CN": "由服务端缓存提供。" },
+  "fg.stale":                     { en: "CNN unreachable — showing last known value.", "zh-CN": "CNN 暂不可用——展示上次的数值。" },
   "fg.timeline":                  { en: "Recent history",               "zh-CN": "近期变化" },
   "fg.components":                { en: "Seven underlying indicators",  "zh-CN": "七个基础指标" },
 
