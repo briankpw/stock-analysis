@@ -23,7 +23,7 @@
 // they may hold the pre-migration manifest which listed a single
 // "any maskable" icon). This comment exists to bump the SW hash so
 // browsers re-fetch a fresh manifest + icon set on next visit.
-const CACHE_NAME = "key-stock-b4660e697d"; // auto-managed by scripts/bump-service-worker.mjs
+const CACHE_NAME = "key-stock-feba02967f"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
 // Fallback rendering used when a push arrives without a JSON payload
