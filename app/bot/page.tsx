@@ -1259,7 +1259,13 @@ function NewsNotificationRow({ n }: { n: StoredNewsNotification }) {
 function PushAlertsPanel() {
   const { status, enable, disable, removeDevice, test } = usePushNotifications();
   const [busy, setBusy] = React.useState<string | null>(null);
-  const [message, setMessage] = React.useState<string | null>(null);
+  // Kept as a discriminated pair so success renders quiet blue and
+  // errors render a full-width red banner with the actionable reason
+  // (`enable()` throws targeted messages per capability — HTTPS
+  // missing, iOS-not-PWA, permission denied, etc.).
+  const [message, setMessage] = React.useState<
+    { kind: "ok" | "error"; text: string } | null
+  >(null);
 
   const showIosHint =
     typeof window !== "undefined" &&
@@ -1271,10 +1277,16 @@ function PushAlertsPanel() {
     setMessage(null);
     try {
       const result = await fn();
-      if (typeof result === "string" && result) setMessage(result);
-      else setMessage("Done.");
+      if (typeof result === "string" && result) {
+        setMessage({ kind: "ok", text: result });
+      } else {
+        setMessage({ kind: "ok", text: "Done." });
+      }
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : String(e));
+      setMessage({
+        kind: "error",
+        text: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setBusy(null);
     }
@@ -1349,11 +1361,24 @@ function PushAlertsPanel() {
                 </Button>
               </>
             ) : (
+              // Historically this button was disabled whenever
+              // `status.supported === false`. That gate was doing more
+              // harm than good: our client-side capability detection
+              // sometimes false-negatives (fresh iOS PWA before the
+              // display-mode media query flips, obscure Android
+              // browsers we don't sniff, a hydration race where
+              // `refresh()` hasn't run yet), and the user hit a wall
+              // with no way to try. Now the button is always clickable
+              // unless we're mid-request or the user has explicitly
+              // denied permission — `enable()` itself throws a
+              // targeted, actionable error per capability if it can't
+              // proceed, which is far more useful than a silently
+              // disabled button.
               <Button
                 size="sm"
                 variant="success"
                 onClick={() => run("enable", enable)}
-                disabled={!status.supported || status.permission === "denied" || !!busy}
+                disabled={status.permission === "denied" || !!busy}
               >
                 <Bell className="h-3.5 w-3.5" /> Enable push on this device
               </Button>
@@ -1372,7 +1397,19 @@ function PushAlertsPanel() {
               <Send className="h-3.5 w-3.5" /> Send test push
             </Button>
           </div>
-          {message && <p className="text-xs text-primary">{message}</p>}
+          {message && (
+            <div
+              className={cn(
+                "rounded-md border p-2 text-xs",
+                message.kind === "error"
+                  ? "border-danger/40 bg-danger/10 text-danger"
+                  : "border-primary/40 bg-primary/5 text-primary",
+              )}
+              role={message.kind === "error" ? "alert" : "status"}
+            >
+              {message.text}
+            </div>
+          )}
           {status.error && !message && (
             <p className="text-xs text-danger">{status.error}</p>
           )}

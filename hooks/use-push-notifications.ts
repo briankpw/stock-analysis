@@ -312,20 +312,74 @@ export function usePushNotifications() {
   }, [refresh]);
 
   const enable = React.useCallback(async (): Promise<void> => {
-    if (!supported) {
-      throw new Error("Push notifications aren't supported in this browser.");
+    // Give the user actionable feedback for every blocker instead of a
+    // generic "not supported". Historically we gated the Enable button
+    // on `supported === false`, which meant the user could NEVER trigger
+    // the permission prompt themselves — even in cases where our
+    // detection was overly conservative (e.g., a fresh iOS PWA that
+    // hadn't yet been recognised as standalone, or a browser we mis-
+    // classified). Now the button is always clickable and we surface
+    // the exact reason it can't proceed here, per capability.
+    //
+    // Order matters — the FIRST missing capability is the one worth
+    // fixing, since the later ones can't matter until the earlier ones
+    // are addressed.
+    if (!diagnostics.isSecureContext) {
+      throw new Error(
+        "Web Push requires HTTPS. This page is loaded over an insecure origin. " +
+          "Serve the app behind HTTPS (Caddy, Cloudflare Tunnel, ngrok, or a reverse " +
+          "proxy) and reopen it on this device.",
+      );
+    }
+    if (!diagnostics.hasNotificationApi) {
+      throw new Error(
+        "This browser doesn't expose the Notification API. Open the page in Chrome, " +
+          "Edge, Firefox, or Safari 16.4+ (not an in-app webview).",
+      );
+    }
+    if (!diagnostics.hasServiceWorker) {
+      throw new Error(
+        "This browser doesn't support Service Workers. Open the page in Chrome, " +
+          "Edge, Firefox, or Safari (not an in-app webview like WeChat or Line).",
+      );
+    }
+    if (!diagnostics.hasPushManager) {
+      throw new Error(
+        "This browser doesn't expose the Push API (PushManager). Try Chrome, Edge, " +
+          "Firefox, or Safari 16.4+.",
+      );
+    }
+    if (diagnostics.isIosSafariNotPwa) {
+      throw new Error(
+        "On iPhone / iPad, Web Push only works from a PWA installed to the Home Screen. " +
+          "Tap the Share icon in Safari → Add to Home Screen → open the app from Home, " +
+          "then tap Enable again.",
+      );
     }
 
     // Ask permission first. iOS Safari specifically requires this call
     // to originate from a user gesture (button click), so callers must
-    // wire `enable()` to an onClick handler — not a useEffect.
+    // wire `enable()` to an onClick handler — not a useEffect. The
+    // permission prompt only appears when the current state is
+    // "default"; if the user previously denied, we surface a clear
+    // error pointing them at their browser settings.
     let perm: NotificationPermission = Notification.permission;
     if (perm !== "granted") {
       perm = await Notification.requestPermission();
     }
     if (perm !== "granted") {
       setStatus((s) => ({ ...s, permission: perm as PermissionState }));
-      throw new Error("Notification permission denied.");
+      if (perm === "denied") {
+        throw new Error(
+          "Notifications are blocked for this site. Open your browser settings for " +
+            "this site, set Notifications to Allow, then reload this page and tap " +
+            "Enable again.",
+        );
+      }
+      // "default" typically means the user dismissed the prompt (e.g.
+      // hit the browser-native "not now"). No permission change, but we
+      // shouldn't proceed with subscribe either.
+      throw new Error("You dismissed the permission prompt. Tap Enable again to retry.");
     }
 
     // The layout registers /service-worker.js on page load; `.ready`
@@ -373,7 +427,12 @@ export function usePushNotifications() {
     }
 
     await refresh();
-  }, [supported, refresh]);
+    // Depends on `diagnostics` (each capability probe drives the
+    // per-blocker error branches above) rather than the aggregated
+    // `supported` boolean — the latter would rebuild the callback
+    // whenever any bit changed even though the reads are through
+    // the memoised `diagnostics` object.
+  }, [diagnostics, refresh]);
 
   const disable = React.useCallback(async (): Promise<void> => {
     if (!supported) return;

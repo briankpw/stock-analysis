@@ -1266,7 +1266,18 @@ async function findLatest13F(cik: string): Promise<{
     timeoutMs: 20_000,
   });
   if (!res.ok) {
-    throw new Error(`SEC submissions GET → HTTP ${res.status}`);
+    // Uses DataSourceUnavailableError (same pattern as the person insider
+    // path in fetchPersonInsiderReport) so the API route can surface a 503
+    // with a helpful message instead of a generic 502 red banner. Also logs
+    // the URL + status so the operator can distinguish "SEC threw a 403
+    // because our SEC_USER_AGENT is still the placeholder" from "SEC threw
+    // a 5xx because they're having an outage" without cracking open a
+    // debugger.
+    console.warn(
+      `[portfolios/13F] SEC submissions GET ${url} → HTTP ${res.status}. ` +
+        `Check SEC_USER_AGENT env var and outbound network to data.sec.gov.`,
+    );
+    throw new DataSourceUnavailableError("sec-edgar-submissions", res.status);
   }
   const body = (await res.json()) as SubmissionsResponse;
   const recent = body?.filings?.recent;
@@ -1303,7 +1314,20 @@ async function findInfoTableXml(
     cache: "no-store",
     timeoutMs: 20_000,
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // Previously this returned null on any non-ok response, which meant a
+    // SEC 403/429/5xx silently collapsed to `holdings: []` and cached that
+    // empty payload for 24 hours. Now we distinguish: a real HTTP error
+    // throws DataSourceUnavailableError (surfaces as a 503 with a friendly
+    // "SEC unreachable" banner and, crucially, never persists a poisoned
+    // snapshot); a 200 response with no XML entries still returns null
+    // below (that's a genuine malformed-filing case worth caching).
+    console.warn(
+      `[portfolios/13F] SEC archive GET ${indexUrl} → HTTP ${res.status}. ` +
+        `Check SEC_USER_AGENT env var and outbound network to www.sec.gov.`,
+    );
+    throw new DataSourceUnavailableError("sec-edgar-archive", res.status);
+  }
   const body = (await res.json()) as {
     directory?: { item?: SecIndexEntry[] };
   };
@@ -1418,15 +1442,23 @@ export async function fetchFund13F(id: string): Promise<FundReport> {
   let holdings: FundHolding[] = [];
   if (infoTableName) {
     const xmlUrl = `${SEC_ARCHIVE}/${cikNoZeros}/${accessionDashless}/${infoTableName}`;
-    const xmlRes = await timedFetch(xmlUrl, {
-      headers: secHeaders(),
-      cache: "no-store",
-      timeoutMs: 30_000,
-    });
-    if (xmlRes.ok) {
-      const xml = await xmlRes.text();
-      holdings = parse13FXml(xml);
+    // Route through secFetchXmlWithRetry for retry-on-429/5xx + per-URL
+    // caching (accessionNumber paths are immutable) + granular error
+    // reasons. Previously this used a bare timedFetch and silently left
+    // `holdings` at [] on any non-ok response — that's what turned a
+    // production SEC 403 into a "manager doesn't file 13Fs" UI message
+    // for the last day. Now a hard failure throws DataSourceUnavailableError
+    // so the API surfaces a 503 (existing UI branch) and the poisoned
+    // 24-hour empty snapshot never gets written.
+    const fetched = await secFetchXmlWithRetry(xmlUrl, { timeoutMs: 30_000 });
+    if (!fetched.ok) {
+      console.warn(
+        `[portfolios/13F] SEC info-table GET ${xmlUrl} → ${fetched.reason ?? "error"} ` +
+          `(HTTP ${fetched.status}). Preset=${preset.id}, accession=${latest.accessionNumber}.`,
+      );
+      throw new DataSourceUnavailableError("sec-edgar-archive", fetched.status);
     }
+    holdings = parse13FXml(fetched.xml);
   }
 
   holdings.sort((a, b) => b.value - a.value);

@@ -288,6 +288,19 @@ export async function getCachedPerson(
   return getCached<PersonReport>("person", id, limit);
 }
 
+/**
+ * Set of preset ids whose "empty-with-accession" snapshot has already
+ * been heal-attempted in this process. Prevents an unbounded loop of
+ * SEC round-trips for funds that legitimately filed a 13F with zero
+ * holdings (rare but real — e.g. a manager who unwound every position
+ * before the reporting period ended). Reset on process restart, which
+ * is the right cadence: if the heal returned another empty payload,
+ * we don't want to keep hammering SEC every visit, but we do want to
+ * try again after a restart in case the empty was a symptom of a
+ * previously-mis-configured env (bad `SEC_USER_AGENT` etc.).
+ */
+const _fundHealAttempted = new Set<string>();
+
 export async function getCachedFund(
   id: string,
 ): Promise<CachedPayload<FundReport>> {
@@ -311,7 +324,68 @@ export async function getCachedFund(
   const first = cached.payload.holdings[0];
   const needsUpgrade =
     first !== undefined && !Object.prototype.hasOwnProperty.call(first, "resolvedTicker");
-  if (needsUpgrade) {
+
+  // Poisoned-cache heal: a snapshot with `accessionNumber` set but
+  // `positionCount === 0` means an earlier fetch DID locate a 13F
+  // filing on EDGAR but couldn't extract any holdings from it. Before
+  // the SEC-error path in `fetchFund13F` was hardened, that shape was
+  // silently produced by any 403/429/5xx from the SEC archive (User-Agent
+  // rejected, IP throttled, etc.) — and the empty payload then got
+  // cached for a full 24h, so the fund page displayed the misleading
+  // "manager doesn't file 13Fs" message for the rest of the day.
+  //
+  // Post-fix, `fetchFund13F` throws `DataSourceUnavailableError` on
+  // those errors instead of returning an empty report, but existing
+  // production installations may still be sitting on a poisoned row
+  // written before the fix landed. This guard forces a blocking
+  // refresh on read when we detect that shape — the refresh will either
+  // succeed (and write a real payload) or throw (letting the API return
+  // a proper 503 so the UI can render the "SEC unreachable" banner
+  // instead of the misleading empty-state one).
+  //
+  // We don't fire the heal for `accessionNumber === null` because that
+  // legitimately means the manager doesn't file 13Fs; the empty payload
+  // is the correct answer and re-fetching wouldn't change it.
+  const looksPoisoned =
+    cached.payload.accessionNumber !== null &&
+    cached.payload.positionCount === 0 &&
+    !_fundHealAttempted.has(id);
+
+  if (looksPoisoned) {
+    // Record the attempt BEFORE awaiting the refresh so a burst of
+    // concurrent requests can't all queue their own refresh (the
+    // `withInflight` dedup inside `refreshSnapshot` already coalesces
+    // in-flight fetches, but that state clears the moment the fetch
+    // resolves — this flag stays set for the life of the process).
+    _fundHealAttempted.add(id);
+    // `throwOnCold: true` deliberately propagates DataSourceUnavailableError
+    // so the API returns a 503 and the fund page renders the "SEC EDGAR
+    // is throttling us" banner instead of the misleading empty-state
+    // ("manager doesn't file 13Fs"). This is the actionable UX: the user
+    // knows to try again, and the operator can check server logs to see
+    // whether it's a User-Agent issue, an IP throttle, or a network egress
+    // problem.
+    const fresh = await refreshSnapshot<FundReport>("fund", id, {
+      throwOnCold: true,
+    });
+    if (fresh) {
+      return {
+        payload: fresh,
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          nextRefreshAt: new Date(
+            Date.now() + REFRESH_TTL_SECONDS.fund * 1000,
+          ).toISOString(),
+          stale: false,
+          lastError: null,
+          lastErrorAt: null,
+        },
+      };
+    }
+    // `throwOnCold: true` should make `fresh === null` unreachable, but
+    // fall through to the stale payload just in case — better to render
+    // the empty state than 500 the caller.
+  } else if (needsUpgrade) {
     try {
       const fresh = await refreshSnapshot<FundReport>("fund", id, {
         throwOnCold: false,
