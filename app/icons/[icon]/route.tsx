@@ -53,7 +53,13 @@ export const runtime = "edge";
 // Freshness: aggressive since the icon is content-addressable by
 // its URL — a design change means a new commit, which means a new
 // deploy, which means the CDN's cache entry is naturally busted.
-export const revalidate = 60 * 60 * 24 * 30; // 30 days
+//
+// NB: this MUST be a numeric literal, not a binary expression.
+// Next.js's segment-config extractor uses static analysis and
+// rejects any computed value here with `Unsupported node type
+// "BinaryExpression"`, which fails the production build.
+// 2592000 = 30 days in seconds (60 * 60 * 24 * 30).
+export const revalidate = 2592000;
 
 // Filename pattern: icon-<size>.png OR icon-maskable-<size>.png.
 // The `192|512` alternation gates us to the two sizes Chrome requires
