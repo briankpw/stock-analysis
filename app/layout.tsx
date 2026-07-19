@@ -11,7 +11,21 @@ export const metadata: Metadata = {
   description:
     "Interactive stock analysis dashboard — ratios, charts, technicals, news sentiment, portfolios, paper trading, and alert bot.",
   applicationName: "Stock Analysis",
-  manifest: "/manifest.webmanifest",
+  // NOTE: `manifest: "/manifest.webmanifest"` is *intentionally* NOT set
+  // here. Next.js's metadata API emits a plain `<link rel="manifest">`
+  // with no `crossorigin` attribute, which makes Chrome fetch the
+  // manifest with `credentials: "omit"` (no cookies). That fails behind
+  // any reverse-proxy auth layer (Synology DSM Login Portal,
+  // Cloudflare Access, basic auth in nginx, …) because the credential-
+  // less request gets a login-page redirect instead of the JSON, and
+  // Chrome reports "No manifest detected" — even though the manifest
+  // file itself is served correctly and appears in DevTools ▸ Network.
+  //
+  // We therefore render the `<link>` ourselves in <RootLayout> below
+  // with `crossOrigin="use-credentials"`, which forces the browser to
+  // include cookies. React 19 hoists <link rel="manifest"> from the
+  // component tree into <head> automatically, so no explicit <Head>
+  // component is needed. See the block below the `<html>` opening tag.
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Stock Analysis" },
   icons: {
     icon: [
@@ -72,6 +86,27 @@ export default async function RootLayout({
   const nonce = (await headers()).get("x-nonce") ?? "";
   return (
     <html lang="en" suppressHydrationWarning>
+      {/*
+        PWA manifest — rendered explicitly (not via metadata.manifest)
+        so we can set `crossOrigin="use-credentials"`. That attribute
+        promotes the manifest fetch from `credentials: "omit"` (Chrome's
+        default for <link rel="manifest">) to `credentials: "include"`,
+        which is essential when the app sits behind a reverse-proxy
+        auth layer (Synology Login Portal, Cloudflare Access, nginx
+        basic auth, etc.) that would otherwise return an HTML login
+        page for the cookieless manifest request — Chrome then reports
+        "No manifest detected" even though `/manifest.webmanifest`
+        serves the correct JSON to authenticated tab requests.
+
+        React 19 auto-hoists <link>/<meta>/<title> from the component
+        tree into <head>, so placing this at the top of <html> (before
+        <body>) is enough — no <Head> wrapper needed.
+      */}
+      <link
+        rel="manifest"
+        href="/manifest.webmanifest"
+        crossOrigin="use-credentials"
+      />
       <body className="min-h-screen antialiased">
         <Providers nonce={nonce}>
           {/* AppShell is a client wrapper so the grid template can react

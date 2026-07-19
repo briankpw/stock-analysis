@@ -259,6 +259,7 @@ const UNPROTECTED_PAGES = new Set(["/login"]);
 const IGNORED_PREFIXES = [
   "/_next/",
   "/icons/",
+  "/screenshots/",
   "/favicon.ico",
   "/service-worker.js",
   "/manifest.webmanifest",
@@ -459,6 +460,6 @@ export const config = {
   // in-function check protects when the middleware IS invoked, e.g.
   // via a rewrite target).
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|icons/|service-worker.js|manifest.webmanifest|robots.txt).*)",
+    "/((?!_next/static|_next/image|favicon.ico|icons/|screenshots/|service-worker.js|manifest.webmanifest|robots.txt).*)",
   ],
 };

@@ -23,6 +23,32 @@
 // they may hold the pre-migration manifest which listed a single
 // "any maskable" icon). This comment exists to bump the SW hash so
 // browsers re-fetch a fresh manifest + icon set on next visit.
+//
+// PWA-screenshots migration note (rev 2):
+// Chrome 108+ requires the manifest's `screenshots` array (with at
+// least one `form_factor: "wide"` and one `narrow`) before it will
+// show the rich "Install this app" dialog instead of just a tiny
+// URL-bar icon most users miss. We now generate placeholder
+// screenshots at `/screenshots/desktop.png` and
+// `/screenshots/mobile.png` via `app/screenshots/[shot]/route.tsx`,
+// and reference them from the manifest. Comment bump forces the SW
+// hash to re-roll so existing installs replace their cached (pre-
+// screenshots) manifest on next visit and start seeing the richer
+// install prompt.
+//
+// Manifest `crossOrigin="use-credentials"` migration note (rev 3):
+// The <link rel="manifest"> tag emitted from app/layout.tsx has been
+// switched away from Next.js's `metadata.manifest` API to an explicit
+// JSX <link crossOrigin="use-credentials">. Without that attribute
+// Chrome fetches the manifest with `credentials: "omit"`, which
+// gets a login-page redirect behind reverse-proxy auth (Synology
+// Login Portal, Cloudflare Access, nginx basic auth) and produces
+// the confusing "No manifest detected" error even though the file
+// itself is served correctly. The bump here forces the SW hash to
+// re-roll so existing PWA installs cache-invalidate their HTML on
+// next visit and pick up the new <link> attribute — otherwise the
+// stale cached HTML would keep referencing the crossorigin-less
+// manifest link and the install prompt would remain broken.
 const CACHE_NAME = "key-stock-feba02967f"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
