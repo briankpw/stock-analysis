@@ -12,6 +12,17 @@
 // to CACHE_NAME are still supported (e.g. to force a re-cache when
 // only assets under `/public` change), but the auto-hash keeps
 // happy-path deployments correct.
+//
+// PWA-icon migration note (invalidates existing caches):
+// Icons `/icons/icon-{192,512}.png` and their maskable variants used
+// to 404 because the repo never committed binary PNGs — that broke
+// Chrome's "Install app" prompt (installability requires the manifest
+// icons to fetch OK). They're now served dynamically by
+// `app/icons/[icon]/route.tsx`. Existing PWA installs may still hold
+// stale 404-cached entries (they don't — SW never caches !res.ok — but
+// they may hold the pre-migration manifest which listed a single
+// "any maskable" icon). This comment exists to bump the SW hash so
+// browsers re-fetch a fresh manifest + icon set on next visit.
 const CACHE_NAME = "key-stock-b4660e697d"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
