@@ -28,6 +28,7 @@ import { fetchHistory, fetchNews, fetchQuote } from "@/lib/data";
 import { settings } from "@/lib/config";
 import { analyzeRisk } from "@/lib/portfolio-risk/analyzer";
 import type { RiskAssessment } from "@/lib/portfolio-risk/signals";
+import { findDismissedFingerprints } from "@/lib/portfolio-risk/store";
 import { redactError } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -104,7 +105,15 @@ export async function POST(req: Request) {
       (a, b) => tickers.indexOf(a.ticker) - tickers.indexOf(b.ticker),
     );
 
-    return NextResponse.json({ assessments, errors });
+    // Attach any active false-positive dismissals so the client can
+    // suppress the corresponding risk cards without a follow-up
+    // round-trip. Only tickers with a dismissal are included; the
+    // client treats absence as "not dismissed".
+    const dismissedMap = findDismissedFingerprints(tickers);
+    const dismissed: Record<string, string> = {};
+    for (const [t, fp] of dismissedMap) dismissed[t] = fp;
+
+    return NextResponse.json({ assessments, errors, dismissed });
   } catch (e) {
     const r = redactError(e, 400);
     return NextResponse.json(

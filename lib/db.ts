@@ -770,6 +770,38 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       DROP TABLE IF EXISTS strategy_last_bar;
     `);
   },
+  // v14: per-ticker "false-positive" dismissal for portfolio risk
+  // alerts. The stored fingerprint pins the exact signal set the
+  // user marked as noise; the engine's notify gate and the UI both
+  // suppress that ticker's risk card only while the current
+  // assessment fingerprint still matches. If a NEW signal fires
+  // (fingerprint changes), the dismissal no longer applies —
+  // otherwise a user who dismissed "spurious bankruptcy headline"
+  // would also miss the ACTUAL delisting notice a week later.
+  //
+  // Additive column only. `ALTER TABLE ... ADD COLUMN` is safe
+  // (SQLite supports it) and no data backfill is required — NULL
+  // means "not dismissed", which is the desired default for every
+  // pre-existing row.
+  (db) => {
+    // Idempotent: check the column doesn't already exist first, so
+    // re-running the migration on a hand-patched schema doesn't
+    // blow up with "duplicate column".
+    const cols = db
+      .prepare("PRAGMA table_info(portfolio_risk_watches)")
+      .all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("dismissed_fingerprint")) {
+      db.exec(
+        "ALTER TABLE portfolio_risk_watches ADD COLUMN dismissed_fingerprint TEXT",
+      );
+    }
+    if (!names.has("dismissed_at")) {
+      db.exec(
+        "ALTER TABLE portfolio_risk_watches ADD COLUMN dismissed_at TEXT",
+      );
+    }
+  },
 ];
 
 /** Testing / cleanup helper. */

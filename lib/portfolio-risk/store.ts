@@ -43,6 +43,17 @@ export interface RiskWatch {
   lastFingerprint: string | null;
   lastSignals: RiskSignalId[];
   lastNotifiedAt: string | null;
+  /**
+   * Fingerprint the user marked as a false positive. When set AND
+   * equal to the current assessment's fingerprint, both the notifier
+   * and the UI suppress this ticker's risk card. If the signal set
+   * changes (new fingerprint), the dismissal no longer applies — a
+   * *new* alert can still fire. See v14 migration in `lib/db.ts` for
+   * the full rationale.
+   */
+  dismissedFingerprint: string | null;
+  /** ISO timestamp of the dismissal, for audit / UI display. */
+  dismissedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -82,7 +93,8 @@ function normalizeMinSeverity(raw: unknown): MinRiskSeverity {
 
 const SELECT_COLS =
   "ticker, min_severity, last_severity, last_fingerprint, " +
-  "last_signals_json, last_notified_at, created_at, updated_at";
+  "last_signals_json, last_notified_at, dismissed_fingerprint, " +
+  "dismissed_at, created_at, updated_at";
 
 export function listRiskWatches(): RiskWatch[] {
   const rows = getDb()
@@ -263,11 +275,17 @@ export function markRiskEvaluated(
         t,
       );
   } else if (confirmedRecovery) {
+    // Confirmed recovery — clear both the sticky notify lock AND
+    // any active dismissal. A dismissal pins a specific fingerprint
+    // as "noise"; once the ticker has recovered, any FUTURE risky
+    // episode should get a fresh evaluation without dragging along
+    // stale suppression from a bygone signal set.
     getDb()
       .prepare(
         "UPDATE portfolio_risk_watches SET " +
           "last_severity = ?, last_fingerprint = ?, last_signals_json = ?, " +
-          "last_notified_at = NULL, updated_at = ? " +
+          "last_notified_at = NULL, dismissed_fingerprint = NULL, " +
+          "dismissed_at = NULL, updated_at = ? " +
           "WHERE ticker = ?",
       )
       .run(
@@ -293,6 +311,136 @@ export function markRiskEvaluated(
         t,
       );
   }
+}
+
+// ---------------------------------------------------------------------------
+// False-positive dismissal
+// ---------------------------------------------------------------------------
+
+/**
+ * Mark the given `fingerprint` as a dismissed false positive for
+ * `ticker`. Effects:
+ *
+ *   * The engine's notify gate skips this ticker as long as the
+ *     current assessment fingerprint still matches — no more pushes
+ *     for the same signal set.
+ *   * The UI hides the risk card from the "Need action" list; a
+ *     collapsed "Dismissed" section still surfaces it with an undo.
+ *
+ * If the watch row doesn't exist yet, it is created with a default
+ * `min_severity = "high"` so dismissing is possible even when the
+ * user hasn't enabled the client-side notification switch. Creating
+ * the row has no user-visible side effect beyond the dismissal
+ * itself — the worker will evaluate it every tick but the dismissal
+ * gate will keep it silent.
+ *
+ * `last_notified_at` is deliberately also set to the current time so
+ * even a code path that skips the dismissal check still stays quiet
+ * (belt-and-suspenders: sticky lock AND fingerprint dismissal both
+ * apply until the ticker recovers).
+ */
+export function dismissRiskWatch(
+  ticker: string,
+  fingerprint: string,
+): RiskWatch {
+  const t = normalizeTicker(ticker);
+  if (!fingerprint || typeof fingerprint !== "string") {
+    throw new Error("fingerprint required");
+  }
+  const now = new Date().toISOString();
+  const existing = findRiskWatch(t);
+  if (!existing) {
+    getDb()
+      .prepare(
+        "INSERT INTO portfolio_risk_watches " +
+          "(ticker, min_severity, dismissed_fingerprint, dismissed_at, " +
+          "last_notified_at, created_at, updated_at) " +
+          "VALUES (?, 'high', ?, ?, ?, ?, ?)",
+      )
+      .run(t, fingerprint, now, now, now, now);
+  } else {
+    getDb()
+      .prepare(
+        "UPDATE portfolio_risk_watches SET " +
+          "dismissed_fingerprint = ?, dismissed_at = ?, " +
+          "last_notified_at = ?, updated_at = ? " +
+          "WHERE ticker = ?",
+      )
+      .run(fingerprint, now, now, now, t);
+  }
+  return findRiskWatch(t)!;
+}
+
+/**
+ * Clear a dismissal for `ticker`. The next tick evaluates the
+ * ticker as if it had never been dismissed — if the signal set
+ * still clears the min-severity gate, the alert fires again.
+ *
+ * Also clears `last_notified_at` so the alert has a chance to
+ * re-fire immediately rather than being held back by the sticky
+ * lock. That's the whole point of undoing a dismissal — the user
+ * has decided the alert IS interesting after all.
+ */
+export function undismissRiskWatch(ticker: string): boolean {
+  const t = normalizeTicker(ticker);
+  const now = new Date().toISOString();
+  const info = getDb()
+    .prepare(
+      "UPDATE portfolio_risk_watches SET " +
+        "dismissed_fingerprint = NULL, dismissed_at = NULL, " +
+        "last_notified_at = NULL, updated_at = ? " +
+        "WHERE ticker = ?",
+    )
+    .run(now, t);
+  return info.changes > 0;
+}
+
+/**
+ * Bulk lookup of `{ ticker -> dismissed_fingerprint }` for the
+ * given ticker set. Returned map ONLY includes tickers with an
+ * active (non-null) dismissal — clients can `.has(ticker)` as a
+ * shorthand for "is this dismissed?".
+ *
+ * Used by the analysis endpoint to attach the dismissal state to
+ * each assessment so the client can render the correct UI without
+ * a follow-up round-trip.
+ */
+export function findDismissedFingerprints(
+  tickers: readonly string[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (tickers.length === 0) return out;
+  // Normalise + de-dup so an oddly-cased duplicate ticker doesn't
+  // fan out N queries.
+  const set = new Set<string>();
+  for (const raw of tickers) {
+    try {
+      set.add(normalizeTicker(raw));
+    } catch {
+      // Skip invalid tickers silently — the caller has already
+      // validated its input; this is defensive.
+    }
+  }
+  if (set.size === 0) return out;
+  // Chunk into 500 to stay well under SQLite's default 999 host
+  // parameter limit. In practice a user's portfolio is ~10-100
+  // tickers so this loop runs once.
+  const stmt = (n: number) =>
+    getDb().prepare(
+      "SELECT ticker, dismissed_fingerprint FROM portfolio_risk_watches " +
+        `WHERE dismissed_fingerprint IS NOT NULL AND ticker IN (${Array(n).fill("?").join(",")})`,
+    );
+  const CHUNK = 500;
+  const arr = [...set];
+  for (let i = 0; i < arr.length; i += CHUNK) {
+    const chunk = arr.slice(i, i + CHUNK);
+    const rows = stmt(chunk.length).all(...chunk) as Array<{
+      ticker: string;
+      dismissed_fingerprint: string;
+    }>;
+    for (const r of rows) out.set(r.ticker, r.dismissed_fingerprint);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +479,9 @@ function rowToWatch(row: Record<string, unknown>): RiskWatch {
     lastFingerprint: (row.last_fingerprint as string | null) ?? null,
     lastSignals: coerceSignalIds(row.last_signals_json),
     lastNotifiedAt: (row.last_notified_at as string | null) ?? null,
+    dismissedFingerprint:
+      (row.dismissed_fingerprint as string | null) ?? null,
+    dismissedAt: (row.dismissed_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

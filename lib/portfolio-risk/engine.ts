@@ -167,11 +167,17 @@ async function evaluateWatch(
  *   1. There must be at least one signal (severity != null).
  *   2. The overall severity must clear the watch's `min_severity`
  *      gate (see `severityClearsGate`).
- *   3. First-time evaluations (last_fingerprint is null) don't fire —
+ *   3. The user hasn't dismissed this exact signal set as a false
+ *      positive (`dismissedFingerprint === assessment.fingerprint`).
+ *      Dismissals are pinned to a specific fingerprint so a NEW
+ *      signal appearing (fingerprint change) still fires — we don't
+ *      want a dismissed "spurious Chapter 11 news" alert to also
+ *      silence the ACTUAL delisting notice a week later.
+ *   4. First-time evaluations (last_fingerprint is null) don't fire —
  *      they seed the baseline instead. Otherwise importing a new
  *      portfolio full of at-risk names would blast the user with
  *      pushes for state that hasn't actually changed.
- *   4. Once we've alerted for this episode (`last_notified_at` is
+ *   5. Once we've alerted for this episode (`last_notified_at` is
  *      set), stay quiet regardless of how the signal set churns.
  *      That flag is cleared in `markRiskEvaluated` when the ticker
  *      returns to clean, so a later re-entry into risk fires again.
@@ -182,6 +188,13 @@ function decideNotify(
 ): boolean {
   if (assessment.overallSeverity === null) return false;
   if (!severityClearsGate(assessment.overallSeverity, watch.minSeverity)) {
+    return false;
+  }
+  // False-positive dismissal — pinned to a specific fingerprint.
+  if (
+    watch.dismissedFingerprint !== null &&
+    watch.dismissedFingerprint === assessment.fingerprint
+  ) {
     return false;
   }
   if (watch.lastFingerprint === null) return false;

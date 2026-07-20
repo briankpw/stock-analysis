@@ -159,6 +159,18 @@ export interface UsePortfolioRiskAnalysis {
   skipped: string[];
   lastFetchedAt: string | null;
   refresh: () => void;
+  /**
+   * `ticker -> dismissed fingerprint`. Only tickers with an active
+   * false-positive dismissal appear. Consumers compare against the
+   * current assessment's fingerprint — if they match, hide the card
+   * from the "Need action" list and render it in the "Dismissed"
+   * section instead.
+   */
+  dismissed: Record<string, string>;
+  /** Pin the current fingerprint as a false positive for `ticker`. */
+  dismiss: (ticker: string, fingerprint: string) => Promise<void>;
+  /** Undo a dismissal; the alert can fire again on the next tick. */
+  undismiss: (ticker: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +193,8 @@ export interface UsePortfolioRiskAnalysis {
 interface RiskCacheEntry {
   assessments: RiskAssessment[];
   serverErrors: Array<{ ticker: string; error: string }>;
+  /** `ticker -> dismissed fingerprint` from the server. */
+  dismissed: Record<string, string>;
   fetchedAtMs: number;
   fetchedAtIso: string;
 }
@@ -191,6 +205,7 @@ const _riskInflight = new Map<
   Promise<{
     assessments: RiskAssessment[];
     errors: Array<{ ticker: string; error: string }>;
+    dismissed?: Record<string, string>;
   }>
 >();
 // Per-key subscriber sets so we can notify every mounted hook when a
@@ -235,6 +250,7 @@ async function _fetchRiskAnalysis(
     return _riskCache.get(key) ?? cached ?? {
       assessments: [],
       serverErrors: [],
+      dismissed: {},
       fetchedAtMs: 0,
       fetchedAtIso: "",
     };
@@ -252,6 +268,7 @@ async function _fetchRiskAnalysis(
     return (await res.json()) as {
       assessments: RiskAssessment[];
       errors: Array<{ ticker: string; error: string }>;
+      dismissed?: Record<string, string>;
     };
   })();
   _riskInflight.set(key, p);
@@ -260,6 +277,7 @@ async function _fetchRiskAnalysis(
     const entry: RiskCacheEntry = {
       assessments: body.assessments,
       serverErrors: body.errors ?? [],
+      dismissed: body.dismissed ?? {},
       fetchedAtMs: Date.now(),
       fetchedAtIso: new Date().toISOString(),
     };
@@ -423,6 +441,80 @@ export function usePortfolioRiskAnalysis(
     );
   }, [key, refreshMs, sanitized.valid]);
 
+  // Optimistic mutator — patches the shared cache entry so every
+  // subscriber (badge, tab body, etc.) picks up the change without
+  // waiting for the next auto-refresh. Then fires a background POST
+  // to persist it server-side.
+  const patchDismissed = React.useCallback(
+    (mutate: (prev: Record<string, string>) => Record<string, string>) => {
+      const current = _riskCache.get(key);
+      if (!current) return;
+      const next: RiskCacheEntry = {
+        ...current,
+        dismissed: mutate(current.dismissed ?? {}),
+      };
+      _riskCache.set(key, next);
+      _emitRiskChange(key);
+    },
+    [key],
+  );
+
+  const dismiss = React.useCallback(
+    async (ticker: string, fingerprint: string): Promise<void> => {
+      const t = ticker.toUpperCase();
+      const prev = _riskCache.get(key)?.dismissed ?? {};
+      patchDismissed((d) => ({ ...d, [t]: fingerprint }));
+      try {
+        const res = await fetch("/api/portfolio/risks/watches", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "dismiss", ticker: t, fingerprint }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+      } catch (e) {
+        // Roll back the optimistic change so the UI stays honest
+        // when the server rejects the request (bad fingerprint,
+        // ticker not in the whitelist, etc.).
+        patchDismissed(() => prev);
+        throw e;
+      }
+    },
+    [key, patchDismissed],
+  );
+
+  const undismiss = React.useCallback(
+    async (ticker: string): Promise<void> => {
+      const t = ticker.toUpperCase();
+      const prev = _riskCache.get(key)?.dismissed ?? {};
+      patchDismissed((d) => {
+        const { [t]: _drop, ...rest } = d;
+        return rest;
+      });
+      try {
+        const res = await fetch("/api/portfolio/risks/watches", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "undismiss", ticker: t }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+      } catch (e) {
+        patchDismissed(() => prev);
+        throw e;
+      }
+    },
+    [key, patchDismissed],
+  );
+
   const assessments = entry?.assessments ?? [];
   const serverErrors = entry?.serverErrors ?? [];
   return {
@@ -433,6 +525,9 @@ export function usePortfolioRiskAnalysis(
     skipped: sanitized.skipped,
     lastFetchedAt: entry?.fetchedAtIso ?? null,
     refresh,
+    dismissed: entry?.dismissed ?? {},
+    dismiss,
+    undismiss,
   };
 }
 

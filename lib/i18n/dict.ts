@@ -663,6 +663,36 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "portfolioRisk.card.openNews":   { en: "Open in News",    "zh-CN": "打开新闻页" },
   "portfolioRisk.card.openChart":  { en: "Open in Charts",  "zh-CN": "打开图表页" },
 
+  // False-positive dismissal
+  "portfolioRisk.card.dismiss": {
+    en: "Dismiss as false alert",
+    "zh-CN": "标记为误报",
+  },
+  "portfolioRisk.card.dismissHelp": {
+    en: "Silence this exact signal set for this ticker. If new signals fire, the alert will return automatically. Recovers when the ticker becomes clean.",
+    "zh-CN": "针对当前触发的信号组合关闭该股票的提醒；若出现新信号会自动恢复提醒；股票恢复正常时也会自动清除。",
+  },
+  "portfolioRisk.card.dismissError": {
+    en: "Failed to dismiss",
+    "zh-CN": "关闭提醒失败",
+  },
+  "portfolioRisk.card.undismiss": {
+    en: "Undo dismiss",
+    "zh-CN": "撤销",
+  },
+  "portfolioRisk.section.dismissed": {
+    en: "Dismissed",
+    "zh-CN": "已关闭",
+  },
+  "portfolioRisk.section.dismissed.hint": {
+    en: "{n} alert(s) you marked as false positives. They stay hidden until new signals fire or the ticker recovers.",
+    "zh-CN": "已被您标记为误报的 {n} 条提醒。新信号出现或股票恢复正常前将保持隐藏。",
+  },
+  "portfolioRisk.section.dismissed.stateOnly": {
+    en: "Dismissed state",
+    "zh-CN": "已关闭状态",
+  },
+
   // Notification switch
   "portfolioRisk.notify.title": {
     en: "Push me when a holding turns risky",

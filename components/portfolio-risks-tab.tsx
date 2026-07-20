@@ -34,7 +34,9 @@ import {
   Info as InfoIcon,
   Loader2,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Pagination, usePagination } from "@/components/ui/pagination";
@@ -88,16 +90,20 @@ export function usePortfolioRiskBadge(): {
   loading: boolean;
 } {
   const symbols = useOpenSymbols();
-  const { assessments, loading } = usePortfolioRiskAnalysis(symbols);
+  const { assessments, loading, dismissed } = usePortfolioRiskAnalysis(symbols);
   return React.useMemo(() => {
     let critical = 0;
     let high = 0;
     for (const a of assessments) {
+      // Skip tickers the user dismissed for this exact signal set —
+      // otherwise the badge would keep claiming "1 critical" for a
+      // false-positive the user already told us was noise.
+      if (dismissed[a.ticker] === a.fingerprint) continue;
       if (a.overallSeverity === "critical") critical += 1;
       else if (a.overallSeverity === "high") high += 1;
     }
     return { critical, high, loading };
-  }, [assessments, loading]);
+  }, [assessments, loading, dismissed]);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +121,9 @@ export function PortfolioRisksTab() {
     skipped,
     lastFetchedAt,
     refresh,
+    dismissed,
+    dismiss,
+    undismiss,
   } = usePortfolioRiskAnalysis(symbols);
 
   // Sort worst-first so a critical delisting always leads.
@@ -134,10 +143,26 @@ export function PortfolioRisksTab() {
     });
   }, [assessments]);
 
-  const risky = sorted.filter(
-    (a) => a.overallSeverity === "critical" || a.overallSeverity === "high",
+  // Split assessments into: dismissed (user marked as false positive
+  // for THIS signal set), risky (critical/high, not dismissed),
+  // monitored (medium, not dismissed). A dismissal only applies when
+  // the fingerprint still matches — if new signals fire, the ticker
+  // returns to the "risky" bucket automatically.
+  const isDismissed = React.useCallback(
+    (a: RiskAssessment) =>
+      dismissed[a.ticker] !== undefined &&
+      dismissed[a.ticker] === a.fingerprint,
+    [dismissed],
   );
-  const monitored = sorted.filter((a) => a.overallSeverity === "medium");
+  const dismissedList = sorted.filter(isDismissed);
+  const risky = sorted.filter(
+    (a) =>
+      !isDismissed(a) &&
+      (a.overallSeverity === "critical" || a.overallSeverity === "high"),
+  );
+  const monitored = sorted.filter(
+    (a) => !isDismissed(a) && a.overallSeverity === "medium",
+  );
   // How many holdings this analyser can actually reason about — the
   // total minus forex/skipped. Drives the "All clear (checked N)"
   // copy and the "Checked N" footer so the numbers agree with what
@@ -214,13 +239,20 @@ export function PortfolioRisksTab() {
             count={risky.length}
           />
           {risky.map((a) => (
-            <RiskCard key={a.ticker} assessment={a} />
+            <RiskCard key={a.ticker} assessment={a} onDismiss={dismiss} />
           ))}
         </div>
       )}
 
       {monitored.length > 0 && (
-        <MonitorSection assessments={monitored} />
+        <MonitorSection assessments={monitored} onDismiss={dismiss} />
+      )}
+
+      {dismissedList.length > 0 && (
+        <DismissedSection
+          assessments={dismissedList}
+          onUndismiss={undismiss}
+        />
       )}
 
       {/* Forex-skipped info line — non-alarming, just informational.
@@ -558,11 +590,19 @@ function SectionHeader({
 // Risk card — one per at-risk holding
 // ---------------------------------------------------------------------------
 
-function RiskCard({ assessment }: { assessment: RiskAssessment }) {
+function RiskCard({
+  assessment,
+  onDismiss,
+}: {
+  assessment: RiskAssessment;
+  onDismiss?: (ticker: string, fingerprint: string) => Promise<void>;
+}) {
   const t = useT();
   const setTicker = useUi((s) => s.setTicker);
   const s = SEVERITY_UI[assessment.overallSeverity ?? "medium"];
   const [expanded, setExpanded] = React.useState(true);
+  const [dismissing, setDismissing] = React.useState(false);
+  const [dismissError, setDismissError] = React.useState<string | null>(null);
 
   const closeStr =
     assessment.latestClose === null
@@ -572,6 +612,20 @@ function RiskCard({ assessment }: { assessment: RiskAssessment }) {
     assessment.drawdown90d === null
       ? "—"
       : `${Math.round(assessment.drawdown90d * 100)}%`;
+
+  const handleDismiss = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onDismiss || dismissing) return;
+    setDismissing(true);
+    setDismissError(null);
+    try {
+      await onDismiss(assessment.ticker, assessment.fingerprint);
+    } catch (err) {
+      setDismissError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDismissing(false);
+    }
+  };
 
   return (
     <Card
@@ -656,7 +710,37 @@ function RiskCard({ assessment }: { assessment: RiskAssessment }) {
                 <ExternalLink className="h-3 w-3" />
                 {t("portfolioRisk.card.openChart")}
               </Link>
+              {onDismiss && (
+                <>
+                  <span className="ml-auto" />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleDismiss}
+                        disabled={dismissing}
+                        className="text-[0.7rem] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-muted-foreground hover:border-danger/40 hover:text-danger transition-colors disabled:opacity-60"
+                      >
+                        {dismissing ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <X className="h-3 w-3" />
+                        )}
+                        {t("portfolioRisk.card.dismiss")}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs text-[0.7rem]">
+                      {t("portfolioRisk.card.dismissHelp")}
+                    </TooltipContent>
+                  </Tooltip>
+                </>
+              )}
             </div>
+            {dismissError && (
+              <p className="text-[0.7rem] text-danger">
+                {t("portfolioRisk.card.dismissError")}: {dismissError}
+              </p>
+            )}
           </div>
         )}
       </CardContent>
@@ -697,7 +781,13 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
 // Monitor (medium-severity) section — collapsed by default
 // ---------------------------------------------------------------------------
 
-function MonitorSection({ assessments }: { assessments: RiskAssessment[] }) {
+function MonitorSection({
+  assessments,
+  onDismiss,
+}: {
+  assessments: RiskAssessment[];
+  onDismiss: (ticker: string, fingerprint: string) => Promise<void>;
+}) {
   const t = useT();
   const [open, setOpen] = React.useState(false);
   // Cap the visible cards at 10 so a portfolio with 200 medium-risk
@@ -728,7 +818,7 @@ function MonitorSection({ assessments }: { assessments: RiskAssessment[] }) {
       </summary>
       <div className="px-4 pb-3 space-y-2">
         {pager.visibleItems.map((a) => (
-          <RiskCard key={a.ticker} assessment={a} />
+          <RiskCard key={a.ticker} assessment={a} onDismiss={onDismiss} />
         ))}
         <Pagination
           page={pager.page}
@@ -747,6 +837,125 @@ function MonitorSection({ assessments }: { assessments: RiskAssessment[] }) {
         />
       </div>
     </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dismissed (false-positive) section — collapsed by default
+// ---------------------------------------------------------------------------
+
+/**
+ * A ticker only appears here while its current assessment fingerprint
+ * still matches the dismissed one. If new signals fire (fingerprint
+ * changes), the ticker automatically returns to the "Need action"
+ * list — the dismissal is deliberately not "hide this ticker
+ * forever", only "silence this exact signal set".
+ */
+function DismissedSection({
+  assessments,
+  onUndismiss,
+}: {
+  assessments: RiskAssessment[];
+  onUndismiss: (ticker: string) => Promise<void>;
+}) {
+  const t = useT();
+  const [open, setOpen] = React.useState(false);
+  return (
+    <details
+      className="rounded-lg border border-border/60 bg-card/30 open:bg-card/50"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer list-none px-4 py-2.5 flex items-center gap-2 text-xs">
+        <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[0.65rem] font-semibold text-muted-foreground">
+          {t("portfolioRisk.section.dismissed")}
+        </span>
+        <span className="text-muted-foreground">
+          {t("portfolioRisk.section.dismissed.hint", {
+            n: assessments.length,
+          })}
+        </span>
+        <span className="ml-auto text-muted-foreground">
+          {open ? (
+            <ChevronUp className="h-3 w-3" />
+          ) : (
+            <ChevronDown className="h-3 w-3" />
+          )}
+        </span>
+      </summary>
+      <div className="px-4 pb-3 space-y-2">
+        {assessments.map((a) => (
+          <DismissedCard
+            key={a.ticker}
+            assessment={a}
+            onUndismiss={onUndismiss}
+          />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function DismissedCard({
+  assessment,
+  onUndismiss,
+}: {
+  assessment: RiskAssessment;
+  onUndismiss: (ticker: string) => Promise<void>;
+}) {
+  const t = useT();
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+  const s = SEVERITY_UI[assessment.overallSeverity ?? "medium"];
+
+  const handleUndismiss = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await onUndismiss(assessment.ticker);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/10 px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
+      <span className={cn("shrink-0", s.text)}>{s.emoji}</span>
+      <span className="font-mono font-semibold">{assessment.ticker}</span>
+      <span
+        className={cn(
+          "text-[0.6rem] font-semibold uppercase tracking-wide rounded-md border px-1 py-0.5",
+          s.chip,
+        )}
+      >
+        {t(`portfolioRisk.severity.${assessment.overallSeverity ?? "medium"}`)}
+      </span>
+      <span className="text-[0.7rem] text-muted-foreground truncate min-w-0 flex-1">
+        {assessment.signals[0]
+          ? t(assessment.signals[0].labelKey)
+          : t("portfolioRisk.section.dismissed.stateOnly")}
+        {assessment.signals.length > 1 &&
+          ` · +${assessment.signals.length - 1}`}
+      </span>
+      <button
+        type="button"
+        onClick={handleUndismiss}
+        disabled={busy}
+        className="shrink-0 text-[0.7rem] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 hover:border-primary/40 hover:text-primary transition-colors disabled:opacity-60"
+      >
+        {busy ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <RotateCcw className="h-3 w-3" />
+        )}
+        {t("portfolioRisk.card.undismiss")}
+      </button>
+      {err && (
+        <span className="basis-full text-[0.65rem] text-danger">{err}</span>
+      )}
+    </div>
   );
 }
 
