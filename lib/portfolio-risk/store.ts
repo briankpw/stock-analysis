@@ -212,15 +212,19 @@ export function syncRiskWatches(
  *     engine consults to suppress repeat pings for the rest of the
  *     current at-risk episode.
  *
- *   * assessment is clean (`overallSeverity === null`) — the ticker
- *     recovered. Clear `last_notified_at` back to NULL so the next
- *     time the ticker crosses into risk we fire again (a new
- *     episode). This is the mechanism that turns "notify once" into
- *     "notify once per episode".
+ *   * Confirmed recovery — the assessment is clean AND the *previous*
+ *     tick was also clean. Only then do we clear `last_notified_at`
+ *     back to NULL so a future re-entry into risk fires again. The
+ *     two-consecutive-clean-ticks requirement is essential: without
+ *     it, a single Yahoo Finance hiccup (empty bars → `null`
+ *     severity for one tick) or a news headline sliding across the
+ *     30-day lookback boundary could spuriously clear the lock and
+ *     re-fire the same alert every 30–45 minutes.
  *
- *   * assessment is still risky but we didn't notify (either because
- *     we already alerted for this episode, or because we're seeding
- *     the baseline) — leave `last_notified_at` untouched.
+ *   * All other cases — leave `last_notified_at` untouched. This
+ *     includes: still-risky with the lock held, first clean tick
+ *     after a risky run (candidate recovery, not yet confirmed), and
+ *     the initial "seed the baseline" tick on a freshly-added watch.
  */
 export function markRiskEvaluated(
   ticker: string,
@@ -228,9 +232,19 @@ export function markRiskEvaluated(
   notified: boolean,
 ): void {
   const now = new Date().toISOString();
+  const t = normalizeTicker(ticker);
   const signalIds = assessment.signals.map((s) => s.id);
   const json = JSON.stringify(signalIds);
-  const recovered = assessment.overallSeverity === null;
+  const isClean = assessment.overallSeverity === null;
+
+  // Look up the previous severity to distinguish "first clean tick"
+  // (candidate recovery, don't clear yet) from "second clean tick"
+  // (confirmed recovery, safe to clear). Cheap indexed lookup.
+  const prev = getDb()
+    .prepare("SELECT last_severity FROM portfolio_risk_watches WHERE ticker = ?")
+    .get(t) as { last_severity: string | null } | undefined;
+  const wasClean = !prev || prev.last_severity === null;
+  const confirmedRecovery = isClean && wasClean;
 
   if (notified) {
     getDb()
@@ -246,11 +260,9 @@ export function markRiskEvaluated(
         json,
         now,
         now,
-        normalizeTicker(ticker),
+        t,
       );
-  } else if (recovered) {
-    // Ticker recovered → clear the sticky-lock so a future re-entry
-    // into risk fires a fresh alert.
+  } else if (confirmedRecovery) {
     getDb()
       .prepare(
         "UPDATE portfolio_risk_watches SET " +
@@ -263,7 +275,7 @@ export function markRiskEvaluated(
         assessment.fingerprint,
         json,
         now,
-        normalizeTicker(ticker),
+        t,
       );
   } else {
     getDb()
@@ -278,7 +290,7 @@ export function markRiskEvaluated(
         assessment.fingerprint,
         json,
         now,
-        normalizeTicker(ticker),
+        t,
       );
   }
 }
