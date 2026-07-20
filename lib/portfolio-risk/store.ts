@@ -13,8 +13,10 @@
  * The client bulk-replaces this list via `syncRiskWatches()` whenever
  * its imported holdings change. The worker's
  * `runPortfolioRiskTick()` walks the list every loop; a push fires
- * when the current signal fingerprint differs from `last_fingerprint`
- * and the new signal set clears the `min_severity` gate.
+ * once per at-risk episode (see the engine's sticky-until-recovery
+ * contract) when the assessment clears the watch's `min_severity`
+ * gate. `last_notified_at` acts as the episode's sticky lock — it's
+ * set on push and cleared when the ticker returns to a clean state.
  */
 
 import { getDb } from "@/lib/db";
@@ -201,10 +203,24 @@ export function syncRiskWatches(
 // ---------------------------------------------------------------------------
 
 /**
- * Record what the tick just saw for this ticker, whether or not it
- * fired a push. Also captures the notification timestamp only when
- * `notified` is true so we can enforce the "≤ 1 push per ticker per
- * hour" throttle in the engine.
+ * Record what the tick just saw for this ticker.
+ *
+ * Three cases for `last_notified_at`:
+ *
+ *   * `notified === true` — we just pushed an alert, so stamp
+ *     `last_notified_at` = now. This is the "sticky lock" flag the
+ *     engine consults to suppress repeat pings for the rest of the
+ *     current at-risk episode.
+ *
+ *   * assessment is clean (`overallSeverity === null`) — the ticker
+ *     recovered. Clear `last_notified_at` back to NULL so the next
+ *     time the ticker crosses into risk we fire again (a new
+ *     episode). This is the mechanism that turns "notify once" into
+ *     "notify once per episode".
+ *
+ *   * assessment is still risky but we didn't notify (either because
+ *     we already alerted for this episode, or because we're seeding
+ *     the baseline) — leave `last_notified_at` untouched.
  */
 export function markRiskEvaluated(
   ticker: string,
@@ -214,6 +230,8 @@ export function markRiskEvaluated(
   const now = new Date().toISOString();
   const signalIds = assessment.signals.map((s) => s.id);
   const json = JSON.stringify(signalIds);
+  const recovered = assessment.overallSeverity === null;
+
   if (notified) {
     getDb()
       .prepare(
@@ -227,6 +245,23 @@ export function markRiskEvaluated(
         assessment.fingerprint,
         json,
         now,
+        now,
+        normalizeTicker(ticker),
+      );
+  } else if (recovered) {
+    // Ticker recovered → clear the sticky-lock so a future re-entry
+    // into risk fires a fresh alert.
+    getDb()
+      .prepare(
+        "UPDATE portfolio_risk_watches SET " +
+          "last_severity = ?, last_fingerprint = ?, last_signals_json = ?, " +
+          "last_notified_at = NULL, updated_at = ? " +
+          "WHERE ticker = ?",
+      )
+      .run(
+        assessment.overallSeverity,
+        assessment.fingerprint,
+        json,
         now,
         normalizeTicker(ticker),
       );

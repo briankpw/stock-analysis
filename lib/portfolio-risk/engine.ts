@@ -3,13 +3,22 @@
  *
  * On each worker tick we walk every row in `portfolio_risk_watches`,
  * fetch its bars + recent news, run `analyzeRisk()`, and decide
- * whether to fire a push:
+ * whether to fire a push.
  *
- *   * Fire when the current fingerprint differs from the last one AND
- *     the new signal set clears the watch's `min_severity` gate AND we
- *     haven't already pushed within the throttle window (default 1h).
- *   * Otherwise just record what we saw so the next tick has a fresh
- *     baseline.
+ * Notification model: **sticky-until-recovery**. We alert exactly ONCE
+ * per at-risk episode — the moment a ticker first crosses the
+ * `min_severity` gate, and then stay quiet even as the underlying
+ * signal set churns (new headlines, price drift, etc.) until the
+ * ticker returns to a clean state (`overallSeverity === null`). At
+ * that point `last_notified_at` is cleared and any future re-entry
+ * into risk is treated as a fresh episode that fires again.
+ *
+ * Rationale: the previous "fingerprint change" model would re-fire
+ * every time a news headline entered or left the 30-day window, which
+ * for a persistently-risky ticker meant a push roughly every hour.
+ * Users found that noisy; the one-per-episode contract matches the
+ * user-visible mental model of "notify me when this ticker gets into
+ * trouble, once."
  *
  * Failures are per-ticker: a Yahoo Finance 429 on one symbol
  * doesn't stop the rest of the batch. The report captures them into
@@ -22,7 +31,7 @@ import { settings } from "@/lib/config";
 import { getState, setState } from "@/lib/bot/store";
 import { withTickLock } from "@/lib/watch/tick-lock";
 import { analyzeRisk } from "./analyzer";
-import { maxSeverity, type RiskAssessment, type RiskSeverity } from "./signals";
+import type { RiskAssessment, RiskSeverity } from "./signals";
 import {
   listRiskWatches,
   markRiskEvaluated,
@@ -34,14 +43,6 @@ export const PORTFOLIO_RISK_STATE_KEYS = {
   LAST_TICK_AT: "portfolio_risk.last_tick_at",
   LAST_TICK_STATUS: "portfolio_risk.last_tick_status",
 } as const;
-
-/**
- * Do not push the same ticker's alert more than once per this many
- * milliseconds. Prevents a news feed that keeps re-shuffling the
- * publish time of the same "Chapter 11" article from paging the user
- * every 15 minutes.
- */
-const THROTTLE_MS = 60 * 60 * 1000; // 1 hour
 
 export interface PortfolioRiskTickReport {
   ok: boolean;
@@ -132,7 +133,7 @@ async function evaluateWatch(
   if (assessment.overallSeverity === null) report.cleanCount += 1;
   else report.riskyCount += 1;
 
-  const shouldNotify = decideNotify(watch, assessment, now);
+  const shouldNotify = decideNotify(watch, assessment);
   let sent = false;
   if (shouldNotify) {
     const res = await notifyPortfolioRisk(watch.ticker, assessment, {
@@ -147,7 +148,10 @@ async function evaluateWatch(
     }
   }
   // Always update the snapshot — even when we chose not to notify —
-  // so the next tick's fingerprint comparison sees the latest state.
+  // so the next tick's evaluation sees the latest observed state.
+  // `markRiskEvaluated` also clears `last_notified_at` when severity
+  // returns to null, which is what lets a recovered ticker fire again
+  // if it re-enters risk later.
   markRiskEvaluated(watch.ticker, assessment, sent);
 }
 
@@ -158,43 +162,33 @@ async function evaluateWatch(
 /**
  * Should this evaluation fire a push?
  *
- * Rules:
- *   1. There must be at least one signal.
+ * Sticky-until-recovery contract:
+ *
+ *   1. There must be at least one signal (severity != null).
  *   2. The overall severity must clear the watch's `min_severity`
  *      gate (see `severityClearsGate`).
- *   3. The fingerprint must differ from the last one — no "same
- *      signal set, still true" repeat pings.
- *   4. Never more than one push per THROTTLE_MS per ticker, even if
- *      2 & 3 flap.
- *   5. First-time evaluations (last_fingerprint is null) don't fire —
- *      they seed the baseline instead. Otherwise a user newly
- *      importing a portfolio full of at-risk names would be buried
- *      in pushes for state that hasn't actually changed.
+ *   3. First-time evaluations (last_fingerprint is null) don't fire —
+ *      they seed the baseline instead. Otherwise importing a new
+ *      portfolio full of at-risk names would blast the user with
+ *      pushes for state that hasn't actually changed.
+ *   4. Once we've alerted for this episode (`last_notified_at` is
+ *      set), stay quiet regardless of how the signal set churns.
+ *      That flag is cleared in `markRiskEvaluated` when the ticker
+ *      returns to clean, so a later re-entry into risk fires again.
  */
 function decideNotify(
   watch: RiskWatch,
   assessment: RiskAssessment,
-  now: Date,
 ): boolean {
   if (assessment.overallSeverity === null) return false;
   if (!severityClearsGate(assessment.overallSeverity, watch.minSeverity)) {
     return false;
   }
-  // Seed the baseline on first evaluation.
   if (watch.lastFingerprint === null) return false;
-  if (assessment.fingerprint === watch.lastFingerprint) return false;
-  if (watch.lastNotifiedAt) {
-    const last = Date.parse(watch.lastNotifiedAt);
-    if (Number.isFinite(last) && now.getTime() - last < THROTTLE_MS) {
-      return false;
-    }
-  }
-  // Additional guard: don't page for downgrades ("critical → high"
-  // stays interesting, "high → medium" doesn't). We already dropped
-  // medium via the gate check, but the previous severity being HIGHER
-  // than the new one means the story got LESS severe — no ping.
-  const merged = maxSeverity(watch.lastSeverity, assessment.overallSeverity);
-  return merged === assessment.overallSeverity;
+  // Sticky suppression — one push per at-risk episode, forever, until
+  // the ticker recovers.
+  if (watch.lastNotifiedAt !== null) return false;
+  return true;
 }
 
 function severityClearsGate(
