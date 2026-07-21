@@ -40,6 +40,7 @@ const upsertSchema = z.object({
   timezone: z.string().min(1).max(64).optional(),
   notifyOnChange: z.boolean().optional(),
   minStrength: z.enum(["all", "buy_sell", "strong_only"]).optional(),
+  frequency: z.enum(["always", "daily", "once"]).optional(),
 });
 
 export async function GET() {
@@ -55,6 +56,7 @@ export async function POST(req: Request) {
       timezone: parsed.timezone,
       notifyOnChange: parsed.notifyOnChange,
       minStrength: parsed.minStrength,
+      frequency: parsed.frequency,
     });
     return NextResponse.json({ ok: true, alert });
   } catch (e) {

@@ -50,6 +50,8 @@ import { useTicker } from "@/lib/state";
 import { useMasterAlerts } from "@/hooks/use-master-alerts";
 import type { AlertStrength } from "@/lib/master-watch/store";
 import { DEFAULT_ALERT_DAILY_TIME } from "@/lib/alert-defaults";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
+import { FrequencyPicker } from "@/components/alert-frequency-picker";
 
 // See the note in `technical-alert-control.tsx` for the rationale
 // behind this fallback and the datalist below — same reasoning.
@@ -130,6 +132,8 @@ export function MasterAlertControl() {
   const [notifyOnChange, setNotifyOnChange] = React.useState(true);
   const [minStrength, setMinStrength] =
     React.useState<AlertStrength>("buy_sell");
+  const [frequency, setFrequency] =
+    React.useState<NotifyFrequency>("always");
 
   // Re-sync the form whenever the persisted config or selected ticker
   // changes — keeps the popover honest if another tab edits the rule
@@ -141,12 +145,14 @@ export function MasterAlertControl() {
       setTimezone(current.timezone);
       setNotifyOnChange(current.notifyOnChange);
       setMinStrength(current.minStrength);
+      setFrequency(current.frequency);
     } else {
       setDigestEnabled(false);
       setDailyTime(DEFAULT_ALERT_DAILY_TIME);
       setTimezone(detectTimezone());
       setNotifyOnChange(true);
       setMinStrength("buy_sell");
+      setFrequency("always");
     }
     setStatus(null);
   }, [current, ticker]);
@@ -166,6 +172,7 @@ export function MasterAlertControl() {
         timezone,
         notifyOnChange,
         minStrength,
+        frequency,
       });
       setStatus({ kind: "ok", message: t("master.alert.status.saved") });
     } catch (err) {
@@ -326,34 +333,42 @@ export function MasterAlertControl() {
           </label>
           <div
             className={cn(
-              "pl-6 space-y-1",
+              "pl-6 space-y-2",
               !notifyOnChange && "opacity-50 pointer-events-none",
             )}
           >
-            <p className="text-[0.65rem] text-muted-foreground">
-              {t("master.alert.change.strength")}
-            </p>
-            <div className="flex flex-wrap gap-1">
-              {STRENGTH_ORDER.map((s) => {
-                const active = minStrength === s;
-                return (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setMinStrength(s)}
-                    aria-pressed={active}
-                    className={cn(
-                      "text-[0.65rem] px-2 py-1 rounded-md border transition-colors",
-                      active
-                        ? "border-primary/40 bg-primary/10 text-primary"
-                        : "border-border bg-card text-muted-foreground hover:border-primary/30 hover:text-foreground",
-                    )}
-                  >
-                    {t(`master.alert.change.strength.${s}`)}
-                  </button>
-                );
-              })}
+            <div className="space-y-1">
+              <p className="text-[0.65rem] text-muted-foreground">
+                {t("master.alert.change.strength")}
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {STRENGTH_ORDER.map((s) => {
+                  const active = minStrength === s;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setMinStrength(s)}
+                      aria-pressed={active}
+                      className={cn(
+                        "text-[0.65rem] px-2 py-1 rounded-md border transition-colors",
+                        active
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border bg-card text-muted-foreground hover:border-primary/30 hover:text-foreground",
+                      )}
+                    >
+                      {t(`master.alert.change.strength.${s}`)}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+            <FrequencyPicker
+              value={frequency}
+              onChange={setFrequency}
+              disabled={!notifyOnChange}
+              firedOnce={Boolean(current?.lastChangeNotifiedAt)}
+            />
           </div>
         </fieldset>
 

@@ -11,6 +11,7 @@
  */
 
 import * as React from "react";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
 import type {
   SectorTechnicalAlertStrength,
   SectorTechnicalAlert,
@@ -64,6 +65,7 @@ export interface UpsertSectorTechnicalAlertArgs {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: SectorTechnicalAlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 export interface UseSectorTechnicalAlerts {
@@ -140,6 +142,7 @@ export function useSectorTechnicalAlerts(): UseSectorTechnicalAlerts {
           timezone: args.timezone,
           notifyOnChange: args.notifyOnChange,
           minStrength: args.minStrength,
+          frequency: args.frequency,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as

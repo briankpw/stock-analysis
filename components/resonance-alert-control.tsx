@@ -46,6 +46,8 @@ import { useTicker } from "@/lib/state";
 import { useResonanceAlerts } from "@/hooks/use-resonance-alerts";
 import type { ResonanceAlertStrength } from "@/lib/resonance-watch/store";
 import { DEFAULT_ALERT_DAILY_TIME } from "@/lib/alert-defaults";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
+import { FrequencyPicker } from "@/components/alert-frequency-picker";
 
 function detectTimezone(): string {
   try {
@@ -136,6 +138,8 @@ export function ResonanceAlertControl() {
   const [notifyOnChange, setNotifyOnChange] = React.useState(true);
   const [minStrength, setMinStrength] =
     React.useState<ResonanceAlertStrength>("trigger_only");
+  const [frequency, setFrequency] =
+    React.useState<NotifyFrequency>("always");
 
   React.useEffect(() => {
     if (current) {
@@ -144,12 +148,14 @@ export function ResonanceAlertControl() {
       setTimezone(current.timezone);
       setNotifyOnChange(current.notifyOnChange);
       setMinStrength(current.minStrength);
+      setFrequency(current.frequency);
     } else {
       setDigestEnabled(false);
       setDailyTime(DEFAULT_ALERT_DAILY_TIME);
       setTimezone(detectTimezone());
       setNotifyOnChange(true);
       setMinStrength("trigger_only");
+      setFrequency("always");
     }
     setStatus(null);
   }, [current, ticker]);
@@ -169,6 +175,7 @@ export function ResonanceAlertControl() {
         timezone,
         notifyOnChange,
         minStrength,
+        frequency,
       });
       setStatus({ kind: "ok", message: t("rs.alert.status.saved") });
     } catch (err) {
@@ -360,6 +367,13 @@ export function ResonanceAlertControl() {
             <p className="text-[0.6rem] text-muted-foreground italic pt-0.5">
               {t(`rs.alert.change.strength.${minStrength}.hint`)}
             </p>
+            <FrequencyPicker
+              value={frequency}
+              onChange={setFrequency}
+              disabled={!notifyOnChange}
+              firedOnce={Boolean(current?.lastChangeNotifiedAt)}
+              className="pt-1"
+            />
           </div>
         </fieldset>
 

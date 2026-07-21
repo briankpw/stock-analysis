@@ -66,6 +66,7 @@ import type {
   SectorResonanceAlertStrength,
 } from "@/lib/sector-resonance-watch/store";
 import type { SectorTechnicalAlert } from "@/lib/sector-technical-watch/store";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
 
 type AlertKind =
   | "technical"
@@ -83,6 +84,37 @@ type Translator = (
   key: string,
   params?: Record<string, string | number>,
 ) => string;
+
+/**
+ * Compact chip that surfaces the per-rule frequency ('always' | 'daily'
+ * | 'once') when the user has narrowed it below the default. The
+ * default `always` mode is rendered as `null` so the row stays clean
+ * for the common case — chips are for CONFIGURED overrides, not
+ * defaults. The `once` chip also flips its style to warning when the
+ * alert has already fired to remind the user they need to re-save to
+ * re-arm.
+ */
+function frequencyChipFor(
+  frequency: NotifyFrequency | undefined,
+  firedOnce: boolean,
+  t: Translator,
+): React.ReactNode | null {
+  if (!frequency || frequency === "always") return null;
+  const label = t(`alert.frequency.${frequency}`);
+  const hint = t(`alert.frequency.${frequency}.hint`);
+  const styleName =
+    frequency === "once" && firedOnce
+      ? "chip chip-neu text-[0.65rem] border border-warning/40 bg-warning/10 text-warning"
+      : "chip chip-neu text-[0.65rem] border border-primary/30 bg-primary/5 text-primary";
+  return (
+    <span
+      className={styleName}
+      title={hint}
+    >
+      {label}
+    </span>
+  );
+}
 
 function techStrengthLabel(s: AlertStrength, t: Translator): string {
   switch (s) {
@@ -701,6 +733,7 @@ function AlertRowShell({
   digestChip,
   strengthChip,
   onChangeChip,
+  frequencyChip,
   lastNotified,
   onOpen,
   onTest,
@@ -716,6 +749,7 @@ function AlertRowShell({
   digestChip: React.ReactNode | null;
   strengthChip: React.ReactNode | null;
   onChangeChip: React.ReactNode | null;
+  frequencyChip?: React.ReactNode | null;
   lastNotified: string | null;
   onOpen: () => void;
   onTest: () => void;
@@ -743,6 +777,7 @@ function AlertRowShell({
       {digestChip}
       {onChangeChip}
       {strengthChip}
+      {frequencyChip}
       {lastNotified && (
         <span className="text-[0.65rem] text-muted-foreground">
           {t("bot.signalAlerts.lastNotified", {
@@ -829,12 +864,18 @@ function TechnicalAlertRow({
       {techStrengthLabel(alert.minStrength, t)}
     </span>
   ) : null;
+  const frequencyChip = frequencyChipFor(
+    alert.frequency,
+    Boolean(alert.lastChangeNotifiedAt),
+    t,
+  );
   return (
     <AlertRowShell
       ticker={alert.ticker}
       digestChip={digestChip}
       onChangeChip={onChangeChip}
       strengthChip={strengthChip}
+      frequencyChip={frequencyChip}
       lastNotified={alert.lastNotifiedAt}
       onOpen={onOpen}
       onTest={onTest}
@@ -885,12 +926,18 @@ function ResonanceAlertRow({
       {resStrengthLabel(alert.minStrength, t)}
     </span>
   ) : null;
+  const frequencyChip = frequencyChipFor(
+    alert.frequency,
+    Boolean(alert.lastChangeNotifiedAt),
+    t,
+  );
   return (
     <AlertRowShell
       ticker={alert.ticker}
       digestChip={digestChip}
       onChangeChip={onChangeChip}
       strengthChip={strengthChip}
+      frequencyChip={frequencyChip}
       lastNotified={alert.lastNotifiedAt}
       onOpen={onOpen}
       onTest={onTest}
@@ -967,12 +1014,18 @@ function SectorResonanceAlertRow({
       </span>
     </span>
   );
+  const frequencyChip = frequencyChipFor(
+    alert.frequency,
+    Boolean(alert.lastChangeNotifiedAt),
+    t,
+  );
   return (
     <AlertRowShell
       ticker={displayName}
       digestChip={digestChip}
       onChangeChip={onChangeChip}
       strengthChip={strengthChip}
+      frequencyChip={frequencyChip}
       lastNotified={alert.lastNotifiedAt}
       onOpen={onOpen}
       onTest={onTest}
@@ -1045,12 +1098,18 @@ function SectorTechnicalAlertRow({
       </span>
     </span>
   );
+  const frequencyChip = frequencyChipFor(
+    alert.frequency,
+    Boolean(alert.lastChangeNotifiedAt),
+    t,
+  );
   return (
     <AlertRowShell
       ticker={displayName}
       digestChip={digestChip}
       onChangeChip={onChangeChip}
       strengthChip={strengthChip}
+      frequencyChip={frequencyChip}
       lastNotified={alert.lastNotifiedAt}
       onOpen={onOpen}
       onTest={onTest}
@@ -1101,12 +1160,18 @@ function MasterAlertRow({
       {masterStrengthLabel(alert.minStrength, t)}
     </span>
   ) : null;
+  const frequencyChip = frequencyChipFor(
+    alert.frequency,
+    Boolean(alert.lastChangeNotifiedAt),
+    t,
+  );
   return (
     <AlertRowShell
       ticker={alert.ticker}
       digestChip={digestChip}
       onChangeChip={onChangeChip}
       strengthChip={strengthChip}
+      frequencyChip={frequencyChip}
       lastNotified={alert.lastNotifiedAt}
       onOpen={onOpen}
       onTest={onTest}

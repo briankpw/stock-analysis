@@ -37,6 +37,8 @@ import { useT } from "@/lib/i18n";
 import { useSectorTechnicalAlerts } from "@/hooks/use-sector-technical-alerts";
 import type { SectorTechnicalAlertStrength } from "@/lib/sector-technical-watch/store";
 import { DEFAULT_ALERT_DAILY_TIME } from "@/lib/alert-defaults";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
+import { FrequencyPicker } from "@/components/alert-frequency-picker";
 
 function detectTimezone(): string {
   try {
@@ -129,6 +131,8 @@ export function SectorTechnicalAlertControl({
   const [notifyOnChange, setNotifyOnChange] = React.useState(true);
   const [minStrength, setMinStrength] =
     React.useState<SectorTechnicalAlertStrength>("buy_sell");
+  const [frequency, setFrequency] =
+    React.useState<NotifyFrequency>("always");
 
   React.useEffect(() => {
     if (current) {
@@ -137,12 +141,14 @@ export function SectorTechnicalAlertControl({
       setTimezone(current.timezone);
       setNotifyOnChange(current.notifyOnChange);
       setMinStrength(current.minStrength);
+      setFrequency(current.frequency);
     } else {
       setDigestEnabled(false);
       setDailyTime(DEFAULT_ALERT_DAILY_TIME);
       setTimezone(detectTimezone());
       setNotifyOnChange(true);
       setMinStrength("buy_sell");
+      setFrequency("always");
     }
     setStatus(null);
   }, [current, segmentId]);
@@ -162,6 +168,7 @@ export function SectorTechnicalAlertControl({
         timezone,
         notifyOnChange,
         minStrength,
+        frequency,
       });
       setStatus({ kind: "ok", message: t("sts.alert.status.saved") });
     } catch (err) {
@@ -356,6 +363,13 @@ export function SectorTechnicalAlertControl({
             <p className="text-[0.6rem] text-muted-foreground italic pt-0.5">
               {t(`sts.alert.change.strength.${minStrength}.hint`)}
             </p>
+            <FrequencyPicker
+              value={frequency}
+              onChange={setFrequency}
+              disabled={!notifyOnChange}
+              firedOnce={Boolean(current?.lastChangeNotifiedAt)}
+              className="pt-1"
+            />
           </div>
         </fieldset>
 

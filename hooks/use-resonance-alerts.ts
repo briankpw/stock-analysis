@@ -10,6 +10,7 @@
  */
 
 import * as React from "react";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
 import type {
   ResonanceAlertStrength,
   ResonanceAlert,
@@ -61,6 +62,7 @@ export interface UpsertResonanceAlertArgs {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: ResonanceAlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 export interface UseResonanceAlerts {
@@ -133,6 +135,7 @@ export function useResonanceAlerts(): UseResonanceAlerts {
           timezone: args.timezone,
           notifyOnChange: args.notifyOnChange,
           minStrength: args.minStrength,
+          frequency: args.frequency,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as

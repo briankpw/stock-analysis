@@ -15,6 +15,7 @@ import type {
   AlertStrength,
   TechnicalAlert,
 } from "@/lib/technical-watch/store";
+import type { NotifyFrequency } from "@/lib/alert-frequency";
 
 type Listener = () => void;
 
@@ -62,6 +63,7 @@ export interface UpsertAlertArgs {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: AlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 export interface UseTechnicalAlerts {
@@ -134,6 +136,7 @@ export function useTechnicalAlerts(): UseTechnicalAlerts {
           timezone: args.timezone,
           notifyOnChange: args.notifyOnChange,
           minStrength: args.minStrength,
+          frequency: args.frequency,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as
