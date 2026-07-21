@@ -24,10 +24,13 @@ function parseId(raw: string): number {
 
 export async function GET(
   _req: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const id = parseId(params.id);
+    // Next.js 15 makes route params async — must be awaited before use.
+    // Matches the convention already established by app/api/segments/[id].
+    const { id: rawId } = await params;
+    const id = parseId(rawId);
     const run = getRun(id);
     if (!run) {
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
@@ -59,10 +62,11 @@ export async function GET(
 
 export async function DELETE(
   _req: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const id = parseId(params.id);
+    const { id: rawId } = await params;
+    const id = parseId(rawId);
     deleteRun(id);
     return NextResponse.json({ ok: true });
   } catch (e) {
