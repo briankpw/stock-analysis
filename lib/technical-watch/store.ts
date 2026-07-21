@@ -23,6 +23,10 @@
 
 import { getDb } from "@/lib/db";
 import type { Verdict } from "@/lib/technical-signal";
+import {
+  normalizeFrequency,
+  type NotifyFrequency,
+} from "@/lib/alert-frequency";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +57,12 @@ export interface TechnicalAlert {
   notifyOnChange: boolean;
   /** Filter for on-change firings. */
   minStrength: AlertStrength;
+  /**
+   * How often the ON-CHANGE path is allowed to fire per rule. Does
+   * NOT affect the daily-digest — that's already once-per-day by
+   * design. See `lib/alert-frequency.ts` for semantics.
+   */
+  frequency: NotifyFrequency;
   /** Last verdict we notified about — used to detect band crossings. */
   lastVerdict: Verdict | null;
   /** Score at last notification (for the "was +42, now -18" delta). */
@@ -61,6 +71,12 @@ export interface TechnicalAlert {
   lastDigestLocalDate: string | null;
   /** ISO timestamp of the most recent notification of any kind. */
   lastNotifiedAt: string | null;
+  /**
+   * ISO timestamp of the last ON-CHANGE notification specifically.
+   * Kept separate from `lastNotifiedAt` so the frequency gate for the
+   * on-change path isn't tripped by a digest fire on the same day.
+   */
+  lastChangeNotifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +87,14 @@ export interface UpsertTechnicalAlertInput {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: AlertStrength;
+  /**
+   * Optional new frequency mode. When the user changes this to
+   * anything other than the current value, the store also clears
+   * `last_change_notified_at` so a fresh `once` rule can fire, and a
+   * `daily` rule isn't stuck waiting until tomorrow just because the
+   * previous config already sent one today.
+   */
+  frequency?: NotifyFrequency;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,13 +147,15 @@ export function normalizeStrength(raw: unknown): AlertStrength {
 // CRUD
 // ---------------------------------------------------------------------------
 
+const SELECT_COLS =
+  "ticker, daily_time, timezone, notify_on_change, min_strength, " +
+  "notify_frequency, last_verdict, last_score, last_digest_local_date, " +
+  "last_notified_at, last_change_notified_at, created_at, updated_at";
+
 export function listTechnicalAlerts(): TechnicalAlert[] {
   const rows = getDb()
     .prepare(
-      "SELECT ticker, daily_time, timezone, notify_on_change, min_strength, " +
-        "last_verdict, last_score, last_digest_local_date, last_notified_at, " +
-        "created_at, updated_at " +
-        "FROM technical_alerts ORDER BY created_at DESC",
+      `SELECT ${SELECT_COLS} FROM technical_alerts ORDER BY created_at DESC`,
     )
     .all() as Array<Record<string, unknown>>;
   return rows.map(rowToAlert);
@@ -137,12 +163,7 @@ export function listTechnicalAlerts(): TechnicalAlert[] {
 
 export function findTechnicalAlert(ticker: string): TechnicalAlert | null {
   const row = getDb()
-    .prepare(
-      "SELECT ticker, daily_time, timezone, notify_on_change, min_strength, " +
-        "last_verdict, last_score, last_digest_local_date, last_notified_at, " +
-        "created_at, updated_at " +
-        "FROM technical_alerts WHERE ticker = ?",
-    )
+    .prepare(`SELECT ${SELECT_COLS} FROM technical_alerts WHERE ticker = ?`)
     .get(ticker.trim().toUpperCase()) as
     | Record<string, unknown>
     | undefined;
@@ -167,14 +188,25 @@ export function upsertTechnicalAlert(
   const notifyOnChange =
     input.notifyOnChange === undefined ? true : Boolean(input.notifyOnChange);
   const minStrength = normalizeStrength(input.minStrength);
+  const frequency = normalizeFrequency(input.frequency);
   const now = new Date().toISOString();
   const existing = findTechnicalAlert(ticker);
   if (existing) {
+    // Saving with a DIFFERENT frequency mode re-arms the on-change
+    // gate: clearing `last_change_notified_at` lets a once-mode rule
+    // fire again, and prevents a daily-mode rule from being stuck
+    // waiting until tomorrow just because the previous config
+    // already fired today. Same-mode saves preserve the timestamp
+    // so a plain "update the timezone" doesn't unintentionally
+    // reset the throttle.
+    const frequencyChanged = existing.frequency !== frequency;
     getDb()
       .prepare(
         "UPDATE technical_alerts SET " +
           "daily_time = ?, timezone = ?, notify_on_change = ?, " +
-          "min_strength = ?, updated_at = ? " +
+          "min_strength = ?, notify_frequency = ?, " +
+          (frequencyChanged ? "last_change_notified_at = NULL, " : "") +
+          "updated_at = ? " +
           "WHERE ticker = ?",
       )
       .run(
@@ -182,6 +214,7 @@ export function upsertTechnicalAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         ticker,
       );
@@ -190,8 +223,8 @@ export function upsertTechnicalAlert(
       .prepare(
         "INSERT INTO technical_alerts " +
           "(ticker, daily_time, timezone, notify_on_change, min_strength, " +
-          " created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          " notify_frequency, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         ticker,
@@ -199,6 +232,7 @@ export function upsertTechnicalAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         now,
       );
@@ -209,10 +243,12 @@ export function upsertTechnicalAlert(
     timezone,
     notifyOnChange,
     minStrength,
+    frequency,
     lastVerdict: null,
     lastScore: null,
     lastDigestLocalDate: null,
     lastNotifiedAt: null,
+    lastChangeNotifiedAt: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -252,7 +288,9 @@ export function markDigestFired(
 /**
  * Record a verdict change without touching `last_digest_local_date` —
  * the two channels are independent so a mid-day BUY→SELL flip shouldn't
- * un-suppress today's digest.
+ * un-suppress today's digest. Also stamps `last_change_notified_at`,
+ * which the frequency gate in `lib/alert-frequency.ts` reads to enforce
+ * daily / once caps on the on-change path.
  */
 export function markChangeFired(
   ticker: string,
@@ -263,10 +301,11 @@ export function markChangeFired(
   getDb()
     .prepare(
       "UPDATE technical_alerts SET " +
-        "last_verdict = ?, last_score = ?, last_notified_at = ?, updated_at = ? " +
+        "last_verdict = ?, last_score = ?, last_notified_at = ?, " +
+        "last_change_notified_at = ?, updated_at = ? " +
         "WHERE ticker = ?",
     )
-    .run(verdict, score, now, now, ticker.trim().toUpperCase());
+    .run(verdict, score, now, now, now, ticker.trim().toUpperCase());
 }
 
 /**
@@ -321,6 +360,7 @@ function rowToAlert(row: Record<string, unknown>): TechnicalAlert {
     timezone: String(row.timezone ?? "UTC"),
     notifyOnChange: Boolean(row.notify_on_change),
     minStrength: coerceStrength(row.min_strength),
+    frequency: normalizeFrequency(row.notify_frequency),
     lastVerdict: coerceVerdict(row.last_verdict),
     lastScore:
       row.last_score === null || row.last_score === undefined
@@ -328,6 +368,8 @@ function rowToAlert(row: Record<string, unknown>): TechnicalAlert {
         : Number(row.last_score),
     lastDigestLocalDate: (row.last_digest_local_date as string | null) ?? null,
     lastNotifiedAt: (row.last_notified_at as string | null) ?? null,
+    lastChangeNotifiedAt:
+      (row.last_change_notified_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

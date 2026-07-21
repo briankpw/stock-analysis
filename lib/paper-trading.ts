@@ -1,17 +1,47 @@
 /**
- * Simulated brokerage account — all state persisted in the same SQLite DB
- * as the bot. This mirrors the semantics of `src/paper_trading.py`:
+ * Simulated brokerage — persisted in SQLite alongside the bot's state.
  *
- * * Single portfolio (id = 1), positions keyed by symbol.
- * * Cost basis is *weighted-average* on buys.
- * * Sells reduce the position at avg cost — realised P&L is embedded in
- *   the `cash` balance and rendered separately via the trade log.
- * * All orders execute at the price the caller passes in (the UI defaults
- *   to the most recent close).
+ * ## Multi-portfolio model (v15+)
+ *
+ * Every function that touches ledger data (`getPortfolio`, `placeOrder`,
+ * `recentTrades`, `setPositionTargets`, `evaluateTargets`,
+ * `resetPortfolio`, `valuePortfolio`) is scoped by `portfolioId`.
+ * There is no ambient "default portfolio" — callers must supply the
+ * id, and it must reference an existing row in `paper_portfolio`. Use
+ * `listPortfolios()` at the API boundary to resolve the client's
+ * `activePortfolioId` (or fall back to the first row) before calling
+ * anything else.
+ *
+ * Each portfolio is a fully isolated sub-account:
+ *
+ *   * Its own cash + starting cash (unshared with siblings).
+ *   * Its own set of positions, keyed on `(portfolio_id, symbol)`.
+ *     Selling AAPL in one portfolio never mutates another portfolio's
+ *     AAPL row — the compound PK guarantees this at the DB layer.
+ *   * Its own trade log. `paper_analytics.ts` is portfolio-agnostic:
+ *     hand it a scoped `Trade[]` and the same replay engine works.
+ *
+ * ## Invariants
+ *
+ *   * Cost basis is *weighted-average* on buys (matches
+ *     `paper-analytics.ts` — the two paths must agree byte-for-byte).
+ *   * Sells reduce the position at avg cost — realised P&L is embedded
+ *     in `cash` and reconstructed by replaying trades.
+ *   * All orders execute at the caller-supplied price. The UI defaults
+ *     to the most recent close.
+ *   * Bracket-order fields (`stopLoss` / `takeProfit`) attach to the
+ *     resulting position row when set on a buy. See `placeOrder`.
+ *   * A portfolio's `id` never changes; renaming updates `name` only.
+ *     Deletion is a hard DELETE that cascades to positions + trades
+ *     (FK ON DELETE CASCADE in the schema).
  */
 
 import { getDb } from "./db";
 import { settings } from "./config";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export type Side = "buy" | "sell";
 
@@ -29,15 +59,36 @@ export interface Position {
 }
 
 export interface Portfolio {
+  id: number;
+  name: string;
   cash: number;
   startingCash: number;
   positions: Position[];
   createdAt: string;
   updatedAt: string;
+  /** Non-null when the portfolio is soft-archived (reserved for future
+   *  use — the current UI always deletes hard rather than archives). */
+  archivedAt: string | null;
+}
+
+/** Just the identity fields — used by the portfolio picker to render the
+ *  dropdown without pulling positions/trades. */
+export interface PortfolioSummary {
+  id: number;
+  name: string;
+  cash: number;
+  startingCash: number;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
 }
 
 export interface Trade {
   id: number;
+  /** The portfolio this trade belongs to. Denormalised into the type so
+   *  the analytics module doesn't need a second lookup to know which
+   *  portfolio a trade came from. */
+  portfolioId: number;
   symbol: string;
   side: Side;
   shares: number;
@@ -48,22 +99,76 @@ export interface Trade {
   createdAt: string;
 }
 
-export function getPortfolio(): Portfolio {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT cash, starting_cash, created_at, updated_at FROM paper_portfolio WHERE id = 1")
-    .get() as {
+// ---------------------------------------------------------------------------
+// Portfolio CRUD
+// ---------------------------------------------------------------------------
+
+/**
+ * List every portfolio ordered by (archived first? no — active first),
+ * then alphabetical by name. Used by the portfolio picker and by the
+ * API to resolve an implicit "no id supplied" to the first active row.
+ */
+export function listPortfolios(): PortfolioSummary[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT id, name, cash, starting_cash, archived_at, created_at, updated_at " +
+        "FROM paper_portfolio " +
+        // NULLs sort first with the default ASC ordering in SQLite, which
+        // happens to give us "active portfolios first, archived last".
+        "ORDER BY archived_at IS NOT NULL, LOWER(name) ASC",
+    )
+    .all() as Array<{
+      id: number;
+      name: string;
       cash: number;
       starting_cash: number;
+      archived_at: string | null;
       created_at: string;
       updated_at: string;
-    };
+    }>;
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    cash: r.cash,
+    startingCash: r.starting_cash,
+    archivedAt: r.archived_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }));
+}
+
+/**
+ * Load one portfolio (with its positions) by id. Throws when the id
+ * doesn't exist — callers should validate at the API layer and return
+ * a 404, not surface the raw error.
+ */
+export function getPortfolio(portfolioId: number): Portfolio {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT id, name, cash, starting_cash, archived_at, created_at, updated_at " +
+        "FROM paper_portfolio WHERE id = ?",
+    )
+    .get(portfolioId) as
+      | {
+          id: number;
+          name: string;
+          cash: number;
+          starting_cash: number;
+          archived_at: string | null;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
+  if (!row) {
+    throw new Error(`Portfolio ${portfolioId} not found`);
+  }
   const positions = db
     .prepare(
       "SELECT symbol, shares, avg_cost, stop_loss, take_profit, updated_at " +
-        "FROM paper_positions ORDER BY symbol",
+        "FROM paper_positions WHERE portfolio_id = ? ORDER BY symbol",
     )
-    .all() as Array<{
+    .all(portfolioId) as Array<{
       symbol: string;
       shares: number;
       avg_cost: number;
@@ -72,6 +177,8 @@ export function getPortfolio(): Portfolio {
       updated_at: string;
     }>;
   return {
+    id: row.id,
+    name: row.name,
     cash: row.cash,
     startingCash: row.starting_cash,
     positions: positions.map((p) => ({
@@ -82,19 +189,283 @@ export function getPortfolio(): Portfolio {
       takeProfit: p.take_profit,
       updatedAt: p.updated_at,
     })),
+    archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-export function recentTrades(limit = 50): Trade[] {
+/**
+ * Normalise a user-supplied portfolio name. Trims whitespace, collapses
+ * repeated internal spaces, and caps length at 60 chars. Rejects empty
+ * strings and control characters — the name shows up in the picker + on
+ * every trade log entry so we keep it printable.
+ */
+function normalisePortfolioName(raw: string): string {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (trimmed.length === 0) {
+    throw new Error("Portfolio name is required");
+  }
+  if (trimmed.length > 60) {
+    throw new Error("Portfolio name must be 60 characters or fewer");
+  }
+  // Control-char check (tab / newline / etc.) — the trim above catches
+  // trailing whitespace but not, say, an embedded \n mid-string.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new Error("Portfolio name contains invalid control characters");
+  }
+  return trimmed;
+}
+
+/**
+ * Create a new (empty) portfolio. `startingCash` defaults to the app
+ * config value; the same amount seeds `cash` so a fresh portfolio
+ * starts with zero P&L. Returns the created summary.
+ *
+ * The UNIQUE constraint on `name` is enforced by SQLite; we translate
+ * the raw SQLITE_CONSTRAINT_UNIQUE error into a friendly message so
+ * the API layer can return a clean 400 without regex-parsing SQL.
+ */
+export function createPortfolio(input: {
+  name: string;
+  startingCash?: number;
+}): PortfolioSummary {
+  const name = normalisePortfolioName(input.name);
+  const startingCash =
+    input.startingCash !== undefined && Number.isFinite(input.startingCash) && input.startingCash > 0
+      ? input.startingCash
+      : settings.paper.startingCash;
+  const now = new Date().toISOString();
+  const db = getDb();
+  try {
+    const info = db
+      .prepare(
+        "INSERT INTO paper_portfolio (name, cash, starting_cash, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(name, startingCash, startingCash, now, now);
+    return {
+      id: Number(info.lastInsertRowid),
+      name,
+      cash: startingCash,
+      startingCash,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+  } catch (err) {
+    // better-sqlite3 exposes `code` on the thrown error; UNIQUE
+    // violations are `SQLITE_CONSTRAINT_UNIQUE`. We surface a
+    // domain-specific message rather than the raw SQL text.
+    const code = (err as { code?: string })?.code;
+    if (code === "SQLITE_CONSTRAINT_UNIQUE") {
+      throw new Error(`A portfolio named "${name}" already exists`);
+    }
+    throw err;
+  }
+}
+
+export function renamePortfolio(portfolioId: number, newName: string): PortfolioSummary {
+  const name = normalisePortfolioName(newName);
+  const now = new Date().toISOString();
+  const db = getDb();
+  try {
+    const info = db
+      .prepare("UPDATE paper_portfolio SET name = ?, updated_at = ? WHERE id = ?")
+      .run(name, now, portfolioId);
+    if (info.changes === 0) {
+      throw new Error(`Portfolio ${portfolioId} not found`);
+    }
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "SQLITE_CONSTRAINT_UNIQUE") {
+      throw new Error(`A portfolio named "${name}" already exists`);
+    }
+    throw err;
+  }
+  const row = db
+    .prepare(
+      "SELECT id, name, cash, starting_cash, archived_at, created_at, updated_at " +
+        "FROM paper_portfolio WHERE id = ?",
+    )
+    .get(portfolioId) as {
+      id: number;
+      name: string;
+      cash: number;
+      starting_cash: number;
+      archived_at: string | null;
+      created_at: string;
+      updated_at: string;
+    };
+  return {
+    id: row.id,
+    name: row.name,
+    cash: row.cash,
+    startingCash: row.starting_cash,
+    archivedAt: row.archived_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Hard-delete a portfolio. FK ON DELETE CASCADE (see the v15 migration)
+ * takes care of `paper_positions` and `paper_trades` in the same
+ * statement — no manual cleanup needed here. Refuses to delete the
+ * very last portfolio because the UI depends on at least one row
+ * existing to render the picker.
+ */
+export function deletePortfolio(portfolioId: number): void {
+  const db = getDb();
+  const remaining = db
+    .prepare("SELECT COUNT(*) AS n FROM paper_portfolio")
+    .get() as { n: number };
+  if (remaining.n <= 1) {
+    throw new Error("Cannot delete the last portfolio");
+  }
+  const info = db
+    .prepare("DELETE FROM paper_portfolio WHERE id = ?")
+    .run(portfolioId);
+  if (info.changes === 0) {
+    throw new Error(`Portfolio ${portfolioId} not found`);
+  }
+}
+
+/**
+ * Bulk-insert a list of trades and rebuild the resulting positions in a
+ * single transaction. Used by the "materialise backtest as paper
+ * portfolio" flow to seed a fresh portfolio from simulated trades
+ * without having to POST N times to `/api/paper`.
+ *
+ * The trades are inserted verbatim (respecting their `createdAt`
+ * ordering), and cash + positions are recomputed via the same math
+ * `placeOrder` uses so the final state is identical to what would
+ * result from placing the trades one-by-one via the normal path. The
+ * caller must have already created the portfolio.
+ *
+ * Trades are inserted chronologically — any input order is sorted
+ * ascending before replay so cost-basis math flows correctly.
+ */
+export function importTrades(
+  portfolioId: number,
+  input: Array<{
+    symbol: string;
+    side: Side;
+    shares: number;
+    price: number;
+    commission?: number;
+    note?: string | null;
+    createdAt: string;
+  }>,
+): { insertedCount: number; finalCash: number } {
+  if (input.length === 0) {
+    const port = getPortfolio(portfolioId);
+    return { insertedCount: 0, finalCash: port.cash };
+  }
+  const db = getDb();
+  return db.transaction(() => {
+    const port = db
+      .prepare(
+        "SELECT id, cash, starting_cash FROM paper_portfolio WHERE id = ?",
+      )
+      .get(portfolioId) as
+        | { id: number; cash: number; starting_cash: number }
+        | undefined;
+    if (!port) {
+      throw new Error(`Portfolio ${portfolioId} not found`);
+    }
+    // Reset to starting cash + drop any positions so the replay yields
+    // a clean, reproducible state (idempotent regardless of what was
+    // in the portfolio before). Trade log is preserved-then-cleared
+    // via DELETE because we can't compose a "clear then re-insert"
+    // any other way inside a single transaction.
+    db.prepare("DELETE FROM paper_positions WHERE portfolio_id = ?").run(portfolioId);
+    db.prepare("DELETE FROM paper_trades WHERE portfolio_id = ?").run(portfolioId);
+    let cash = port.starting_cash;
+    // Per-symbol running weighted-avg state — mirrors the placeOrder
+    // math so the final positions row aligns with what an interactive
+    // sequence of buys/sells would have produced.
+    const state = new Map<string, { shares: number; avgCost: number }>();
+
+    const sorted = [...input].sort((a, b) => {
+      if (a.createdAt < b.createdAt) return -1;
+      if (a.createdAt > b.createdAt) return 1;
+      return 0;
+    });
+    const insertTrade = db.prepare(
+      "INSERT INTO paper_trades (portfolio_id, symbol, side, shares, price, commission, cash_after, note, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+
+    for (const t of sorted) {
+      const symbol = t.symbol.trim().toUpperCase();
+      const commission = t.commission ?? 0;
+      const notional = t.shares * t.price;
+      const st = state.get(symbol) ?? { shares: 0, avgCost: 0 };
+      if (t.side === "buy") {
+        cash -= notional + commission;
+        const newShares = st.shares + t.shares;
+        const newAvg =
+          newShares === 0
+            ? 0
+            : (st.shares * st.avgCost + t.shares * t.price) / newShares;
+        st.shares = newShares;
+        st.avgCost = newAvg;
+      } else {
+        cash += notional - commission;
+        st.shares = Math.max(0, st.shares - t.shares);
+        if (st.shares <= 1e-9) {
+          st.shares = 0;
+          st.avgCost = 0;
+        }
+      }
+      state.set(symbol, st);
+      insertTrade.run(
+        portfolioId,
+        symbol,
+        t.side,
+        t.shares,
+        t.price,
+        commission,
+        cash,
+        t.note ?? null,
+        t.createdAt,
+      );
+    }
+
+    // Materialise the final per-symbol state into paper_positions.
+    const insertPosition = db.prepare(
+      "INSERT INTO paper_positions (portfolio_id, symbol, shares, avg_cost, stop_loss, take_profit, updated_at) " +
+        "VALUES (?, ?, ?, ?, NULL, NULL, ?)",
+    );
+    const now = new Date().toISOString();
+    for (const [symbol, st] of state) {
+      if (st.shares > 1e-9) {
+        insertPosition.run(portfolioId, symbol, st.shares, st.avgCost, now);
+      }
+    }
+    db.prepare(
+      "UPDATE paper_portfolio SET cash = ?, updated_at = ? WHERE id = ?",
+    ).run(cash, now, portfolioId);
+
+    return { insertedCount: sorted.length, finalCash: cash };
+  })();
+}
+
+// ---------------------------------------------------------------------------
+// Trade log
+// ---------------------------------------------------------------------------
+
+export function recentTrades(portfolioId: number, limit = 50): Trade[] {
   const rows = getDb()
     .prepare(
-      "SELECT id, symbol, side, shares, price, commission, cash_after, note, created_at " +
-        "FROM paper_trades ORDER BY created_at DESC LIMIT ?",
+      "SELECT id, portfolio_id, symbol, side, shares, price, commission, cash_after, note, created_at " +
+        "FROM paper_trades WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT ?",
     )
-    .all(limit) as Array<{
+    .all(portfolioId, limit) as Array<{
       id: number;
+      portfolio_id: number;
       symbol: string;
       side: Side;
       shares: number;
@@ -106,6 +477,7 @@ export function recentTrades(limit = 50): Trade[] {
     }>;
   return rows.map((r) => ({
     id: r.id,
+    portfolioId: r.portfolio_id,
     symbol: r.symbol,
     side: r.side,
     shares: r.shares,
@@ -117,30 +489,31 @@ export function recentTrades(limit = 50): Trade[] {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
 /**
- * Execute a buy/sell order. Throws with a user-friendly message if the
- * order can't clear (insufficient cash / shares).
+ * Execute a buy/sell order against `portfolioId`. Throws with a user-
+ * friendly message if the order can't clear (insufficient cash /
+ * shares) or the portfolio doesn't exist.
  *
- * When `input.stopLoss` and/or `input.takeProfit` are set on a **buy**,
- * the resulting position row is created with those guards already in
- * place — i.e. a "bracket order". This mirrors the standard broker UI
- * where users attach protective levels to the entry ticket instead of
- * having to open the position, then remember to configure targets in
- * a second step (which they often forget, negating the whole point of
- * having SL/TP).
- *
- * Bracket fields are validated identically to `setPositionTargets` and
- * only applied when the buy clears. Sells ignore them.
+ * Bracket-order fields (`stopLoss` / `takeProfit`) attach to the
+ * resulting position row when set on a buy — see the block comment
+ * inside for the "why we don't reject SL >= price" reasoning.
  */
-export function placeOrder(input: {
-  symbol: string;
-  side: Side;
-  shares: number;
-  price: number;
-  note?: string;
-  stopLoss?: number | null;
-  takeProfit?: number | null;
-}): Trade {
+export function placeOrder(
+  portfolioId: number,
+  input: {
+    symbol: string;
+    side: Side;
+    shares: number;
+    price: number;
+    note?: string;
+    stopLoss?: number | null;
+    takeProfit?: number | null;
+  },
+): Trade {
   const symbol = input.symbol.trim().toUpperCase();
   if (!symbol) throw new Error("Symbol is required");
   if (!Number.isFinite(input.shares) || input.shares <= 0) {
@@ -154,21 +527,8 @@ export function placeOrder(input: {
   //
   // Deliberately relaxed: we only enforce the invariants that are
   // *always* wrong (non-positive prices, take-profit ≤ stop-loss).
-  //
-  // The previous version also rejected `stopLoss >= input.price` and
-  // `takeProfit <= input.price` as "instant-kill traps", but that
-  // assumes a fresh entry — when a user is *averaging into* an
-  // existing position at a price above or below their current avg
-  // cost, a perfectly sensible SL/TP relative to the blended cost
-  // basis can be on the "wrong" side of the incremental fill price.
-  // Example: hold 10 @ $100, buy 10 more @ $50 (new avg $75), want
-  // SL at $60 — a legitimate protective stop that the old check
-  // rejected because $60 > $50. Delegating this "is this level
-  // sensible right now?" check to the client (which knows the live
-  // price, not just `input.price`) keeps the server honest and
-  // matches how real brokers behave: they'll accept any bracket
-  // where SL < TP and immediately fire it if the market's already
-  // through the level.
+  // See the pre-v15 revision of this file for the full rationale on
+  // why "SL >= price" and "TP <= price" are *not* rejected here.
   if (input.side === "buy") {
     if (
       input.stopLoss !== undefined &&
@@ -200,13 +560,17 @@ export function placeOrder(input: {
   const db = getDb();
   return db.transaction((): Trade => {
     const port = db
-      .prepare("SELECT cash FROM paper_portfolio WHERE id = 1")
-      .get() as { cash: number };
+      .prepare("SELECT cash FROM paper_portfolio WHERE id = ?")
+      .get(portfolioId) as { cash: number } | undefined;
+    if (!port) {
+      throw new Error(`Portfolio ${portfolioId} not found`);
+    }
     const pos = db
       .prepare(
-        "SELECT shares, avg_cost, stop_loss, take_profit FROM paper_positions WHERE symbol = ?",
+        "SELECT shares, avg_cost, stop_loss, take_profit FROM paper_positions " +
+          "WHERE portfolio_id = ? AND symbol = ?",
       )
-      .get(symbol) as
+      .get(portfolioId, symbol) as
         | {
             shares: number;
             avg_cost: number;
@@ -246,13 +610,14 @@ export function placeOrder(input: {
           : input.takeProfit;
 
       db.prepare(
-        "INSERT INTO paper_positions (symbol, shares, avg_cost, stop_loss, take_profit, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(symbol) DO UPDATE SET " +
+        "INSERT INTO paper_positions (portfolio_id, symbol, shares, avg_cost, stop_loss, take_profit, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(portfolio_id, symbol) DO UPDATE SET " +
           "shares = excluded.shares, avg_cost = excluded.avg_cost, " +
           "stop_loss = excluded.stop_loss, take_profit = excluded.take_profit, " +
           "updated_at = excluded.updated_at",
       ).run(
+        portfolioId,
         symbol,
         newShares,
         newAvg,
@@ -271,23 +636,29 @@ export function placeOrder(input: {
       newCash = port.cash + proceeds;
       const newShares = owned - input.shares;
       if (newShares <= 1e-9) {
-        db.prepare("DELETE FROM paper_positions WHERE symbol = ?").run(symbol);
+        db.prepare(
+          "DELETE FROM paper_positions WHERE portfolio_id = ? AND symbol = ?",
+        ).run(portfolioId, symbol);
       } else {
         db.prepare(
-          "UPDATE paper_positions SET shares = ?, updated_at = ? WHERE symbol = ?",
-        ).run(newShares, new Date().toISOString(), symbol);
+          "UPDATE paper_positions SET shares = ?, updated_at = ? " +
+            "WHERE portfolio_id = ? AND symbol = ?",
+        ).run(newShares, new Date().toISOString(), portfolioId, symbol);
       }
     }
 
     const now = new Date().toISOString();
-    db.prepare("UPDATE paper_portfolio SET cash = ?, updated_at = ? WHERE id = 1")
-      .run(newCash, now);
+    db.prepare(
+      "UPDATE paper_portfolio SET cash = ?, updated_at = ? WHERE id = ?",
+    ).run(newCash, now, portfolioId);
 
     const info = db
       .prepare(
-        "INSERT INTO paper_trades (symbol, side, shares, price, commission, cash_after, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO paper_trades (portfolio_id, symbol, side, shares, price, commission, cash_after, note, created_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
+        portfolioId,
         symbol,
         input.side,
         input.shares,
@@ -299,6 +670,7 @@ export function placeOrder(input: {
       );
     return {
       id: Number(info.lastInsertRowid),
+      portfolioId,
       symbol,
       side: input.side,
       shares: input.shares,
@@ -311,18 +683,20 @@ export function placeOrder(input: {
   })();
 }
 
-
 /**
  * Set (or clear) the stop-loss / take-profit targets on an open position.
  * Passing `null` for either field disables that guard. Throws when the
  * position doesn't exist or the requested levels are self-contradictory
  * (e.g. take-profit below stop-loss).
  */
-export function setPositionTargets(input: {
-  symbol: string;
-  stopLoss: number | null;
-  takeProfit: number | null;
-}): Position {
+export function setPositionTargets(
+  portfolioId: number,
+  input: {
+    symbol: string;
+    stopLoss: number | null;
+    takeProfit: number | null;
+  },
+): Position {
   const symbol = input.symbol.trim().toUpperCase();
   if (!symbol) throw new Error("Symbol is required");
   if (input.stopLoss !== null) {
@@ -347,17 +721,19 @@ export function setPositionTargets(input: {
   const now = new Date().toISOString();
   const info = db
     .prepare(
-      "UPDATE paper_positions SET stop_loss = ?, take_profit = ?, updated_at = ? WHERE symbol = ?",
+      "UPDATE paper_positions SET stop_loss = ?, take_profit = ?, updated_at = ? " +
+        "WHERE portfolio_id = ? AND symbol = ?",
     )
-    .run(input.stopLoss, input.takeProfit, now, symbol);
+    .run(input.stopLoss, input.takeProfit, now, portfolioId, symbol);
   if (info.changes === 0) {
     throw new Error(`No open position for ${symbol}`);
   }
   const row = db
     .prepare(
-      "SELECT symbol, shares, avg_cost, stop_loss, take_profit, updated_at FROM paper_positions WHERE symbol = ?",
+      "SELECT symbol, shares, avg_cost, stop_loss, take_profit, updated_at " +
+        "FROM paper_positions WHERE portfolio_id = ? AND symbol = ?",
     )
-    .get(symbol) as {
+    .get(portfolioId, symbol) as {
       symbol: string;
       shares: number;
       avg_cost: number;
@@ -375,6 +751,9 @@ export function setPositionTargets(input: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// SL / TP evaluation
+// ---------------------------------------------------------------------------
 
 export type TriggerReason = "stop-loss" | "take-profit";
 
@@ -387,23 +766,17 @@ export interface TriggerEvent {
 }
 
 /**
- * Walk every open position and auto-execute a full sell at the supplied
- * live price when the stop-loss / take-profit level has been breached.
- *
- * `prices` maps ticker symbols to their most recent price. Missing or
- * null entries are skipped (we don't fire guards on stale data).
- *
- * The check is:
- *   - stop-loss triggers when `price <= stopLoss`
- *   - take-profit triggers when `price >= takeProfit`
- *
- * Take-profit is checked first because a gap-up-then-fill bar can straddle
- * both levels and the profit path is the friendlier close to record.
- * Returns one `TriggerEvent` per position that fired — the caller can
- * surface these to the user (banner / toast / Telegram in the future).
+ * Walk every open position in `portfolioId` and auto-execute a full sell
+ * at the supplied live price when the stop-loss / take-profit level has
+ * been breached. Take-profit is checked before stop-loss so a gap-up-
+ * then-fill bar that straddles both levels records the friendlier
+ * outcome (see the pre-v15 comment for the full reasoning).
  */
-export function evaluateTargets(prices: Record<string, number | null>): TriggerEvent[] {
-  const port = getPortfolio();
+export function evaluateTargets(
+  portfolioId: number,
+  prices: Record<string, number | null>,
+): TriggerEvent[] {
+  const port = getPortfolio(portfolioId);
   const events: TriggerEvent[] = [];
   for (const p of port.positions) {
     const price = prices[p.symbol];
@@ -421,7 +794,7 @@ export function evaluateTargets(prices: Record<string, number | null>): TriggerE
     }
     if (!reason || level === null) continue;
     try {
-      const trade = placeOrder({
+      const trade = placeOrder(portfolioId, {
         symbol: p.symbol,
         side: "sell",
         shares: p.shares,
@@ -436,10 +809,10 @@ export function evaluateTargets(prices: Record<string, number | null>): TriggerE
       // Defensive: if something races us to a partial sell (or any
       // other placeOrder-side failure), skip this position — it will
       // be reevaluated on the next GET tick. Log at warn level so a
-      // *persistent* failure (e.g. a bug in placeOrder itself, not
-      // just a benign race) doesn't hide in silence.
+      // *persistent* failure (a bug in placeOrder itself, not just a
+      // benign race) doesn't hide in silence.
       console.warn(
-        `[paper] evaluateTargets: ${p.symbol} ${reason} guard failed to fire @ $${price.toFixed(2)} — will retry next tick.`,
+        `[paper:${portfolioId}] evaluateTargets: ${p.symbol} ${reason} guard failed to fire @ $${price.toFixed(2)} — will retry next tick.`,
         err instanceof Error ? err.message : err,
       );
       continue;
@@ -448,21 +821,28 @@ export function evaluateTargets(prices: Record<string, number | null>): TriggerE
   return events;
 }
 
+// ---------------------------------------------------------------------------
+// Reset / valuation
+// ---------------------------------------------------------------------------
 
-/** Reset everything to the starting cash. Used by the UI's "Reset" button. */
-export function resetPortfolio(startingCash?: number): void {
+/** Wipe positions + trades for one portfolio and reset its cash. */
+export function resetPortfolio(portfolioId: number, startingCash?: number): void {
   const now = new Date().toISOString();
   const cash = startingCash ?? settings.paper.startingCash;
   const db = getDb();
   db.transaction(() => {
-    db.prepare(
-      "UPDATE paper_portfolio SET cash = ?, starting_cash = ?, updated_at = ? WHERE id = 1",
-    ).run(cash, cash, now);
-    db.prepare("DELETE FROM paper_positions").run();
-    db.prepare("DELETE FROM paper_trades").run();
+    const info = db
+      .prepare(
+        "UPDATE paper_portfolio SET cash = ?, starting_cash = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(cash, cash, now, portfolioId);
+    if (info.changes === 0) {
+      throw new Error(`Portfolio ${portfolioId} not found`);
+    }
+    db.prepare("DELETE FROM paper_positions WHERE portfolio_id = ?").run(portfolioId);
+    db.prepare("DELETE FROM paper_trades WHERE portfolio_id = ?").run(portfolioId);
   })();
 }
-
 
 /**
  * Snapshot with live prices supplied by the caller (usually the last close
@@ -470,6 +850,8 @@ export function resetPortfolio(startingCash?: number): void {
  * position plus the portfolio total.
  */
 export interface Valuation {
+  portfolioId: number;
+  name: string;
   cash: number;
   startingCash: number;
   positions: Array<Position & { last: number | null; marketValue: number | null; unrealised: number | null }>;
@@ -479,8 +861,11 @@ export interface Valuation {
   totalPnlPct: number;
 }
 
-export function valuePortfolio(prices: Record<string, number | null>): Valuation {
-  const port = getPortfolio();
+export function valuePortfolio(
+  portfolioId: number,
+  prices: Record<string, number | null>,
+): Valuation {
+  const port = getPortfolio(portfolioId);
   let marketValue = 0;
   const positions = port.positions.map((p) => {
     const last = prices[p.symbol] ?? null;
@@ -493,6 +878,8 @@ export function valuePortfolio(prices: Record<string, number | null>): Valuation
   const totalPnl = totalValue - port.startingCash;
   const totalPnlPct = port.startingCash > 0 ? totalPnl / port.startingCash : 0;
   return {
+    portfolioId: port.id,
+    name: port.name,
     cash: port.cash,
     startingCash: port.startingCash,
     positions,

@@ -1,13 +1,42 @@
+/**
+ * Paper trading ledger endpoint, scoped to one portfolio.
+ *
+ * Multi-portfolio contract (v15+):
+ *
+ *   * Every request carries a `portfolioId` — GET as `?portfolioId=`,
+ *     POST/PATCH in the JSON body. When missing/invalid, we fall
+ *     back to the first active portfolio (helps first-time clients
+ *     with no persisted `activePortfolioId` yet) and reflect that
+ *     choice in the response's `valuation.portfolioId`. The client
+ *     is expected to save that resolved id and keep it in sync.
+ *
+ *   * DELETE has two modes:
+ *       * `?scope=trades` (default) — reset THIS portfolio's cash +
+ *         trades to starting cash, keeping the portfolio row.
+ *       * `?scope=portfolio` — hard-delete the portfolio itself. Use
+ *         `/api/paper/portfolios` for this instead; kept here as a
+ *         compat shim would just confuse the picker's cache.
+ *     The default preserves the pre-multi-portfolio semantics
+ *     ("reset button" wipes the ledger, doesn't destroy the account).
+ *
+ *   * Portfolios collection CRUD lives at
+ *     `/api/paper/portfolios/route.ts` — this route intentionally
+ *     doesn't create or rename portfolios so the two responsibility
+ *     zones stay separate.
+ */
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   evaluateTargets,
   getPortfolio,
+  listPortfolios,
   placeOrder,
   recentTrades,
   resetPortfolio,
   setPositionTargets,
   valuePortfolio,
+  type PortfolioSummary,
   type TriggerEvent,
 } from "@/lib/paper-trading";
 import { computePaperAnalytics } from "@/lib/paper-analytics";
@@ -18,13 +47,27 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Order schema now includes optional bracket-order fields (`stopLoss` /
- * `takeProfit`). When provided on a buy, `placeOrder` attaches them to
- * the resulting position row in the same transaction — so a user can
- * open a paper trade with protective levels already wired up instead
- * of having to remember a second click after the fill.
+ * Resolve the request's `portfolioId`. Falls back to the first active
+ * portfolio when the caller supplied nothing (or an invalid id that
+ * doesn't exist in the DB). Returns `null` when there are zero
+ * portfolios — the v15 migration seeds one so this only happens if the
+ * user has deliberately deleted everything via direct SQL access
+ * (impossible via the UI: `deletePortfolio` refuses the last one).
  */
+function resolvePortfolioId(
+  requested: number | null,
+  all: PortfolioSummary[],
+): number | null {
+  if (all.length === 0) return null;
+  if (requested !== null) {
+    const match = all.find((p) => p.id === requested);
+    if (match) return match.id;
+  }
+  return all[0]!.id;
+}
+
 const orderSchema = z.object({
+  portfolioId: z.number().int().positive(),
   symbol: z
     .string()
     .min(1)
@@ -39,19 +82,18 @@ const orderSchema = z.object({
 });
 
 const targetSchema = z.object({
+  portfolioId: z.number().int().positive(),
   symbol: z
     .string()
     .min(1)
     .max(12)
     .regex(/^[A-Za-z0-9.\-]+$/, "symbol must be alphanumeric with `.` or `-`"),
-  // `null` = clear the guard. `undefined` = don't touch. We normalise both
-  // to `null` on the way in — PATCH always overwrites both fields so the
-  // client never has to worry about partial-update semantics.
   stopLoss: z.number().positive().finite().nullable().optional(),
   takeProfit: z.number().positive().finite().nullable().optional(),
 });
 
 const resetSchema = z.object({
+  portfolioId: z.number().int().positive(),
   startingCash: z.number().positive().finite().optional(),
 });
 
@@ -70,37 +112,62 @@ async function fetchLivePrices(symbols: string[]): Promise<Record<string, number
   return prices;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const all = listPortfolios();
+  const url = new URL(req.url);
+  const requestedRaw = url.searchParams.get("portfolioId");
+  const requested = requestedRaw && /^\d+$/.test(requestedRaw)
+    ? Number(requestedRaw)
+    : null;
+  const portfolioId = resolvePortfolioId(requested, all);
+  if (portfolioId === null) {
+    // Extremely defensive: only reachable if manual SQL wiped the
+    // seeded portfolio. Report a clean 500 instead of throwing.
+    return NextResponse.json(
+      { error: "No portfolios exist" },
+      { status: 500 },
+    );
+  }
+  try {
+    getPortfolio(portfolioId);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Portfolio not found" },
+      { status: 404 },
+    );
+  }
+
   // Two-phase evaluation: (1) fetch live prices for currently-held symbols,
   // (2) fire any triggered SL/TP guards (which will DELETE / mutate the
   // position rows), (3) refetch the portfolio + trades so the response
-  // reflects the post-trigger state. This keeps the guard logic on the
-  // server and out of the client — the UI just renders what it gets.
-  const initial = getPortfolio();
+  // reflects the post-trigger state. Same shape as pre-v15 GET, just
+  // scoped by `portfolioId` from here on.
+  const initial = getPortfolio(portfolioId);
   const prices = await fetchLivePrices(initial.positions.map((p) => p.symbol));
 
   let triggered: TriggerEvent[] = [];
   try {
-    triggered = evaluateTargets(prices);
+    triggered = evaluateTargets(portfolioId, prices);
   } catch (err) {
     // A failing trigger shouldn't blank the whole page — swallow and
     // continue. The next GET will retry naturally. Log at error level
     // so a *catastrophic* failure of the guard system (as opposed to
     // the per-position benign races already logged inside
     // evaluateTargets) surfaces in production logs instead of hiding.
-    console.error("[api/paper] evaluateTargets threw:", err);
+    console.error(
+      `[api/paper] evaluateTargets threw for portfolio=${portfolioId}:`,
+      err,
+    );
     triggered = [];
   }
 
-  // Pull a wider trade history (500 rows) than the display cap so the
-  // analytics see the full realised-P&L picture even when the visible
-  // log is a subset. The client still gets the newest 500 for display,
-  // and the analytics summary matches what those trades imply.
-  const trades = recentTrades(500);
+  const trades = recentTrades(portfolioId, 500);
   const analytics = computePaperAnalytics(trades);
 
   return NextResponse.json({
-    valuation: valuePortfolio(prices),
+    portfolios: all,
+    activePortfolioId: portfolioId,
+    valuation: valuePortfolio(portfolioId, prices),
     trades: analytics.enrichedTrades,
     analytics: {
       portfolio: analytics.portfolio,
@@ -119,7 +186,15 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = orderSchema.parse(await req.json());
-    const trade = placeOrder(body);
+    const trade = placeOrder(body.portfolioId, {
+      symbol: body.symbol,
+      side: body.side,
+      shares: body.shares,
+      price: body.price,
+      note: body.note,
+      stopLoss: body.stopLoss,
+      takeProfit: body.takeProfit,
+    });
     return NextResponse.json({ ok: true, trade });
   } catch (e) {
     const r = redactError(e, 400);
@@ -130,7 +205,7 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const body = targetSchema.parse(await req.json());
-    const position = setPositionTargets({
+    const position = setPositionTargets(body.portfolioId, {
       symbol: body.symbol,
       stopLoss: body.stopLoss ?? null,
       takeProfit: body.takeProfit ?? null,
@@ -145,8 +220,18 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const raw = await req.text();
-    const body = raw ? resetSchema.parse(JSON.parse(raw)) : {};
-    resetPortfolio(body.startingCash);
+    const body = raw ? resetSchema.parse(JSON.parse(raw)) : null;
+    if (!body) {
+      // Backward-compat behaviour: refuse a bare DELETE. The pre-v15
+      // client sent an empty body and expected "reset the singleton"
+      // to Just Work; that ambiguity now maps to a clear 400 so the
+      // new client is nudged to include portfolioId.
+      return NextResponse.json(
+        { ok: false, error: "portfolioId is required" },
+        { status: 400 },
+      );
+    }
+    resetPortfolio(body.portfolioId, body.startingCash);
     return NextResponse.json({ ok: true });
   } catch (e) {
     const r = redactError(e, 400);

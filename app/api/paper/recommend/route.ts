@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { fetchBundle } from "@/lib/data";
 import { enrich, latestSignals } from "@/lib/indicators";
-import { getPortfolio } from "@/lib/paper-trading";
+import { getPortfolio, listPortfolios } from "@/lib/paper-trading";
 import { recommendTargets } from "@/lib/target-recommender";
 import { settings } from "@/lib/config";
 import { redactError } from "@/lib/http";
@@ -32,13 +32,23 @@ const querySchema = z.object({
     .min(1)
     .max(12)
     .regex(/^[A-Za-z0-9.\-]+$/, "symbol must be alphanumeric with `.` or `-`"),
+  // Optional — omit to fall back to the first active portfolio. Same
+  // resolution rule as GET /api/paper. Kept optional (rather than
+  // required) so the pre-v15 client that doesn't know about
+  // portfolioId still works.
+  portfolioId: z.number().int().positive().optional(),
 });
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const { symbol } = querySchema.parse({
+    const rawPortfolioId = url.searchParams.get("portfolioId");
+    const { symbol, portfolioId } = querySchema.parse({
       symbol: (url.searchParams.get("symbol") ?? "").toUpperCase(),
+      portfolioId:
+        rawPortfolioId && /^\d+$/.test(rawPortfolioId)
+          ? Number(rawPortfolioId)
+          : undefined,
     });
 
     // Resolve the avgCost from the ledger — never trust a client-supplied
@@ -46,7 +56,18 @@ export async function GET(req: Request) {
     // targets around the *current price* by treating it as a proposed
     // entry basis; this makes the endpoint useful before opening a trade
     // as well as after.
-    const portfolio = getPortfolio();
+    const all = listPortfolios();
+    if (all.length === 0) {
+      return NextResponse.json(
+        { ok: false, error: "No portfolios exist" },
+        { status: 500 },
+      );
+    }
+    const resolvedId =
+      (portfolioId !== undefined && all.some((p) => p.id === portfolioId)
+        ? portfolioId
+        : all[0]!.id);
+    const portfolio = getPortfolio(resolvedId);
     const existing = portfolio.positions.find(
       (p) => p.symbol.toUpperCase() === symbol,
     );

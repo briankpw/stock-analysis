@@ -38,6 +38,7 @@ import { getState, setState } from "@/lib/bot/store";
 import { withTickLock } from "@/lib/watch/tick-lock";
 import { localWallClock, timeGte } from "@/lib/watch/time";
 import { findSegment } from "@/lib/segments";
+import { shouldNotifyOnChange } from "@/lib/alert-frequency";
 import {
   listSectorTechnicalAlerts,
   markSectorTechnicalChangeFired,
@@ -213,12 +214,21 @@ async function evaluateAlert(
   }
 
   // ---- 2. On-change alert -------------------------------------------------
+  // Per-rule frequency ('always' | 'daily' | 'once') caps how often
+  // this path can fire. See `lib/alert-frequency.ts` for semantics.
+  const frequencyAllows = shouldNotifyOnChange(
+    alert.frequency,
+    alert.lastChangeNotifiedAt,
+    now,
+    alert.timezone,
+  );
   if (
     alert.notifyOnChange &&
     !digestFired &&
     alert.lastVerdict !== null &&
     alert.lastVerdict !== signal.verdict &&
-    verdictClearsSectorTechnicalGate(signal.verdict, alert.minStrength)
+    verdictClearsSectorTechnicalGate(signal.verdict, alert.minStrength) &&
+    frequencyAllows
   ) {
     const res = await notifySectorTechnicalChange(notifyCtx, signal, {
       previousVerdict: alert.lastVerdict,

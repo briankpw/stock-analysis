@@ -30,6 +30,7 @@ import { settings } from "@/lib/config";
 import { getState, setState } from "@/lib/bot/store";
 import { withTickLock } from "@/lib/watch/tick-lock";
 import { localWallClock, timeGte } from "@/lib/watch/time";
+import { shouldNotifyOnChange } from "@/lib/alert-frequency";
 import {
   listResonanceAlerts,
   markResonanceChangeFired,
@@ -202,6 +203,16 @@ async function evaluateAlert(
   // Skip when the digest already fired this tick — a duplicate change
   // ping right after a digest would be noise (the digest already
   // updated `last_verdict` so the next tick has a fresh baseline).
+  //
+  // The per-rule frequency mode ('always' | 'daily' | 'once') caps
+  // how often this path can fire. Once-mode rules stay quiet after
+  // their first fire until the user re-saves the alert.
+  const frequencyAllows = shouldNotifyOnChange(
+    alert.frequency,
+    alert.lastChangeNotifiedAt,
+    now,
+    alert.timezone,
+  );
   if (
     alert.notifyOnChange &&
     !digestFired &&
@@ -213,7 +224,8 @@ async function evaluateAlert(
       result.alignedCount,
       result.bearishAlignedCount,
       alert.minStrength,
-    )
+    ) &&
+    frequencyAllows
   ) {
     const res = await notifyResonanceChange(alert.ticker, result, {
       previousVerdict: alert.lastVerdict,

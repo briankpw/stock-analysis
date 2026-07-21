@@ -17,6 +17,10 @@
 import { getDb } from "@/lib/db";
 import type { ResonanceVerdict } from "@/lib/resonance";
 import { findSegment } from "@/lib/segments";
+import {
+  normalizeFrequency,
+  type NotifyFrequency,
+} from "@/lib/alert-frequency";
 
 // Segment IDs are the stable URL slugs from `SEGMENTS[]`. They're
 // tightly-controlled — the source of truth is `lib/segments.ts`,
@@ -46,6 +50,11 @@ export interface SectorResonanceAlert {
   notifyOnChange: boolean;
   /** Filter for on-change firings. */
   minStrength: SectorResonanceAlertStrength;
+  /**
+   * How often the ON-CHANGE path is allowed to fire. Does NOT affect
+   * the daily-digest. See `lib/alert-frequency.ts`.
+   */
+  frequency: NotifyFrequency;
   /** Last verdict we notified about — used to detect crossings. */
   lastVerdict: ResonanceVerdict | null;
   /** Bullish 0-6 count at last notification (for delta display). */
@@ -56,6 +65,8 @@ export interface SectorResonanceAlert {
   lastDigestLocalDate: string | null;
   /** ISO timestamp of the most recent notification of any kind. */
   lastNotifiedAt: string | null;
+  /** ISO timestamp of the last on-change fire (feeds frequency gate). */
+  lastChangeNotifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,6 +77,7 @@ export interface UpsertSectorResonanceAlertInput {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: SectorResonanceAlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +136,9 @@ export function normalizeStrength(
 
 const SELECT_COLS =
   "segment_id, daily_time, timezone, notify_on_change, min_strength, " +
-  "last_verdict, last_aligned_count, last_bearish_count, " +
-  "last_digest_local_date, last_notified_at, created_at, updated_at";
+  "notify_frequency, last_verdict, last_aligned_count, last_bearish_count, " +
+  "last_digest_local_date, last_notified_at, last_change_notified_at, " +
+  "created_at, updated_at";
 
 export function listSectorResonanceAlerts(): SectorResonanceAlert[] {
   const rows = getDb()
@@ -165,14 +178,18 @@ export function upsertSectorResonanceAlert(
   const notifyOnChange =
     input.notifyOnChange === undefined ? true : Boolean(input.notifyOnChange);
   const minStrength = normalizeStrength(input.minStrength);
+  const frequency = normalizeFrequency(input.frequency);
   const now = new Date().toISOString();
   const existing = findSectorResonanceAlert(segmentId);
   if (existing) {
+    const frequencyChanged = existing.frequency !== frequency;
     getDb()
       .prepare(
         "UPDATE sector_resonance_alerts SET " +
           "daily_time = ?, timezone = ?, notify_on_change = ?, " +
-          "min_strength = ?, updated_at = ? " +
+          "min_strength = ?, notify_frequency = ?, " +
+          (frequencyChanged ? "last_change_notified_at = NULL, " : "") +
+          "updated_at = ? " +
           "WHERE segment_id = ?",
       )
       .run(
@@ -180,6 +197,7 @@ export function upsertSectorResonanceAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         segmentId,
       );
@@ -188,8 +206,8 @@ export function upsertSectorResonanceAlert(
       .prepare(
         "INSERT INTO sector_resonance_alerts " +
           "(segment_id, daily_time, timezone, notify_on_change, min_strength, " +
-          " created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          " notify_frequency, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         segmentId,
@@ -197,6 +215,7 @@ export function upsertSectorResonanceAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         now,
       );
@@ -207,11 +226,13 @@ export function upsertSectorResonanceAlert(
     timezone,
     notifyOnChange,
     minStrength,
+    frequency,
     lastVerdict: null,
     lastAlignedCount: null,
     lastBearishCount: null,
     lastDigestLocalDate: null,
     lastNotifiedAt: null,
+    lastChangeNotifiedAt: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -266,13 +287,14 @@ export function markSectorResonanceChangeFired(
     .prepare(
       "UPDATE sector_resonance_alerts SET " +
         "last_verdict = ?, last_aligned_count = ?, last_bearish_count = ?, " +
-        "last_notified_at = ?, updated_at = ? " +
+        "last_notified_at = ?, last_change_notified_at = ?, updated_at = ? " +
         "WHERE segment_id = ?",
     )
     .run(
       verdict,
       alignedCount,
       bearishCount,
+      now,
       now,
       now,
       String(segmentId).trim().toLowerCase(),
@@ -340,6 +362,7 @@ function rowToAlert(row: Record<string, unknown>): SectorResonanceAlert {
     timezone: String(row.timezone ?? "UTC"),
     notifyOnChange: Boolean(row.notify_on_change),
     minStrength: coerceStrength(row.min_strength),
+    frequency: normalizeFrequency(row.notify_frequency),
     lastVerdict: coerceVerdict(row.last_verdict),
     lastAlignedCount:
       row.last_aligned_count === null || row.last_aligned_count === undefined
@@ -351,6 +374,8 @@ function rowToAlert(row: Record<string, unknown>): SectorResonanceAlert {
         : Number(row.last_bearish_count),
     lastDigestLocalDate: (row.last_digest_local_date as string | null) ?? null,
     lastNotifiedAt: (row.last_notified_at as string | null) ?? null,
+    lastChangeNotifiedAt:
+      (row.last_change_notified_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

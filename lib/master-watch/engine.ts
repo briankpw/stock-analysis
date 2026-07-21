@@ -50,6 +50,7 @@ import { getState, setState } from "@/lib/bot/store";
 import { notifyMasterDigest, notifyMasterChange } from "@/lib/bot/notifier";
 import { withTickLock } from "@/lib/watch/tick-lock";
 import { localWallClock, timeGte } from "@/lib/watch/time";
+import { shouldNotifyOnChange } from "@/lib/alert-frequency";
 import {
   listMasterAlerts,
   markMasterChangeFired,
@@ -289,12 +290,22 @@ async function evaluateAlert(
   // the same verdict info so a follow-up "verdict changed" ping would
   // be redundant. `markMasterDigestFired` already updated last_verdict
   // to the new value so the next tick won't re-detect the crossing.
+  //
+  // Per-rule frequency ('always' | 'daily' | 'once') caps how often
+  // this path can fire.
+  const frequencyAllows = shouldNotifyOnChange(
+    alert.frequency,
+    alert.lastChangeNotifiedAt,
+    now,
+    alert.timezone,
+  );
   if (
     alert.notifyOnChange &&
     !digestFired &&
     alert.lastVerdict !== null &&
     alert.lastVerdict !== verdict.verdict &&
-    masterClearsGate(verdict.verdict, alert.minStrength)
+    masterClearsGate(verdict.verdict, alert.minStrength) &&
+    frequencyAllows
   ) {
     const res = await notifyMasterChange(alert.ticker, verdict, {
       previousVerdict: alert.lastVerdict,

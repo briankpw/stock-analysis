@@ -49,7 +49,7 @@
 // next visit and pick up the new <link> attribute — otherwise the
 // stale cached HTML would keep referencing the crossorigin-less
 // manifest link and the install prompt would remain broken.
-const CACHE_NAME = "key-stock-feba02967f"; // auto-managed by scripts/bump-service-worker.mjs
+const CACHE_NAME = "key-stock-060c44c569"; // auto-managed by scripts/bump-service-worker.mjs
 const ASSETS = ["/", "/overview"];
 
 // Fallback rendering used when a push arrives without a JSON payload

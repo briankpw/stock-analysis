@@ -255,6 +255,17 @@ export function getDb(): Database.Database {
   `);
 
   // Seed the singleton portfolio row on first boot.
+  //
+  // NOTE: Once the v15 migration below runs, `paper_portfolio` becomes
+  // a multi-row table (autoincrement id, no CHECK constraint), so this
+  // seed is effectively a no-op on any post-v15 database — the migration
+  // itself creates a "Default" row. This block is kept for the narrow
+  // window between the initial CREATE TABLE and v15 running against a
+  // fresh install (the CREATE TABLE above still declares `CHECK (id = 1)`
+  // to keep pre-v15 tools happy, and the migration recreates the table
+  // without the CHECK). Removing it entirely would break a fresh install
+  // on any process that boots and runs migrations serially where a query
+  // fires before the migration loop completes — cheap and safe to leave.
   const existing = db.prepare("SELECT id FROM paper_portfolio WHERE id = 1").get();
   if (!existing) {
     const now = new Date().toISOString();
@@ -800,6 +811,246 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       db.exec(
         "ALTER TABLE portfolio_risk_watches ADD COLUMN dismissed_at TEXT",
       );
+    }
+  },
+  // v15: multi-portfolio paper trading.
+  //
+  // The original schema modeled paper trading as a SINGLETON:
+  // `paper_portfolio` had `CHECK (id = 1)`, `paper_positions` used
+  // `symbol` as the sole primary key (implying "one position per
+  // symbol, ever"), and `paper_trades` had no portfolio column. That
+  // was fine for a single "here's my play account" workflow but blocks
+  // any workflow that needs to segregate trades by strategy — "growth
+  // picks vs. value picks vs. AI experimental" — which is what a
+  // multi-portfolio feature exists to enable.
+  //
+  // Since SQLite can't ALTER TABLE to drop a CHECK constraint or add a
+  // composite PK, we recreate the three tables. Per the user's
+  // explicit direction ("wipe existing paper data, start fresh"), we
+  // skip data preservation — the migration DROPs the old rows and
+  // seeds a single blank "Default" portfolio so the UI has something
+  // to render on first load.
+  //
+  // Design decisions locked in here:
+  //
+  //   * `paper_portfolio.id` — AUTOINCREMENT, no CHECK. Multiple rows
+  //     are the whole point. `name` is UNIQUE so the picker never has
+  //     to disambiguate ("which Growth is which?"); rename validation
+  //     lives server-side in `lib/paper-trading.ts`.
+  //
+  //   * `paper_positions.PRIMARY KEY (portfolio_id, symbol)` — the
+  //     compound PK lets AAPL exist in both "Growth" and "AI" without
+  //     collision, while still enforcing "one row per (portfolio,
+  //     symbol)" so `placeOrder` can safely UPSERT.
+  //     `ON DELETE CASCADE` means deleting a portfolio cleans up its
+  //     positions in one shot — no orphaned rows waiting for a manual
+  //     cleanup job.
+  //
+  //   * `paper_trades.portfolio_id` — NOT NULL, FK with CASCADE. The
+  //     trade log follows the portfolio's lifecycle. The `(portfolio_id,
+  //     symbol, created_at DESC)` index replaces the old symbol-only
+  //     index; every read path in `recentTrades()` filters by portfolio
+  //     first, so the leading column matters.
+  //
+  //   * The seeded "Default" portfolio ID is captured by
+  //     lastInsertRowid but callers should NEVER hardcode it. Even in a
+  //     fresh install, code that assumes `id = 1` will silently break
+  //     the first time a user deletes the default portfolio and creates
+  //     a new one (autoincrement doesn't reuse ids).
+  //
+  //   * `paper_portfolio.archived_at` — reserved for future soft-delete
+  //     support without another migration. Not used yet; NULL means
+  //     "active", non-null would mean "hidden from picker but still
+  //     accessible via direct URL / analytics". Kept as a placeholder
+  //     because ALTER TABLE ADD COLUMN is cheap but a rename dance is
+  //     not.
+  (db) => {
+    db.exec(`
+      -- Drop old singleton tables + their indices. Data is intentionally
+      -- discarded (per the wipe-and-start-fresh product decision).
+      DROP INDEX IF EXISTS idx_paper_trades_symbol_ts;
+      DROP TABLE IF EXISTS paper_trades;
+      DROP TABLE IF EXISTS paper_positions;
+      DROP TABLE IF EXISTS paper_portfolio;
+
+      CREATE TABLE paper_portfolio (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT    NOT NULL UNIQUE,
+        cash          REAL    NOT NULL,
+        starting_cash REAL    NOT NULL,
+        archived_at   TEXT,
+        created_at    TEXT    NOT NULL,
+        updated_at    TEXT    NOT NULL
+      );
+
+      CREATE INDEX idx_paper_portfolio_active
+        ON paper_portfolio(archived_at, name);
+
+      CREATE TABLE paper_positions (
+        portfolio_id INTEGER NOT NULL
+          REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+        symbol       TEXT    NOT NULL,
+        shares       REAL    NOT NULL,
+        avg_cost     REAL    NOT NULL,
+        stop_loss    REAL,
+        take_profit  REAL,
+        updated_at   TEXT    NOT NULL,
+        PRIMARY KEY (portfolio_id, symbol)
+      );
+
+      CREATE INDEX idx_paper_positions_portfolio
+        ON paper_positions(portfolio_id);
+
+      CREATE TABLE paper_trades (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        portfolio_id INTEGER NOT NULL
+          REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+        symbol       TEXT    NOT NULL,
+        side         TEXT    NOT NULL,
+        shares       REAL    NOT NULL,
+        price        REAL    NOT NULL,
+        commission   REAL    NOT NULL,
+        cash_after   REAL    NOT NULL,
+        note         TEXT,
+        created_at   TEXT    NOT NULL
+      );
+
+      CREATE INDEX idx_paper_trades_portfolio_ts
+        ON paper_trades(portfolio_id, created_at DESC);
+      CREATE INDEX idx_paper_trades_portfolio_symbol_ts
+        ON paper_trades(portfolio_id, symbol, created_at DESC);
+    `);
+
+    // Seed a single blank portfolio so the UI has something to render
+    // on first load. Kept minimal: the user is expected to rename /
+    // add more via the picker.
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO paper_portfolio (name, cash, starting_cash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("Default", settings.paper.startingCash, settings.paper.startingCash, now, now);
+  },
+  // v16: history of signal backtests.
+  //
+  // Each row is one completed run of `lib/signal-backtest.ts::runBacktest`.
+  // The full `BacktestResult` blob is persisted as JSON so the /backtest
+  // page can render an identical view when the user opens a past run
+  // — same equity curve, same trade log, same metrics — without
+  // re-fetching history from Yahoo or re-running the engine.
+  //
+  // Design decisions:
+  //
+  //   * `config_json` — the exact user-supplied config (strategy /
+  //     execution / sizing / period / starting cash / include-F&G).
+  //     Kept separate from `result_json` so the history list can render
+  //     "ticker · strategy · period" summary rows without parsing the
+  //     larger result blob.
+  //
+  //   * `result_json` — the whole `BacktestResult` structure (equity
+  //     curve + trades + metrics + final verdict). Sized in the tens
+  //     of KB for daily 2-year runs; up to ~250KB for max-period runs
+  //     on liquid tickers. Acceptable at typical history caps
+  //     (~50-100 rows per user).
+  //
+  //   * Summary columns duplicated from `result_json` (`total_return`,
+  //     `buy_hold_return`, `max_drawdown`, `trade_count`, `win_rate`)
+  //     so history-list queries can sort + filter without JSON parsing.
+  //     Kept in sync with the blob at insert time; not backfilled on
+  //     schema changes.
+  //
+  //   * `ticker` is uppercased + trimmed at insert time via the store
+  //     layer — the schema itself doesn't enforce it (no CHECK
+  //     constraint) so hand-inserted rows for debugging aren't blocked.
+  //
+  //   * `label` — optional user-supplied name (default: auto-generated
+  //     "TICKER · Strategy · Period"). Stored so the history list can
+  //     render a memorable one-liner instead of dumping the full
+  //     config.
+  //
+  //   * No FK to any other table. A backtest run is a snapshot in time;
+  //     it doesn't reference a portfolio (even when the user later
+  //     saves it as a paper portfolio, that action creates a fresh
+  //     portfolio row independent of the backtest history entry).
+  //
+  //   * Auto-purge is not enforced in SQL — the store's `saveRun()`
+  //     function DELETEs the oldest rows past the cap right after
+  //     INSERT so the table can't grow unbounded. That keeps the
+  //     retention logic in one place (TypeScript) rather than
+  //     duplicating it in triggers.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS backtest_runs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker          TEXT    NOT NULL,
+        strategy        TEXT    NOT NULL,
+        execution       TEXT    NOT NULL,
+        period          TEXT    NOT NULL,
+        starting_cash   REAL    NOT NULL,
+        label           TEXT    NOT NULL,
+        config_json     TEXT    NOT NULL,
+        result_json     TEXT    NOT NULL,
+        total_return    REAL    NOT NULL,
+        buy_hold_return REAL    NOT NULL,
+        max_drawdown    REAL    NOT NULL,
+        trade_count     INTEGER NOT NULL,
+        win_rate        REAL,
+        first_bar_at    TEXT    NOT NULL,
+        last_bar_at     TEXT    NOT NULL,
+        created_at      TEXT    NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backtest_runs_created
+        ON backtest_runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_backtest_runs_ticker
+        ON backtest_runs(ticker, created_at DESC);
+    `);
+  },
+  // v17: per-alert-rule notification frequency.
+  //
+  // Each verdict-alert table gains two new columns:
+  //
+  //   * `notify_frequency TEXT NOT NULL DEFAULT 'always'` — one of
+  //     'always' | 'daily' | 'once'. Governs the ON-CHANGE path only;
+  //     the daily-digest path is left unaffected because it's already
+  //     once-per-day by design and represents an explicit user
+  //     subscription rather than event-driven noise.
+  //
+  //   * `last_change_notified_at TEXT NULL` — ISO timestamp of the
+  //     last time the ON-CHANGE path fired for this rule. Read by
+  //     `shouldNotifyOnChange` in `lib/alert-frequency.ts`. Kept as
+  //     a SEPARATE column from `last_notified_at` (which is shared
+  //     with the digest path) so the two channels' throttles can't
+  //     accidentally interfere with each other.
+  //
+  // All five verdict-alert tables get the same treatment so the
+  // frequency picker in the UI can offer a consistent experience
+  // regardless of which alert type the user is configuring.
+  //
+  // Idempotent — checks `PRAGMA table_info` before each ALTER so a
+  // hand-patched schema (or a re-run on the same DB) can't blow up
+  // with "duplicate column".
+  (db) => {
+    const RULE_TABLES = [
+      "technical_alerts",
+      "resonance_alerts",
+      "master_alerts",
+      "sector_technical_alerts",
+      "sector_resonance_alerts",
+    ] as const;
+    for (const table of RULE_TABLES) {
+      const cols = db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+      const have = new Set(cols.map((c) => c.name));
+      if (!have.has("notify_frequency")) {
+        db.exec(
+          `ALTER TABLE ${table} ADD COLUMN notify_frequency TEXT NOT NULL DEFAULT 'always'`,
+        );
+      }
+      if (!have.has("last_change_notified_at")) {
+        db.exec(
+          `ALTER TABLE ${table} ADD COLUMN last_change_notified_at TEXT`,
+        );
+      }
     }
   },
 ];

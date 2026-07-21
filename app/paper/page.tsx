@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner, LoadingPage } from "@/components/loading";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist-button";
+import { PortfolioPicker } from "@/components/paper-portfolio-picker";
 import { useBundle } from "@/hooks/use-bundle";
 import { useUi, useLocale } from "@/lib/state";
 import { useT, translateSignalValue } from "@/lib/i18n";
@@ -20,7 +21,11 @@ import {
   fmtSignedPercent,
   relativeTime,
 } from "@/lib/format";
-import type { Valuation, Side } from "@/lib/paper-trading";
+import type {
+  PortfolioSummary,
+  Valuation,
+  Side,
+} from "@/lib/paper-trading";
 import type {
   EnrichedTrade,
   PortfolioAnalytics,
@@ -38,14 +43,52 @@ type Trigger = {
 };
 
 type PaperResponse = {
+  /** All portfolios (summary form). Fed to the picker in the header. */
+  portfolios: PortfolioSummary[];
+  /** The portfolio the server actually served (post-fallback). Persisted
+   *  by the paper page into `activePaperPortfolioId` so subsequent
+   *  reloads and other tabs stay in sync. */
+  activePortfolioId: number;
   valuation: Valuation;
   trades: EnrichedTrade[];
   analytics: { portfolio: PortfolioAnalytics; perSymbol: SymbolPerformance[] };
   triggered: Trigger[];
 };
 
-function usePaper() {
-  const [data, setData] = React.useState<PaperResponse | null>(null);
+/**
+ * Fetch the currently-active portfolio's full state (positions +
+ * trades + analytics + trigger events).
+ *
+ * The `portfolioId` argument is threaded onto the URL so the server
+ * can scope every read/write. `null` = "let the server pick" (used on
+ * first render when the user has no persisted preference yet). We
+ * intentionally re-run the effect when either `portfolioId` or the
+ * manual `nonce` changes so switching portfolios feels instant even
+ * without a full page reload.
+ *
+ * The returned `requestedId` is the id that was on the wire for the
+ * request that produced the current `data`. The parent uses
+ * that (NOT the live zustand id) to decide whether the server picked
+ * a different portfolio than we asked for — which is the only case
+ * where the client's persisted preference needs to be synced back.
+ * Comparing directly against zustand instead is racy: the user's
+ * click updates zustand optimistically *before* the fetch completes,
+ * so a naive comparison of `data.activePortfolioId` vs the current
+ * zustand id spuriously fires "sync back to default" and instantly
+ * reverts every non-default pick. See PaperTradingPage below for the
+ * details of that race.
+ */
+function usePaper(portfolioId: number | null) {
+  // `body` and `requestedId` are stored as a single tuple so they
+  // stay in lockstep — every response replaces both together. Storing
+  // them in separate `useState`s leaks a window where `body` reflects
+  // the new response while `requestedId` still reads as the previous
+  // request's id, which would break the "was this a fallback?"
+  // comparison during that window.
+  const [state, setState] = React.useState<{
+    body: PaperResponse;
+    requestedId: number | null;
+  } | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [nonce, setNonce] = React.useState(0);
@@ -57,14 +100,24 @@ function usePaper() {
     setError(null);
     (async () => {
       try {
+        const params = new URLSearchParams();
+        if (portfolioId !== null) params.set("portfolioId", String(portfolioId));
+        if (nonce > 0) params.set("_", String(nonce));
+        const qs = params.toString();
         const res = await fetch(
-          `/api/paper${nonce > 0 ? `?_=${nonce}` : ""}`,
+          `/api/paper${qs ? `?${qs}` : ""}`,
           { cache: "no-store" },
         );
         const body = await res.json();
         if (cancelled) return;
         if (!res.ok) setError(body?.error ?? `HTTP ${res.status}`);
-        else setData(body as PaperResponse);
+        // Capture the id we ASKED for on this specific request so the
+        // parent's sync effect can distinguish "server accepted our
+        // request" (requestedId === body.activePortfolioId) from
+        // "server fell back to a different portfolio" (requestedId
+        // !== body.activePortfolioId, which is when the persisted
+        // zustand preference should be updated).
+        else setState({ body: body as PaperResponse, requestedId: portfolioId });
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -74,9 +127,15 @@ function usePaper() {
     return () => {
       cancelled = true;
     };
-  }, [nonce]);
+  }, [nonce, portfolioId]);
 
-  return { data, loading, error, reload };
+  return {
+    data: state?.body ?? null,
+    requestedId: state?.requestedId ?? null,
+    loading,
+    error,
+    reload,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +159,13 @@ const PRESETS = [
 
 type PresetKey = (typeof PRESETS)[number]["key"];
 
-function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
+function OrderForm({
+  portfolioId,
+  onSubmitted,
+}: {
+  portfolioId: number;
+  onSubmitted: () => void;
+}) {
   const ticker = useUi((s) => s.ticker);
   const { data: bundle } = useBundle();
   const [side, setSide] = React.useState<Side>("buy");
@@ -170,6 +235,7 @@ function OrderForm({ onSubmitted }: { onSubmitted: () => void }) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          portfolioId,
           symbol: ticker,
           side,
           shares: Number(shares),
@@ -563,10 +629,12 @@ type RecommendResponse =
   | { ok: false; error: string };
 
 function TargetsEditor({
+  portfolioId,
   position,
   onSaved,
   onCancel,
 }: {
+  portfolioId: number;
   position: Valuation["positions"][number];
   onSaved: () => void;
   onCancel: () => void;
@@ -590,7 +658,7 @@ function TargetsEditor({
     setRecLoading(true);
     try {
       const res = await fetch(
-        `/api/paper/recommend?symbol=${encodeURIComponent(position.symbol)}`,
+        `/api/paper/recommend?symbol=${encodeURIComponent(position.symbol)}&portfolioId=${portfolioId}`,
         { cache: "no-store" },
       );
       const body = (await res.json()) as RecommendResponse;
@@ -606,7 +674,7 @@ function TargetsEditor({
     } finally {
       setRecLoading(false);
     }
-  }, [position.symbol]);
+  }, [position.symbol, portfolioId]);
 
   const applyRecommendation = () => {
     if (!rec) return;
@@ -646,6 +714,7 @@ function TargetsEditor({
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          portfolioId,
           symbol: position.symbol,
           stopLoss: sl,
           takeProfit: tp,
@@ -753,9 +822,11 @@ function TargetsEditor({
 // ---------------------------------------------------------------------------
 
 function PositionRow({
+  portfolioId,
   position,
   onChanged,
 }: {
+  portfolioId: number;
   position: Valuation["positions"][number];
   onChanged: () => void;
 }) {
@@ -821,6 +892,7 @@ function PositionRow({
 
       {editing && (
         <TargetsEditor
+          portfolioId={portfolioId}
           position={position}
           onSaved={() => {
             setEditing(false);
@@ -834,11 +906,13 @@ function PositionRow({
 }
 
 function PortfolioCard({
+  portfolioId,
   valuation,
   analytics,
   onReset,
   onChanged,
 }: {
+  portfolioId: number;
   valuation: Valuation;
   analytics: PortfolioAnalytics;
   onReset: () => void;
@@ -926,6 +1000,7 @@ function PortfolioCard({
               {valuation.positions.map((p) => (
                 <PositionRow
                   key={p.symbol}
+                  portfolioId={portfolioId}
                   position={p}
                   onChanged={onChanged}
                 />
@@ -1359,32 +1434,130 @@ function PerSymbolTable({ rows }: { rows: SymbolPerformance[] }) {
 type TradeSortKey = "createdAt" | "symbol" | "side" | "notional" | "realizedPnl";
 
 /**
+ * Small status pill next to a Buy row's "Buy" chip showing whether the
+ * FIFO lot opened by that buy is still open, partially drained by
+ * later sells, or fully closed. Mirrors the identical concept in the
+ * My-Portfolio drilldown (`components/positions-table.tsx`) so users
+ * see the same three-state grammar in both places — deliberately
+ * duplicated rather than lifted into a shared component because the
+ * two surfaces already own their own colour/typography scale.
+ *
+ * The three states map to different colour tones:
+ *   • open    → primary/blue tint  (nothing sold yet)
+ *   • partial → warning/amber tint (some sold, some still held)
+ *   • closed  → muted/grey tint    (all shares from this buy sold)
+ */
+function LotStatusChip({ status }: { status: "open" | "partial" | "closed" }) {
+  const t = useT();
+  const label = t(`paper.trades.lotStatus.${status}`);
+  const tone =
+    status === "open"
+      ? "border-primary/30 bg-primary/10 text-primary"
+      : status === "partial"
+        ? "border-warning/30 bg-warning/10 text-warning"
+        : "border-border bg-muted/40 text-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-[1px] text-[0.55rem] font-medium uppercase tracking-wider",
+        tone,
+      )}
+      title={t(`paper.trades.lotStatus.${status}Tooltip`)}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
  * Content of the expanded row under a clicked trade.
  *
- * Two shapes depending on whether the symbol still has an open position:
+ * Three shapes, decided by two orthogonal things: (a) does THIS trade
+ * still have shares to protect on its own row, and (b) is the symbol
+ * as a whole flat vs. open.
  *
- * 1. **Open position** — render the full `TargetsEditor` so the user can
- *    tweak SL/TP without leaving the trade log. Also shows a compact
- *    "you own N @ $X, currently $Y" summary above the editor so it's
- *    clear which position the edits will apply to.
- * 2. **Flat** (nothing left of that symbol) — SL/TP is meaningless
- *    because there's no live position to protect. We show a friendly
- *    "you no longer hold …" hint plus a "Trade this again" shortcut
- *    that sets the sidebar ticker so the user can buy back in with one
- *    click.
+ * 1. **Trade is closed on its own row** — always the case for a Sell
+ *    (sells close lots, they don't open them), and for a Buy whose
+ *    FIFO lot has been fully consumed by later sells (`lotStatus ===
+ *    "closed"`). We render a short "this trade is closed" hint with
+ *    no editor. If the symbol still has open shares from OTHER buys
+ *    the hint says so and points the user at the corresponding
+ *    Open / Partial Buy row; otherwise it degrades to the same
+ *    "you no longer hold …" copy the fully-flat panel uses.
+ *
+ *    Why this matters: previously the editor rendered on Sell rows
+ *    (and Closed-buy rows) whenever the symbol had ANY open shares.
+ *    Users reported that as a bug — tapping a completed sell and
+ *    getting an SL/TP form is misleading because the SL/TP being
+ *    edited isn't tied to that trade, it's tied to the surviving
+ *    position on the symbol. This branch keeps SL/TP editing
+ *    reachable (via the Buy row that still owns live shares) but
+ *    stops offering it from a row that has nothing to guard.
+ *
+ * 2. **Open / Partial Buy with a live symbol position** — render the
+ *    full `TargetsEditor` so the user can tweak SL/TP without
+ *    leaving the trade log. Compact "you own N @ $X, currently $Y"
+ *    summary above the editor makes it clear which position the
+ *    edits will apply to.
+ *
+ * 3. **Fallback for the paradoxical case** where the row would qualify
+ *    for the editor (open/partial buy) but the symbol somehow has no
+ *    live position (data drift, external reset). We degrade to the
+ *    same "flat" hint + "Trade this again" shortcut so the user isn't
+ *    stranded with a blank panel.
  */
 function TradeExpandedPanel({
+  portfolioId,
   trade,
   openPosition,
   onSaved,
   onOpenTicker,
 }: {
+  portfolioId: number;
   trade: EnrichedTrade;
   openPosition: Valuation["positions"][number] | null;
   onSaved: () => void;
   onOpenTicker: () => void;
 }) {
   const t = useT();
+
+  // "Does this specific trade have shares that still need
+  // protecting?" — the question SL/TP editing actually cares about.
+  // Sells inherently don't (they closed shares, they don't hold
+  // them). Buys with a fully-consumed FIFO lot don't either. Buys
+  // with `lotStatus === "open"` or `"partial"` still own live
+  // shares, so they DO qualify.
+  const isTradeClosed =
+    trade.side === "sell" || trade.lotStatus === "closed";
+
+  if (isTradeClosed) {
+    // Two sub-variants:
+    //   * `openPosition !== null` — the SYMBOL still has open
+    //     shares from OTHER buys. Tell the user where to go to
+    //     manage them (an Open / Partial Buy row for this symbol).
+    //   * `openPosition === null` — the symbol is fully flat.
+    //     Reuse the existing "flat" hint copy so the two flat
+    //     states don't diverge over time.
+    const title =
+      trade.side === "sell"
+        ? t("paper.trades.expanded.sellClosedTitle")
+        : t("paper.trades.expanded.buyClosedTitle");
+    const hint = openPosition
+      ? t("paper.trades.expanded.closedHintOpen", { symbol: trade.symbol })
+      : t("paper.trades.expanded.flatHint");
+    return (
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm">
+        <div>
+          <p className="font-semibold">{title}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onOpenTicker}>
+          {t("paper.trades.expanded.tradeAgain", { symbol: trade.symbol })}
+        </Button>
+      </div>
+    );
+  }
+
   if (openPosition) {
     const unrealPos = (openPosition.unrealised ?? 0) >= 0;
     return (
@@ -1416,6 +1589,7 @@ function TradeExpandedPanel({
           )}
         </div>
         <TargetsEditor
+          portfolioId={portfolioId}
           position={openPosition}
           onSaved={onSaved}
           onCancel={onSaved}
@@ -1423,6 +1597,7 @@ function TradeExpandedPanel({
       </div>
     );
   }
+
   return (
     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm">
       <div>
@@ -1441,10 +1616,12 @@ function TradeExpandedPanel({
 }
 
 function TradesTable({
+  portfolioId,
   trades,
   positions,
   onChanged,
 }: {
+  portfolioId: number;
   trades: EnrichedTrade[];
   /** Currently-open positions from the valuation — used so a row click can
    *  either drop a live SL/TP editor for the symbol, or show a "you're
@@ -1490,10 +1667,25 @@ function TradesTable({
     return trades.filter((tr) => {
       if (symbolFilter && tr.symbol !== symbolFilter) return false;
       if (sideFilter !== "all" && tr.side !== sideFilter) return false;
-      if (pnlFilter === "wins" && !(tr.realizedPnl !== null && tr.realizedPnl > 0))
-        return false;
-      if (pnlFilter === "losses" && !(tr.realizedPnl !== null && tr.realizedPnl < 0))
-        return false;
+      // Wins / losses now filter on the *displayed* P&L — the FIFO
+      // lot realized on Buy rows. Historically this looked at
+      // `tr.realizedPnl` (which is set on Sell rows only), but that
+      // stopped matching the on-screen P&L column the moment we
+      // moved realized attribution from Sells → Buys. Filtering by
+      // the invisible number was confusing ("I filtered wins and
+      // now every row shows DASH") so this now filters by the same
+      // number the P&L column renders.
+      if (pnlFilter === "wins" || pnlFilter === "losses") {
+        const shown =
+          tr.side === "buy" &&
+          tr.lotRealizedPnl !== null &&
+          tr.lotRealizedPnl !== 0
+            ? tr.lotRealizedPnl
+            : null;
+        if (shown === null) return false;
+        if (pnlFilter === "wins" && !(shown > 0)) return false;
+        if (pnlFilter === "losses" && !(shown < 0)) return false;
+      }
       return true;
     });
   }, [trades, symbolFilter, sideFilter, pnlFilter]);
@@ -1515,12 +1707,24 @@ function TradesTable({
           av = a.shares * a.price;
           bv = b.shares * b.price;
           break;
-        case "realizedPnl":
-          // Push nulls (buys) to the end regardless of direction so the
-          // list stays readable when sorted by P&L.
-          av = a.realizedPnl ?? (sortDir === "asc" ? Infinity : -Infinity);
-          bv = b.realizedPnl ?? (sortDir === "asc" ? Infinity : -Infinity);
+        case "realizedPnl": {
+          // Sort by the SAME number the P&L column shows on screen —
+          // buys' FIFO lot realized. Sells (and buys with no
+          // realized attribution yet) have no on-screen P&L and are
+          // pushed to the end regardless of direction so the sort
+          // reads as a clean best-to-worst / worst-to-best listing
+          // of the rows the user can actually see numbers for.
+          const shownFor = (tr: EnrichedTrade): number | null =>
+            tr.side === "buy" &&
+            tr.lotRealizedPnl !== null &&
+            tr.lotRealizedPnl !== 0
+              ? tr.lotRealizedPnl
+              : null;
+          const bump = sortDir === "asc" ? Infinity : -Infinity;
+          av = shownFor(a) ?? bump;
+          bv = shownFor(b) ?? bump;
           break;
+        }
         default:
           av = a.createdAt;
           bv = b.createdAt;
@@ -1699,21 +1903,27 @@ function TradesTable({
                 const toggleRow = () =>
                   setExpandedId((cur) => (cur === trade.id ? null : trade.id));
 
-                // Combined P&L for display:
-                //   • Sells: their own realized P&L (unchanged).
-                //   • Buys: the FIFO-attributed realized P&L — profit
-                //     from every later sell that consumed shares from
-                //     THIS specific buy lot.
-                // We don't overwrite the sort key logic; sorting still
-                // uses `trade.realizedPnl` (i.e. sells drive P&L sort)
-                // to keep the filter semantics ("wins only" = winning
-                // sells) predictable.
+                // Realized P&L is booked against the BUY row that
+                // opened each FIFO lot, not the Sell that closed
+                // it — that's where the entry decision actually made
+                // (or lost) money. Sell rows show DASH in the P&L
+                // column; their cash-flow proceeds are visible in
+                // the Notional / Cash-flow column so nothing is lost.
+                //
+                // This mirrors the My-Portfolio drilldown so users
+                // see one consistent P&L attribution grammar across
+                // both surfaces. Rationale: displaying realized P&L
+                // on a Sell row is intuitively "how much did I make
+                // by selling", but the trader's real decision-quality
+                // question is "was that BUY a good entry?" — which
+                // only makes sense to answer against the lot that
+                // buy opened.
                 const displayPnl =
-                  trade.side === "sell"
-                    ? trade.realizedPnl
-                    : trade.lotRealizedPnl !== null && trade.lotRealizedPnl !== 0
-                      ? trade.lotRealizedPnl
-                      : null;
+                  trade.side === "buy" &&
+                  trade.lotRealizedPnl !== null &&
+                  trade.lotRealizedPnl !== 0
+                    ? trade.lotRealizedPnl
+                    : null;
                 const pnlPos = displayPnl !== null && displayPnl > 0;
                 const pnlNeg = displayPnl !== null && displayPnl < 0;
 
@@ -1773,16 +1983,28 @@ function TradesTable({
                         </div>
                       </td>
                       <td className="px-3 py-2">
-                        <span
-                          className={cn(
-                            "chip text-[0.65rem]",
-                            trade.side === "buy" ? "chip-bull" : "chip-bear",
+                        {/* Buy/Sell chip + FIFO lot-status pill for
+                            Buy rows. The pill mirrors the My-Portfolio
+                            drilldown, so users see the same "Open /
+                            Partial / Closed" grammar whether they're
+                            reviewing paper trades or real portfolio
+                            imports. Sells never get a pill — by
+                            definition a sell doesn't open a lot. */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className={cn(
+                              "chip text-[0.65rem]",
+                              trade.side === "buy" ? "chip-bull" : "chip-bear",
+                            )}
+                          >
+                            {trade.side === "buy"
+                              ? t("paper.side.buy")
+                              : t("paper.side.sell")}
+                          </span>
+                          {trade.side === "buy" && trade.lotStatus && (
+                            <LotStatusChip status={trade.lotStatus} />
                           )}
-                        >
-                          {trade.side === "buy"
-                            ? t("paper.side.buy")
-                            : t("paper.side.sell")}
-                        </span>
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {fmtNumber(trade.shares, 0)}
@@ -1830,16 +2052,13 @@ function TradesTable({
                         }
                       >
                         {displayPnl === null ? (
+                          // Sell rows always render DASH here — their
+                          // realized P&L is attributed to the Buy row
+                          // that opened the FIFO lot the sell just
+                          // consumed. Buy rows with no realized lot
+                          // P&L (still fully open, or no matching
+                          // sells at all) also render DASH.
                           <span className="text-muted-foreground">—</span>
-                        ) : trade.side === "sell" ? (
-                          <>
-                            {fmtSigned(displayPnl)}
-                            {trade.realizedPnlPct !== null && (
-                              <span className="text-[0.65rem] block font-normal opacity-80">
-                                {fmtSignedPercent(trade.realizedPnlPct)}
-                              </span>
-                            )}
-                          </>
                         ) : (
                           <>
                             {fmtSigned(displayPnl)}
@@ -1857,6 +2076,7 @@ function TradesTable({
                       <tr className="border-b border-border/60 bg-muted/20">
                         <td colSpan={columnCount} className="px-3 sm:px-4 py-3">
                           <TradeExpandedPanel
+                            portfolioId={portfolioId}
                             trade={trade}
                             openPosition={openPos}
                             onSaved={() => {
@@ -1929,12 +2149,66 @@ function TriggerBanner({ triggered }: { triggered: Trigger[] }) {
 }
 
 export default function PaperTradingPage() {
-  const { data, loading, error, reload } = usePaper();
   const t = useT();
+  const activePortfolioId = useUi((s) => s.activePaperPortfolioId);
+  const setActivePortfolioId = useUi((s) => s.setActivePaperPortfolioId);
+  const { data, requestedId, loading, error, reload } = usePaper(activePortfolioId);
+
+  // Whenever the server picks a portfolio DIFFERENT from what we
+  // asked for (first-time visit → requestedId === null; deleted row
+  // → requestedId points at a portfolio that no longer exists),
+  // sync that back into the zustand store so the picker + subsequent
+  // requests use the same id.
+  //
+  // Why not compare directly against `activePortfolioId`?
+  //
+  //   Historically this effect did exactly that:
+  //     if (data.activePortfolioId !== activePortfolioId)
+  //         setActivePortfolioId(data.activePortfolioId);
+  //
+  //   That created a nasty race whenever the user picked a
+  //   non-default portfolio:
+  //
+  //     1. onSwitch(42) → zustand becomes 42 (optimistic).
+  //     2. React re-renders. `data.activePortfolioId` is still 1
+  //        from the *previous* response — the new fetch hasn't
+  //        landed yet.
+  //     3. Fetch effect fires and starts `GET ?portfolioId=42`.
+  //     4. Sync effect ALSO fires: `data(1) !== active(42)` → it
+  //        calls `setActivePortfolioId(1)`, reverting the user's
+  //        pick.
+  //     5. Zustand is 1 again, the id=42 fetch is cancelled, a new
+  //        fetch fires for id=1, and the picker never leaves the
+  //        default.
+  //
+  //   Users hit this as "clicking a portfolio does nothing — it
+  //   keeps asking me to pick the default". Comparing against
+  //   `requestedId` (the id `usePaper` actually put on the wire for
+  //   the response we're looking at) side-steps the race entirely:
+  //   during step 4 above, `data.activePortfolioId === requestedId
+  //   === 1`, so the sync condition is false and no revert
+  //   happens; the id=42 response later lands with `requestedId ===
+  //   activePortfolioId === 42`, so still nothing to sync. The
+  //   effect only fires — as intended — when the server intentionally
+  //   diverges from the requested id.
+  React.useEffect(() => {
+    if (!data) return;
+    if (data.activePortfolioId === requestedId) return;
+    if (data.activePortfolioId !== activePortfolioId) {
+      setActivePortfolioId(data.activePortfolioId);
+    }
+  }, [data, requestedId, activePortfolioId, setActivePortfolioId]);
+
+  const activeId = data?.activePortfolioId ?? activePortfolioId;
 
   const doReset = async () => {
+    if (activeId === null) return;
     if (!confirm(t("paper.resetConfirm"))) return;
-    await fetch("/api/paper", { method: "DELETE" });
+    await fetch("/api/paper", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ portfolioId: activeId }),
+    });
     reload();
   };
 
@@ -1943,16 +2217,42 @@ export default function PaperTradingPage() {
       <PageHeader pageTitleKey="nav.paper" />
       <PageIntro pageKey="paper" />
 
+      {data && (
+        <div className="mb-3 animate-fade-in">
+          <PortfolioPicker
+            portfolios={data.portfolios}
+            // Prefer the *live* zustand id so the chip label flips to
+            // the picked portfolio immediately on click, rather than
+            // lagging until the /api/paper fetch lands (~200ms). We
+            // fall back to `data.activePortfolioId` only when zustand
+            // hasn't been initialised yet (first-visit case where the
+            // sync effect above hasn't run yet) or when the persisted
+            // id doesn't match anything in the current list (deleted
+            // from another tab — the sync effect will replace it in a
+            // moment, but until then we render the server's fallback).
+            activePortfolioId={
+              activePortfolioId !== null &&
+              data.portfolios.some((p) => p.id === activePortfolioId)
+                ? activePortfolioId
+                : data.activePortfolioId
+            }
+            onSwitch={(id) => setActivePortfolioId(id)}
+            onChanged={reload}
+          />
+        </div>
+      )}
+
       {error && <ErrorBanner message={error} retry={reload} />}
       {!data && !error && loading && <LoadingPage label={t("loading.portfolio")} />}
 
-      {data && (
+      {data && activeId !== null && (
         <>
           <TriggerBanner triggered={data.triggered ?? []} />
           <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr] animate-fade-in">
-            <OrderForm onSubmitted={reload} />
+            <OrderForm portfolioId={activeId} onSubmitted={reload} />
             <div className="space-y-4">
               <PortfolioCard
+                portfolioId={activeId}
                 valuation={data.valuation}
                 analytics={data.analytics.portfolio}
                 onReset={doReset}
@@ -1965,6 +2265,7 @@ export default function PaperTradingPage() {
 
           <div className="mt-4 animate-fade-in">
             <TradesTable
+              portfolioId={activeId}
               trades={data.trades}
               positions={data.valuation.positions}
               onChanged={reload}

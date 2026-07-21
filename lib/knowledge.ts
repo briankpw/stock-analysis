@@ -535,6 +535,10 @@ const PAGE_INTROS: Readonly<Record<string, Localized<string>>> = {
     en: "**Bring your own trades.** Export a transaction CSV from your broker or portfolio-tracker app (MyStocksPortfolio, MooMoo, Webull, etc.) and drop it here. The file is parsed **in your browser** and kept only on this device — nothing is uploaded, nothing is shared.\n\nTwo views: **Positions** groups everything by stock so you can see shares held, average cost, live market value, today's dollar change, unrealized P&L, and profit already booked from past sells. **Transactions** lists every raw buy/sell/watch entry from the CSV. Grand totals are shown **per currency** — USD and HKD trades never get mixed together. Click any symbol to make it the active ticker for the rest of the app.",
     "zh-CN": "**导入你的真实交易。** 从券商或投资组合软件（MyStocksPortfolio、MooMoo、Webull 等）导出交易 CSV，将文件拖到此处。文件在**浏览器内**解析，仅保存在本设备——不会上传，不会分享。\n\n提供两种视图：**持仓**按股票分组，显示持股数、平均成本、实时市值、当日盈亏、未实现盈亏，以及历次卖出已实现的收益。**交易明细**则列出 CSV 中的每一笔买入 / 卖出 / 关注记录。总计按**币种分别汇总**——美元与港币不会混算。点击任意代码可将其设为全站的当前分析代码。",
   },
+  backtest: {
+    en: "**What if you had traded the signal?** Pick any ticker, choose a strategy (Technical / Resonance / Master Verdict), and replay it bar-by-bar across the last few years. The engine simulates the resulting BUYs and SELLs, tracks your paper account against a passive **buy-and-hold** benchmark, and shows you: how much you'd have made, the deepest drawdown along the way, your win-rate and payoff, and how much of the time you were actually in the market.\n\nEvery run is saved to the **history panel** on the right — click any row to instantly re-open the same equity curve and trade log you saw before. Turn **Beginner mode** on for plain-English advice on what the numbers actually mean for your decision.",
+    "zh-CN": "**如果按信号操作，会赚多少？** 选一只股票、选一种策略（技术信号 / 六指标共振 / 综合裁决），在最近几年 K 线上逐根重放。引擎模拟买卖，与被动的**买入并持有**对比，展示：你会赚多少、过程中最深的回撤、胜率与盈亏比、以及你实际在市场里的时间占比。\n\n每次回测都会保存到右侧的**历史面板**——点击任一行即可立即重新加载当次的净值曲线与交易明细。打开**新手模式**，即可以通俗语言了解这些数字对决策意味着什么。",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1349,195 @@ const TECHNICAL_TERMS: Readonly<Record<string, Localized<TermDef>>> = {
       deeper: "一个回合可以包含多次加仓与多次减仓，仍算作 1 回合。持股再次归零时计数 +1。",
     },
   },
+  "Max Drawdown": {
+    en: {
+      what: "The biggest peak-to-trough dip your account suffered along the way, expressed as a percentage.",
+      deeper: "A backtest that ends up +40% but had a 55% drawdown mid-way means at one point you'd have been sitting on more than half your money gone. Ask yourself honestly whether you would have kept holding — most people don't, and paper-drawdown often becomes real losses when panic sells set in.",
+    },
+    "zh-CN": {
+      label: "最大回撤",
+      what: "账户从最高点跌到最低点的最大幅度，以百分比表示。",
+      deeper: "如果一次回测最终 +40%，但过程中出现 55% 的回撤，意味着你曾经账面亏损过半。请诚实自问是否真能扛得住——多数人会在恐慌中止损，把账面回撤变成实际亏损。",
+    },
+  },
+  CAGR: {
+    en: {
+      what: "Compound Annual Growth Rate — the average yearly return needed to grow your starting cash into the final amount at a steady pace.",
+      deeper: "Smooths out lumpy returns into one \"per year\" number. Compare it to what you'd earn in Treasuries or a broad index (~7-10%) to judge whether the extra risk was worth it.",
+    },
+    "zh-CN": {
+      label: "年化复合收益率（CAGR）",
+      what: "以稳定速度把起始资金复利成最终金额所需的平均年化回报。",
+      deeper: "把起伏不定的收益压缩成一个「每年多少」的读数。可与国债或宽基指数（约 7-10%）对比，判断额外承担的风险是否值得。",
+    },
+  },
+  "Buy and Hold": {
+    en: {
+      what: "A passive benchmark: buy on day one, don't touch it, sell on the last day. Every backtest is compared against this to show whether the signal actually beat \"doing nothing\".",
+      deeper: "Buy-and-hold is 100% exposed to the market the whole time, so it can look great in bull runs and awful in crashes. A signal that returns less but with much less drawdown may still be more attractive if you can't stomach big paper losses.",
+    },
+    "zh-CN": {
+      label: "买入并持有",
+      what: "被动基准：第一天买入，中间不动，最后一天卖出。每次回测都会与它对比，看看策略是否真的战胜了「什么都不做」。",
+      deeper: "买入并持有全程 100% 暴露于市场，牛市看起来很棒，熊市却很惨。若某策略回报稍低但回撤显著更小，对不能承受大账面亏损的人反而更具吸引力。",
+    },
+  },
+  "Sharpe Ratio": {
+    en: {
+      what: "A risk-adjusted return: how much extra return you earned per unit of volatility.",
+      deeper: "Not yet reported in this app's backtest; kept here as a glossary entry for the term you'll see in other research. Rule of thumb: > 1 is decent, > 2 is very good, but numbers depend heavily on how volatility is measured.",
+    },
+    "zh-CN": {
+      label: "夏普比率",
+      what: "风险调整后收益：每承担一个单位波动，能获得多少额外回报。",
+      deeper: "本应用的回测暂未输出该指标；此处作为词条供你在其他研究中辨识。经验：> 1 尚可，> 2 较优，但结果对波动率的计算方式非常敏感。",
+    },
+  },
+  // -------------- Backtest result-panel glossary --------------------------
+  //
+  // Every term below shows up in the `/backtest` results panel — either
+  // as a headline number, a metric tile, an exit-mix chip, or a chart
+  // label — and each has its own glossary entry so beginner mode can
+  // answer "what does this number mean?" without leaving the page.
+  //
+  // The "Reading a Backtest" entry at the end is the read-me-first
+  // walkthrough: it strings the numbers together into an evaluation
+  // workflow (return, then risk, then edge, then robustness) so a
+  // beginner doesn't stare at 4 tiles + an equity curve and freeze.
+  "Total Return": {
+    en: {
+      what: "The big headline percentage at the top of the results — how much the strategy grew (or shrunk) your starting cash over the whole backtest window, before fees. If you started with $10,000 and the tile shows +42%, the sim ended with $14,200 in combined cash + open-position value.",
+      deeper: "Total return is the single most misleading number in a backtest if read alone, because a good number can hide a terrible ride — the same +42% could come from a smooth grind higher OR from riding a 60% drawdown before recovering. Always read it beside Max drawdown and the equity curve. Compare it to the Buy & hold tile on the right of the same panel: if Total return beats Buy & hold by less than the extra risk you took (bigger drawdown, more trades to manage), the strategy wasn't actually adding value versus just holding the stock.",
+    },
+    "zh-CN": {
+      label: "总收益率",
+      what: "结果面板顶部醒目的大百分比——策略在整段回测区间把起始资金总共增长（或缩水）了多少（未计手续费）。若你以 $10,000 起始，页面显示 +42%，则期末现金加持仓市值合计约为 $14,200。",
+      deeper: "若单独看，总收益率是回测中最容易误导人的数字：+42% 可能来自平稳上涨，也可能是先经历 60% 回撤后才收复。请务必与最大回撤和净值曲线一起阅读。并对比右上角的“买入并持有”：如果策略仅小幅跑赢，但过程中承担的额外风险（更大的回撤、更频繁的操作）远超收益差，则策略未必真的比“什么都不做”更好。",
+    },
+  },
+  "Final Equity": {
+    en: {
+      what: "The dollar value your simulated account ends the window with — cash on hand PLUS the market value of any still-open position marked to the last bar's close. This is what Total return is computed against your starting cash.",
+      deeper: "If the strategy is still holding shares on the final bar, Final equity includes those shares' unrealised value, so the number isn't purely cash — closing that final position at a different price would nudge Final equity up or down. The equity curve below the tiles shows this same dollar value over time; the last point of the solid line equals Final equity.",
+    },
+    "zh-CN": {
+      label: "期末净值",
+      what: "模拟账户在回测结束时的美元总值——现金余额加上尚未平仓头寸按最后一根 K 线收盘价的市值。总收益率就是用它对比起始资金计算得来。",
+      deeper: "如果策略在最后一根 K 线仍持有股份，期末净值中包含这部分未实现浮盈/浮亏，因此并非纯现金——若在其他价位真正平仓，期末净值会随之上下浮动。下方净值曲线的最后一个点即等于期末净值。",
+    },
+  },
+  Exposure: {
+    en: {
+      what: "The share of trading bars the strategy actually held stock (as opposed to sitting in cash). Written as \"{n}% invested\" beside the trade count in the headline. 100% means always in position; 0% would mean the strategy never bought a single share.",
+      deeper: "Exposure decides how meaningful the return comparison against buy & hold really is. A strategy at 40% exposure earning +20% is doing much more work per invested dollar than buy & hold at 100% exposure earning +25% — normalising for time-in-market (return ÷ exposure) is often more honest. Low exposure also implies lots of cash-only stretches where you missed both crashes AND rallies; whether that's good depends on how well the strategy times its entries.",
+    },
+    "zh-CN": {
+      label: "持仓时间占比",
+      what: "策略实际持有股票（而非空仓待现）的 K 线占比。头部区域「{n}% 持仓时间」即为此值。100% 表示一直持仓；0% 意味着从未买入。",
+      deeper: "该指标决定了策略与「买入并持有」比较的意义。若策略仅 40% 时间持仓却拿到 +20% 回报，其单位持仓资金的效率远高于 100% 时间持仓、+25% 回报的买入并持有——用「收益 ÷ 持仓时间占比」进行归一化更加公正。低持仓比也意味着大量空仓时段既躲开了下跌，也可能错过了上涨；到底是好是坏，要看策略进场时点的把握。",
+    },
+  },
+  "Trade Count": {
+    en: {
+      what: "How many buy or sell fills the strategy generated across the window (buys + sells, not \"round trips\"). Shown as \"{n} trades\" in the headline beside Exposure.",
+      deeper: "Sample size matters — a strategy with 4 trades and +200% return is much less convincing than one with 60 trades and +80%, because the small-sample result could easily be one or two lucky calls. As a rule of thumb, treat < 30 trades as anecdotal; 30–100 is workable; 100+ starts approaching statistically credible. If Trade count is very low over a multi-year window, either the strategy is deeply out-of-market (see Exposure) or the signal fires so rarely that you can't judge it from history alone.",
+    },
+    "zh-CN": {
+      label: "交易次数",
+      what: "策略在整段区间共触发多少笔买入或卖出（买卖之和，而非「完整回合」数）。头部区域「{n} 笔交易」即为此值。",
+      deeper: "样本量至关重要——仅 4 笔交易带来 +200% 的策略远不如 60 笔交易带来 +80% 的策略可信，因为小样本结果可能只是一两次运气使然。经验法则：< 30 笔属于个例，30–100 笔尚可参考，100 笔以上开始具备统计意义。若多年区间内交易次数极少，要么策略长时间空仓（见持仓时间占比），要么信号本身太稀有，仅凭历史难以判断。",
+    },
+  },
+  "Exit Mix": {
+    en: {
+      what: "The breakdown chips (Signal / Stop-loss / Take-profit) shown when you've turned on the SL/TP overlay. They count how each exit happened during the sim: the strategy's own sell signal, a stop-loss trigger, or a take-profit trigger. Only rendered when the SL/TP overlay is set to something other than Off.",
+      deeper: "The exit mix is the single best way to judge whether your protective levels are set right. Lots of Stop-loss exits mean your SL is being hit before the signal decides to sell — either your SL is too tight for the stock's noise, or the entries are timed poorly. Lots of Take-profit exits mean you're capping your winners; a strategy that would have run further gets truncated. The healthy pattern is a majority of Signal exits with SL/TP catching the outliers: SL saves you from thesis-breaking crashes, TP locks in a windfall, but the meat of the P&L still comes from the signal doing its job.",
+    },
+    "zh-CN": {
+      label: "退出方式分布",
+      what: "开启止损/止盈叠加后，结果面板会显示三种退出方式的计数：信号退出、止损触发、止盈触发。它统计模拟中每笔平仓分别是被谁触发的。若止损/止盈设为「关闭」，该模块不会显示。",
+      deeper: "退出方式分布是判断保护档位是否设置得当的最佳指标。止损退出过多，说明止损位在策略自身的卖出信号出现前就被触及——要么止损过紧无法承受股票日常波动，要么入场时机欠佳。止盈退出过多，说明你在过早封顶利润——本可继续上涨的行情被过早锁定。健康的分布应是：信号退出占多数，止损与止盈只作为异常情况的兜底：止损防范突发暴跌、止盈锁定意外飞升，但主要盈亏仍由信号本身决定。",
+    },
+  },
+  "Signal Exit": {
+    en: {
+      what: "A trade the strategy closed on its own — i.e. it fired a SELL signal at that bar and the position was closed at the corresponding fill (same close or next open, depending on Fill timing). This is the \"pure\" exit that reflects the signal doing its job without help.",
+      deeper: "Signal exits are the honest measure of the strategy's edge. If you turn SL/TP off, every exit is a Signal exit; the metric tiles above (Total return, CAGR, Win rate, Payoff) are entirely determined by these. Turning SL/TP on ADDS the two other exit types but doesn't stop signal exits from firing when appropriate. If you turn on aggressive SL/TP and Signal exits drop to near zero, the strategy is effectively no longer trading its own signal — you've replaced it with fixed-percent trading rules.",
+    },
+    "zh-CN": {
+      label: "信号退出",
+      what: "策略自身在该 K 线发出卖出信号并按对应成交时点（当日收盘或次日开盘）平仓——这是最「纯粹」的退出，反映信号本身在正常发挥作用。",
+      deeper: "信号退出是策略真实实力的衡量指标。若关闭止损/止盈，所有退出都属于信号退出，上方指标（总收益、年化、胜率、盈亏比）完全由这些信号决定。开启止损/止盈后，会新增另外两类退出，但不会阻止合适时机的信号退出。若开启激进的止损/止盈后信号退出降到近乎为零，等于策略已不再按自身信号交易，实际上被换成了固定百分比的规则。",
+    },
+  },
+  "Stop-Loss Exit": {
+    en: {
+      what: "A trade closed because price hit your Stop-loss level (set in the SL/TP overlay above) BEFORE the strategy fired a sell signal. Backstop for the case where the signal is slow to reverse and the position is bleeding.",
+      deeper: "The most useful sanity check on your SL setting: if this count is very high compared to Signal exits, the stop is too tight — you're being knocked out of positions by ordinary noise, then watching the signal have been right all along. Too low a count (0 out of 50 trades) means the SL is so wide it's never binding — it's not actually protecting anything. A healthy strategy usually shows a small number of stop-loss exits catching genuine thesis-breaking dumps.",
+    },
+    "zh-CN": {
+      label: "止损退出",
+      what: "价格触及你在止损/止盈叠加里设定的止损位，且早于策略自身卖出信号——平仓由此触发。用来兜底：当信号反应偏慢、仓位持续失血时。",
+      deeper: "这是检验止损设置的最直观数据：若该项计数相对信号退出显著偏高，说明止损过紧——正常波动就被扫出场，然后眼看着信号本来是对的。反之若长期为零（例如 50 笔交易中 0 次触发），说明止损设得过宽，实际从未生效——没起到保护作用。健康策略通常仅有少量止损退出，用来捕捉真正的破位下跌。",
+    },
+  },
+  "Take-Profit Exit": {
+    en: {
+      what: "A trade closed because price hit your Take-profit level (set in the SL/TP overlay) BEFORE the strategy fired a sell signal. Locks in a windfall the signal hadn't yet caught up to.",
+      deeper: "The mirror image of Stop-loss exits — used to lock gains rather than cut losses. Beginners tend to set TPs too tight (\"I'll take 5% and run\"), which shows up as a high TP-exit count and a suspiciously low Payoff ratio (winners = the TP amount, losers = full SL). Wider TPs let winners run and are usually what makes a strategy's Payoff > 1. If TP-exit count is very high AND CAGR is disappointing, widen the TP or turn it off and let the strategy's signal do the exiting.",
+    },
+    "zh-CN": {
+      label: "止盈退出",
+      what: "价格触及你在止损/止盈叠加里设定的止盈位，且早于策略卖出信号——平仓由此触发。用于锁定信号尚未来得及捕捉的浮盈。",
+      deeper: "这是止损退出的镜像——用来锁利而非止损。初学者常把止盈设得过紧（例如「涨 5% 就走」），结果止盈退出频次很高，盈亏比却低得可疑（赢家就那一点止盈额，输家却是完整止损额）。适度放宽止盈让盈利奔跑，通常才是策略盈亏比大于 1 的关键。若止盈退出频次极高且年化平平，请放宽止盈或关闭它，让信号本身来完成退出。",
+    },
+  },
+  "Equity Curve": {
+    en: {
+      what: "The sparkline chart just above the trade log — solid line is your strategy's account value bar-by-bar, thin line is a passive buy & hold with the same starting cash for the same window. Both lines meet at $starting-cash on the left edge; the right edge is Final equity for the strategy and buy & hold's end value.",
+      deeper: "Equity curves tell you WHERE the return came from, not just how much. A jagged line making new highs on wins but sliding on losses = a working signal with normal ups and downs. A flat line that jumps late in the window = the strategy caught one lucky trade and is essentially random the rest of the time (don't trust it). A line that lags buy & hold for years then surges in a single crash-recovery episode = the strategy is a crisis-only tool that's dead weight in normal markets. If the solid line spends most of its time BELOW the thin line even when Total return finishes higher, the strategy took a lot of pain along the way — read Max drawdown carefully.",
+    },
+    "zh-CN": {
+      label: "净值曲线",
+      what: "交易记录上方的迷你走势图——实线为策略账户按 K 线记录的净值曲线，细线为同起始资金、同区间的被动买入并持有对比线。两条线在最左端于起始资金处汇合；最右端分别为策略的期末净值与买入并持有的期末净值。",
+      deeper: "净值曲线告诉你收益来自哪里，不只是有多少。曲线曲折起伏、创出新高又回落，属于正常盈亏波动的健康信号；曲线长期横盘、末段突然跳升，说明策略只是撞上了一笔运气交易，其他时间基本随机（不可信）；实线多年跑输细线、仅在一次危机反弹中大幅超越，则说明策略仅在极端行情下有用，平时纯属拖累。若总收益最终领先但实线大部分时间都在细线之下，说明途中承担了大量痛苦——请仔细阅读最大回撤。",
+    },
+  },
+  "Warmup Bars": {
+    en: {
+      what: "The first N bars of history the strategy can't act on because its indicators need enough past data to compute a value. During warm-up the sim is cash-only, no signals fire, no trades happen. Shown on the equity curve as the initial flat cash-only segment (the sparkline actually crops it out for readability).",
+      deeper: "The warm-up length depends on the strategy — SMA 200 needs 200 bars before it can compute; RSI 14 needs 14; MACD 12/26 needs 26 or so. If your period is short and the strategy has a long warm-up, the effective backtest window can be much smaller than the calendar window suggests (a 6-month test with SMA 200 barely has a month of actionable bars). If the strategy never trades, look at warm-up first — the window might simply be too short.",
+    },
+    "zh-CN": {
+      label: "热身期 K 线",
+      what: "回测最开始的若干 K 线，策略在此期间因指标尚未有足够历史数据可计算而无法出信号——纯现金空仓、不出手、不成交。净值曲线上表现为最左段的平直现金段（页面上的迷你曲线为便于查看会自动裁去）。",
+      deeper: "热身期长度取决于策略——SMA 200 需 200 根 K 线才能算出值；RSI 14 需 14 根；MACD 12/26 需 26 根左右。若区间较短而策略热身期很长，真正可交易的窗口远小于日历区间（例如 6 个月区间 + SMA 200，实际能操作的 K 线不足一个月）。若发现策略完全不出手，请先检查热身期——很可能是区间太短。",
+    },
+  },
+  "Reading a Backtest": {
+    en: {
+      what: "A four-step workflow for evaluating any backtest result on this page: (1) Did it BEAT buy & hold? (2) Was the drawdown SURVIVABLE? (3) Is the EDGE real (win rate × payoff)? (4) Is the sample ROBUST (trade count + exposure)? Only advance to \"save as portfolio\" or \"trade this live\" if all four answers are yes.",
+      deeper: "Concretely: FIRST look at Total return vs. the Buy & hold tile on the right. If the strategy underperformed buy & hold on the same window, most people should stop here — you're taking work + transaction risk to earn less than doing nothing. SECOND look at Max drawdown — if it's -40% and you'd have panic-sold at -20% in real life, the +50% total return is fake because you wouldn't have held to see it. THIRD look at Win rate and Payoff together — a 30% win rate with 4× payoff is fine (you win rarely but big), a 70% win rate with 0.3× payoff is a disaster in disguise (small frequent wins wiped out by rare big losses). FOURTH look at the trade count and exposure — < 30 trades is anecdotal; if the strategy was in cash 90% of the time (Exposure 10%), most of the return might just be that one lucky trade. Finally look at the equity curve — if the solid line makes new highs steadily, the strategy is working; if it's flat then jumps on one bar, you're looking at randomness. Only after all four filters pass should you consider saving the run as a paper portfolio and trading forward from it.",
+    },
+    "zh-CN": {
+      label: "如何解读回测结果",
+      what: "评估本页任意回测结果的四步流程：(1) 是否**跑赢**买入并持有？(2) 回撤是否**扛得住**？(3) **优势**是否真实（胜率 × 盈亏比）？(4) 样本是否**稳健**（交易次数 + 持仓时间）？只有四问皆是「是」，才值得考虑「保存为组合」或实盘执行。",
+      deeper: "具体做法：**第一步** 对比总收益率与右侧「买入并持有」磁贴。若策略跑输买入并持有，大多数人应就此止步——付出更多操作与交易风险，却拿到更差的结果，性价比为负。**第二步** 看最大回撤——如果是 -40%，而现实中你在 -20% 就会恐慌割肉，那么 +50% 的总收益率对你就是虚假的，因为你根本坚持不到收复。**第三步** 结合胜率与盈亏比——30% 胜率 + 4× 盈亏比是合格的（少胜但胜得大）；70% 胜率 + 0.3× 盈亏比才是变相灾难（频繁小胜被偶发大亏吞掉）。**第四步** 看交易次数与持仓时间占比——< 30 笔属于个例；若策略 90% 时间空仓，绝大部分收益可能只是那一两笔运气交易。最后再看净值曲线：实线持续新高即策略稳健；若长期横盘、单根 K 线跳升，多为随机。只有四个筛子全部通过，才应把本次回测保存为纸上组合并考虑向前实盘。",
+    },
+  },
+  "Fill Timing": {
+    en: {
+      what: "When and at what price a backtest actually books a signal — either the SAME bar's close as when the signal fired (Same close), or the NEXT bar's open one bar later (Next open). Every strategy runs at the close of each historical bar; fill timing decides which price you're modelled to have transacted at once the signal appears.",
+      deeper:
+        "Same close pretends you executed at the exact close the signal saw — zero slippage, zero overnight risk, zero latency. It's useful for tutorials or when you want the backtest P&L to line up with the on-screen verdict on the current bar, but wildly optimistic: in real trading the bar has to finish before you know the signal is triggered, so buying at that same close is not something a human (or a live automated system) can actually do — you'd need to see the future. Next open waits until the following bar opens and fills you at that open price, which is what a live trader would experience — including the risk of an overnight gap and the reality that a Friday-close signal doesn't fill until Monday's open. Concrete example: a BUY fires on Monday's close at $100. Same close books the buy at $100; Next open waits for Tuesday's open (say $101.20 after a gap up, or $98.40 after bad overnight news). Rule of thumb: use Next open for anything you might actually trade; use Same close only when you specifically want the backtest to mirror what the on-screen signal card says. A strategy whose edge only shows up under Same close is almost certainly curve-fit to closing prices you couldn't have transacted at — the gap between the two modes is a rough proxy for how vulnerable your strategy is to overnight surprises.",
+    },
+    "zh-CN": {
+      label: "成交时点",
+      what: "回测在信号触发后按哪个价位、哪根 K 线成交——同一根 K 线的收盘价（当日收盘），或下一根 K 线的开盘价（次日开盘）。策略在每根历史 K 线收盘时评估；成交时点决定信号出现后你被建模成以什么价位完成成交。",
+      deeper:
+        "当日收盘假设你能在信号看到的那个收盘价立即成交——无滑点、无隔夜风险、无延迟。可用来核对回测结果与页面当前 K 线上的信号判定完全一致，但过于乐观：真实交易必须等 K 线收出之后才知道信号是否触发，因此不论人工还是自动化，都不可能以同一根收盘价买入——你需要预知未来。次日开盘则等到下一根 K 线开盘时按开盘价成交，这才是活跃交易者的真实体验——包括隔夜跳空的风险，以及周五收盘触发的信号要等周一开盘才能成交等现实。举例说明：BUY 信号在周一收盘 $100 触发。当日收盘按 $100 成交；次日开盘则等周二开盘（可能因跳空高开 $101.20，也可能因隔夜利空低开 $98.40）。经验法则：任何打算实盘执行的策略请一律选择次日开盘；仅在希望回测数字与页面信号卡完全对齐时才选择当日收盘。若某策略的超额收益只在当日收盘模式下出现，基本可判定为对无法真正成交的收盘价过拟合——两种模式之间的差距，可粗略反映策略对隔夜跳空的敏感度。",
+    },
+  },
 
   // -------------- Alert bot / strategies ----------------------------------
   "SMA Crossover": {
@@ -1758,6 +1951,94 @@ const TERM_ALIASES: Readonly<Record<string, string>> = {
   "round trip": "Round Trip",
   "roundtrip": "Round Trip",
   "closed cycle": "Round Trip",
+  // "Fill timing" chip lives on the /backtest config panel and appears
+  // in the results header as "next open" or "same close". Alias every
+  // reasonable spelling of that concept to the composite KeyTerms
+  // entry so beginners land on the same detailed explanation no
+  // matter what they typed / clicked.
+  "fill timing": "Fill Timing",
+  "execution timing": "Fill Timing",
+  "execution": "Fill Timing",
+  "next open": "Fill Timing",
+  "next-open": "Fill Timing",
+  "nextopen": "Fill Timing",
+  "same close": "Fill Timing",
+  "same-close": "Fill Timing",
+  "sameclose": "Fill Timing",
+  "成交时点": "Fill Timing",
+  "次日开盘": "Fill Timing",
+  "当日收盘": "Fill Timing",
+  // Backtest result-panel terms. Anything a beginner might click,
+  // hover, or type after seeing the results should land on the
+  // right glossary entry — including the "how do I read this?"
+  // walkthrough entry aliased under the plainest names.
+  "total return": "Total Return",
+  "strategy return": "Total Return",
+  "return": "Total Return",
+  "总收益": "Total Return",
+  "总收益率": "Total Return",
+  "策略收益": "Total Return",
+  "final equity": "Final Equity",
+  "ending equity": "Final Equity",
+  "end equity": "Final Equity",
+  "final value": "Final Equity",
+  "期末净值": "Final Equity",
+  "期末权益": "Final Equity",
+  exposure: "Exposure",
+  "invested %": "Exposure",
+  "time in market": "Exposure",
+  "% invested": "Exposure",
+  "持仓时间": "Exposure",
+  "持仓时间占比": "Exposure",
+  "trade count": "Trade Count",
+  "trades": "Trade Count",
+  "number of trades": "Trade Count",
+  "交易次数": "Trade Count",
+  "笔数": "Trade Count",
+  "exit mix": "Exit Mix",
+  "exit breakdown": "Exit Mix",
+  "exit reasons": "Exit Mix",
+  "退出方式": "Exit Mix",
+  "退出方式分布": "Exit Mix",
+  "signal exit": "Signal Exit",
+  "signal exits": "Signal Exit",
+  "信号退出": "Signal Exit",
+  "stop-loss exit": "Stop-Loss Exit",
+  "stoploss exit": "Stop-Loss Exit",
+  "stop loss exit": "Stop-Loss Exit",
+  "sl exit": "Stop-Loss Exit",
+  "止损退出": "Stop-Loss Exit",
+  "take-profit exit": "Take-Profit Exit",
+  "takeprofit exit": "Take-Profit Exit",
+  "take profit exit": "Take-Profit Exit",
+  "tp exit": "Take-Profit Exit",
+  "止盈退出": "Take-Profit Exit",
+  "equity curve": "Equity Curve",
+  "equity chart": "Equity Curve",
+  "equity vs buy & hold": "Equity Curve",
+  "equity sparkline": "Equity Curve",
+  "净值曲线": "Equity Curve",
+  "净值走势": "Equity Curve",
+  "warmup": "Warmup Bars",
+  "warm-up": "Warmup Bars",
+  "warmup bars": "Warmup Bars",
+  "warm-up bars": "Warmup Bars",
+  "热身期": "Warmup Bars",
+  "热身 k 线": "Warmup Bars",
+  // The master analysis walk-through. Aliased under lots of
+  // natural-language phrasings so users who type any variation of
+  // "how do I read this?" land on the same 4-step framework.
+  "reading a backtest": "Reading a Backtest",
+  "how to read a backtest": "Reading a Backtest",
+  "how to analyse a backtest": "Reading a Backtest",
+  "how to analyze a backtest": "Reading a Backtest",
+  "backtest analysis": "Reading a Backtest",
+  "backtest workflow": "Reading a Backtest",
+  "interpret backtest": "Reading a Backtest",
+  "如何解读回测": "Reading a Backtest",
+  "如何解读回测结果": "Reading a Backtest",
+  "回测解读": "Reading a Backtest",
+  "回测分析": "Reading a Backtest",
   "sma cross": "SMA Crossover",
   "sma-crossover": "SMA Crossover",
   "macd-cross": "MACD Cross",

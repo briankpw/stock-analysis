@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3, LineChart, Newspaper, Wallet, Bot,
   Home, ChartBar, Menu, X, Users, Briefcase, Gauge, ChevronDown, Settings,
-  Layers, Target, PanelLeftClose, PanelLeftOpen,
+  Layers, Target, PanelLeftClose, PanelLeftOpen, FlaskConical,
 } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
 import { LevelToggle } from "./level-toggle";
@@ -51,6 +51,12 @@ const TICKER_NAV = [
 const PERSONAL_NAV = [
   { href: "/my-portfolio", labelKey: "nav.myPortfolio", icon: Briefcase },
   { href: "/paper",        labelKey: "nav.paper",       icon: Wallet },
+  // Backtest is a "personal" surface because every run is your own
+  // scratchpad — pick a strategy, replay it on any ticker's history,
+  // and either learn from the result or save it as a fresh paper
+  // portfolio. Sits next to Paper Trading on purpose: the two
+  // features are conceptually adjacent (simulate → practice).
+  { href: "/backtest",     labelKey: "nav.backtest",    icon: FlaskConical },
   { href: "/bot",          labelKey: "nav.bot",         icon: Bot },
 ] as const;
 

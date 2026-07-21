@@ -881,15 +881,23 @@ function PositionDrilldown({
                     ev.lotSharesRemaining > 1e-9
                       ? (p.price - ev.lotCostPerShare) * ev.lotSharesRemaining
                       : null;
-                  // Lot-level realized: on Buy rows, sum of FIFO
-                  // attributions from later sells. On Sell rows, keep
-                  // the sell's own realizedPnl (cash-flow truth).
+                  // Lot-level realized: attributed to the BUY row that
+                  // opened each FIFO lot — that's where the entry
+                  // decision actually made (or lost) money. Sell rows
+                  // now render DASH here; the sell's cash-flow truth
+                  // is still available in the "Cash flow" column so
+                  // nothing gets lost.
+                  //
+                  // Historical note: earlier revisions kept the sell's
+                  // own realizedPnl on the Sell row too, which meant
+                  // the same P&L number showed up twice for a
+                  // closed round-trip (once on the Sell, once on the
+                  // Buy it consumed). Users found the double-booking
+                  // confusing — "which one is the real profit?" — so
+                  // we standardised on Buy-side attribution across
+                  // this page and the paper-trading trades table.
                   const lotRealized =
-                    ev.type === "Buy"
-                      ? ev.lotRealizedPnl
-                      : ev.realizedPnl !== 0
-                        ? ev.realizedPnl
-                        : null;
+                    ev.type === "Buy" ? ev.lotRealizedPnl : null;
                   return (
                     <tr
                       key={`${ev.row.id}-${idx}`}
@@ -995,12 +1003,10 @@ function PositionDrilldown({
                 ev.lotSharesRemaining > 1e-9
                   ? (p.price - ev.lotCostPerShare) * ev.lotSharesRemaining
                   : null;
+              // Same Buy-side realized attribution as the desktop
+              // table above — see that block for the rationale.
               const lotRealized =
-                ev.type === "Buy"
-                  ? ev.lotRealizedPnl
-                  : ev.realizedPnl !== 0
-                    ? ev.realizedPnl
-                    : null;
+                ev.type === "Buy" ? ev.lotRealizedPnl : null;
               return (
                 <div
                   key={`${ev.row.id}-${idx}`}

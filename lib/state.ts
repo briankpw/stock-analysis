@@ -35,6 +35,17 @@ interface UiState {
    * Ignored below `lg:` (mobile always uses the drawer + hamburger).
    */
   sidebarDesktopCollapsed: boolean;
+  /**
+   * Currently-selected paper-trading portfolio (v15+ multi-portfolio).
+   * `null` = "no persisted preference — let the API pick the first
+   * active portfolio". The paper page reads the resolved id from the
+   * `/api/paper` response and writes it back here so the picker stays
+   * in sync across tabs and reloads. Nullable because a first-time
+   * visitor genuinely has no preference yet, and a user who deletes
+   * their last-selected portfolio elsewhere should land back on the
+   * server's default without a broken UI state.
+   */
+  activePaperPortfolioId: number | null;
 
   setTicker: (t: string) => void;
   setLevel: (l: ExperienceLevel) => void;
@@ -46,12 +57,17 @@ interface UiState {
   toggleBb: () => void;
   toggleSidebarDesktopCollapsed: () => void;
   setSidebarDesktopCollapsed: (v: boolean) => void;
+  setActivePaperPortfolioId: (id: number | null) => void;
 }
 
 // Persistence schema version. Bump whenever the *default* value of a
 // persisted field changes and existing users should be migrated to the new
 // default. Handled below in `persist({ version, migrate })`.
-const PERSIST_VERSION = 1;
+//
+// v2 introduced `activePaperPortfolioId` — existing users get `null`
+// (server picks default) which is the same behaviour they had before
+// (there was only one portfolio). No migration action beyond default.
+const PERSIST_VERSION = 2;
 
 export const useUi = create<UiState>()(
   persist(
@@ -65,6 +81,7 @@ export const useUi = create<UiState>()(
       showEma: true,
       showBb: false,
       sidebarDesktopCollapsed: false,
+      activePaperPortfolioId: null,
 
       setTicker: (ticker) => set({ ticker: ticker.toUpperCase() }),
       setLevel: (level) => set({ level }),
@@ -77,6 +94,8 @@ export const useUi = create<UiState>()(
       toggleSidebarDesktopCollapsed: () =>
         set((s) => ({ sidebarDesktopCollapsed: !s.sidebarDesktopCollapsed })),
       setSidebarDesktopCollapsed: (v) => set({ sidebarDesktopCollapsed: v }),
+      setActivePaperPortfolioId: (activePaperPortfolioId) =>
+        set({ activePaperPortfolioId }),
     }),
     {
       name: "key-stock-ui",
@@ -86,10 +105,19 @@ export const useUi = create<UiState>()(
       // from a pre-v1 persisted store so they see the new chart out of the
       // box; every other field (ticker, period, level, locale, showBb) is
       // preserved as-is.
+      //
+      // v1 -> v2: `activePaperPortfolioId` added. Legacy users had the
+      // singleton "id=1" portfolio; that row is gone after the v15 DB
+      // migration wipes paper trading, and the server picks the seeded
+      // "Default" for callers passing `null`. Set to `null` explicitly
+      // so the persisted state matches the new default.
       migrate: (persistedState, version) => {
-        const s = (persistedState ?? {}) as Partial<UiState>;
+        let s = (persistedState ?? {}) as Partial<UiState>;
         if (version < 1) {
-          return { ...s, showSma: false, showEma: true } as UiState;
+          s = { ...s, showSma: false, showEma: true };
+        }
+        if (version < 2) {
+          s = { ...s, activePaperPortfolioId: null };
         }
         return s as UiState;
       },

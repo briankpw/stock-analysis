@@ -38,6 +38,7 @@ import { settings } from "@/lib/config";
 import { getState, setState } from "@/lib/bot/store";
 import { withTickLock } from "@/lib/watch/tick-lock";
 import { localWallClock, timeGte } from "@/lib/watch/time";
+import { shouldNotifyOnChange } from "@/lib/alert-frequency";
 import {
   listTechnicalAlerts,
   markChangeFired,
@@ -214,12 +215,24 @@ async function evaluateAlert(
   // the same verdict info so a follow-up "verdict changed" ping would
   // be redundant noise. `markDigestFired` already updated last_verdict
   // to the new value so the next tick won't re-detect the crossing.
+  //
+  // Also honour the per-rule frequency mode ('always' | 'daily' |
+  // 'once'). When the gate returns false we still update the baseline
+  // via seedLastVerdict if applicable, so the throttled tick doesn't
+  // leave a stale verdict comparison for tomorrow.
+  const frequencyAllows = shouldNotifyOnChange(
+    alert.frequency,
+    alert.lastChangeNotifiedAt,
+    now,
+    alert.timezone,
+  );
   if (
     alert.notifyOnChange &&
     !digestFired &&
     alert.lastVerdict !== null &&
     alert.lastVerdict !== signal.verdict &&
-    verdictClearsGate(signal.verdict, alert.minStrength)
+    verdictClearsGate(signal.verdict, alert.minStrength) &&
+    frequencyAllows
   ) {
     const res = await notifyTechnicalChange(alert.ticker, signal, {
       previousVerdict: alert.lastVerdict,

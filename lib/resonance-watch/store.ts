@@ -26,6 +26,10 @@
 
 import { getDb } from "@/lib/db";
 import type { ResonanceVerdict } from "@/lib/resonance";
+import {
+  normalizeFrequency,
+  type NotifyFrequency,
+} from "@/lib/alert-frequency";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,6 +75,11 @@ export interface ResonanceAlert {
   notifyOnChange: boolean;
   /** Filter for on-change firings. */
   minStrength: ResonanceAlertStrength;
+  /**
+   * How often the ON-CHANGE path is allowed to fire per rule. Does
+   * NOT affect the daily-digest. See `lib/alert-frequency.ts`.
+   */
+  frequency: NotifyFrequency;
   /** Last verdict we notified about — used to detect crossings. */
   lastVerdict: ResonanceVerdict | null;
   /** Bullish 0-6 count at last notification (for delta display). */
@@ -81,6 +90,8 @@ export interface ResonanceAlert {
   lastDigestLocalDate: string | null;
   /** ISO timestamp of the most recent notification of any kind. */
   lastNotifiedAt: string | null;
+  /** ISO timestamp of the last on-change fire (feeds frequency gate). */
+  lastChangeNotifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,6 +102,7 @@ export interface UpsertResonanceAlertInput {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: ResonanceAlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,8 +145,9 @@ export function normalizeStrength(raw: unknown): ResonanceAlertStrength {
 
 const SELECT_COLS =
   "ticker, daily_time, timezone, notify_on_change, min_strength, " +
-  "last_verdict, last_aligned_count, last_bearish_count, " +
-  "last_digest_local_date, last_notified_at, created_at, updated_at";
+  "notify_frequency, last_verdict, last_aligned_count, last_bearish_count, " +
+  "last_digest_local_date, last_notified_at, last_change_notified_at, " +
+  "created_at, updated_at";
 
 export function listResonanceAlerts(): ResonanceAlert[] {
   const rows = getDb()
@@ -170,14 +183,18 @@ export function upsertResonanceAlert(
   const notifyOnChange =
     input.notifyOnChange === undefined ? true : Boolean(input.notifyOnChange);
   const minStrength = normalizeStrength(input.minStrength);
+  const frequency = normalizeFrequency(input.frequency);
   const now = new Date().toISOString();
   const existing = findResonanceAlert(ticker);
   if (existing) {
+    const frequencyChanged = existing.frequency !== frequency;
     getDb()
       .prepare(
         "UPDATE resonance_alerts SET " +
           "daily_time = ?, timezone = ?, notify_on_change = ?, " +
-          "min_strength = ?, updated_at = ? " +
+          "min_strength = ?, notify_frequency = ?, " +
+          (frequencyChanged ? "last_change_notified_at = NULL, " : "") +
+          "updated_at = ? " +
           "WHERE ticker = ?",
       )
       .run(
@@ -185,6 +202,7 @@ export function upsertResonanceAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         ticker,
       );
@@ -193,8 +211,8 @@ export function upsertResonanceAlert(
       .prepare(
         "INSERT INTO resonance_alerts " +
           "(ticker, daily_time, timezone, notify_on_change, min_strength, " +
-          " created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          " notify_frequency, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         ticker,
@@ -202,6 +220,7 @@ export function upsertResonanceAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         now,
       );
@@ -212,11 +231,13 @@ export function upsertResonanceAlert(
     timezone,
     notifyOnChange,
     minStrength,
+    frequency,
     lastVerdict: null,
     lastAlignedCount: null,
     lastBearishCount: null,
     lastDigestLocalDate: null,
     lastNotifiedAt: null,
+    lastChangeNotifiedAt: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -271,13 +292,14 @@ export function markResonanceChangeFired(
     .prepare(
       "UPDATE resonance_alerts SET " +
         "last_verdict = ?, last_aligned_count = ?, last_bearish_count = ?, " +
-        "last_notified_at = ?, updated_at = ? " +
+        "last_notified_at = ?, last_change_notified_at = ?, updated_at = ? " +
         "WHERE ticker = ?",
     )
     .run(
       verdict,
       alignedCount,
       bearishCount,
+      now,
       now,
       now,
       ticker.trim().toUpperCase(),
@@ -345,6 +367,7 @@ function rowToAlert(row: Record<string, unknown>): ResonanceAlert {
     timezone: String(row.timezone ?? "UTC"),
     notifyOnChange: Boolean(row.notify_on_change),
     minStrength: coerceStrength(row.min_strength),
+    frequency: normalizeFrequency(row.notify_frequency),
     lastVerdict: coerceVerdict(row.last_verdict),
     lastAlignedCount:
       row.last_aligned_count === null || row.last_aligned_count === undefined
@@ -356,6 +379,8 @@ function rowToAlert(row: Record<string, unknown>): ResonanceAlert {
         : Number(row.last_bearish_count),
     lastDigestLocalDate: (row.last_digest_local_date as string | null) ?? null,
     lastNotifiedAt: (row.last_notified_at as string | null) ?? null,
+    lastChangeNotifiedAt:
+      (row.last_change_notified_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

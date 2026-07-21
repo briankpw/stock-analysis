@@ -58,6 +58,7 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "nav.news":        { en: "News",                  "zh-CN": "新闻" },
   "nav.holders":     { en: "Holders",               "zh-CN": "持有者" },
   "nav.paper":       { en: "Paper Trading",         "zh-CN": "模拟交易" },
+  "nav.backtest":    { en: "Backtest",              "zh-CN": "策略回测" },
   "nav.myPortfolio": { en: "My Portfolio",          "zh-CN": "我的投资组合" },
   "nav.bot":         { en: "Alert Bot",             "zh-CN": "提醒机器人" },
   "nav.raw":         { en: "Raw Data",              "zh-CN": "原始数据" },
@@ -525,8 +526,8 @@ export const DICT: Readonly<Record<string, Entry>> = {
   // paper for the shares from this lot that are still held
   // (Unrealized, marked to the latest close).
   "myPortfolio.drill.col.realizedHint": {
-    en: "On a Buy row: profit later sells extracted from THIS specific buy lot (FIFO matching). On a Sell row: profit this sell booked, computed against the FIFO cost basis of the specific lots it closed — the same view your broker uses.",
-    "zh-CN": "买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。卖出行：该笔卖出所实现的盈亏，按照其平仓的先进先出批次成本计算——与券商账单口径一致。",
+    en: "Buy rows: profit later sells extracted from THIS specific buy lot (FIFO matching). Sell rows show — because the P&L is booked against the Buy that opened those shares, not the Sell that closed them. The sell's cash proceeds are in the Cash flow column.",
+    "zh-CN": "买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。卖出行显示 —，因为盈亏归属于开仓的买入行，而非平仓的卖出行；卖出的现金收入见“现金流”列。",
   },
   "myPortfolio.drill.col.unrealizedHint": {
     en: "On a Buy row: mark-to-market on shares from THIS lot that are still held. Sells (fully closed by definition) show —.",
@@ -1230,6 +1231,32 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "ts.alert.change.strength.all":         { en: "All (incl. Hold)", "zh-CN": "全部（含观望）" },
   "ts.alert.change.strength.buy_sell":    { en: "Buy or Sell",      "zh-CN": "买入或卖出" },
   "ts.alert.change.strength.strong_only": { en: "Strong only",      "zh-CN": "仅强烈信号" },
+
+  // -------- Shared frequency selector (used by every alert popover) --------
+  // Renders as a 3-way toggle inside the "on change" fieldset so users
+  // can cap how often the noisy on-change path is allowed to fire per
+  // rule. The daily-digest path is unaffected — it's already
+  // once-per-day by design. See `lib/alert-frequency.ts` for the gate.
+  "alert.frequency.title":        { en: "How often can I notify you?", "zh-CN": "通知频率上限" },
+  "alert.frequency.always":       { en: "Every time",                  "zh-CN": "每次都通知" },
+  "alert.frequency.daily":        { en: "Once a day",                  "zh-CN": "每天一次" },
+  "alert.frequency.once":         { en: "Only once",                   "zh-CN": "仅一次" },
+  "alert.frequency.always.hint": {
+    en: "Fire on every change. Choose this only if you want the full firehose.",
+    "zh-CN": "每次变化都通知。仅当你希望接收全部提醒时选择此项。",
+  },
+  "alert.frequency.daily.hint": {
+    en: "At most one on-change notification per calendar day (in this alert's timezone). Silences intraday whipsaws.",
+    "zh-CN": "同一日历日内（按本通知的时区）最多推送一次「变化提醒」，可屏蔽日内反复波动的噪音。",
+  },
+  "alert.frequency.once.hint": {
+    en: "Fire the very first eligible change, then stay quiet until you re-arm this alert.",
+    "zh-CN": "首次触发后即静默，直到你再次保存或重置此通知才会恢复。",
+  },
+  "alert.frequency.armedChip": {
+    en: "Fired once — re-save to re-arm.",
+    "zh-CN": "已通知一次，重新保存可再次启用。",
+  },
   "ts.alert.actions.save":       { en: "Save",                     "zh-CN": "保存" },
   "ts.alert.actions.update":     { en: "Update",                   "zh-CN": "更新" },
   "ts.alert.actions.test":       { en: "Test now",                 "zh-CN": "立即测试" },
@@ -1585,6 +1612,351 @@ export const DICT: Readonly<Record<string, Entry>> = {
                                 "zh-CN": "CNN 恐惧与贪婪指数 < 25（极度恐惧）——逆向买入信号。" },
   "ts.def.mood.bearish":     { en: "CNN Fear & Greed Index is above 75 (Extreme Greed) — contrarian sell signal.",
                                 "zh-CN": "CNN 恐惧与贪婪指数 > 75（极度贪婪）——逆向卖出信号。" },
+
+  // -------- Signal backtest (rendered on /backtest page) --------
+  // Every string used by `components/backtest-panels.tsx` and the
+  // `/backtest` page. Naming: `signal.backtest.*` for the panels
+  // themselves; `backtest.*` for page-level chrome (title, history
+  // list, advice). Config strings mirror the exact enum values from
+  // `lib/signal-backtest.ts` so a future strategy / execution /
+  // sizing option just needs a matching dict entry (no other engine
+  // wiring).
+  "signal.backtest.open":         { en: "Backtest signal on {ticker}", "zh-CN": "回测 {ticker} 信号" },
+  "signal.backtest.title":        { en: "Backtest — {ticker}",       "zh-CN": "回测 — {ticker}" },
+  "signal.backtest.subtitle": {
+    en: "Simulate this signal's BUY / SELL calls against historical bars to see how the strategy would have performed.",
+    "zh-CN": "使用历史 K 线模拟本信号发出的买/卖决策，评估该策略在过去的表现。",
+  },
+  "signal.backtest.strategy":     { en: "Strategy",                  "zh-CN": "策略" },
+  "signal.backtest.strategy.technical":  { en: "Technical Signal",   "zh-CN": "技术面信号" },
+  "signal.backtest.strategy.resonance":  { en: "6-Signal Resonance", "zh-CN": "六指标共振" },
+  "signal.backtest.strategy.master":     { en: "Master Verdict",     "zh-CN": "综合结论" },
+  // Single-indicator strategies — each maps to one chart-indicator
+  // rule (Golden Cross, MACD line-vs-signal, etc.). See
+  // `lib/signal-backtest.ts` module header for the exact per-bar rule.
+  // The `{fast}` / `{slow}` / `{oversold}` / `{overbought}` placeholders
+  // are interpolated at call time with the values from
+  // `lib/backtest-strategy-config.ts::BACKTEST_STRATEGY_PARAMS`, which
+  // reads NEXT_PUBLIC_BACKTEST_{SMA,EMA,RSI}_* env vars. Keep the
+  // placeholders — swapping in raw numbers here would break the
+  // env-driven tuning story.
+  "signal.backtest.strategy.sma_cross":        { en: "SMA Cross ({fast}/{slow})",     "zh-CN": "SMA 均线交叉 ({fast}/{slow})" },
+  "signal.backtest.strategy.ema_cross":        { en: "EMA Cross ({fast}/{slow})",      "zh-CN": "EMA 均线交叉 ({fast}/{slow})" },
+  "signal.backtest.strategy.macd_cross":       { en: "MACD Cross",             "zh-CN": "MACD 金叉/死叉" },
+  "signal.backtest.strategy.rsi_reversion":    { en: "RSI Reversion ({oversold}/{overbought})",  "zh-CN": "RSI 均值回归 ({oversold}/{overbought})" },
+  "signal.backtest.strategy.kdj_cross":        { en: "KDJ Cross (K/D)",        "zh-CN": "KDJ 金叉/死叉" },
+  "signal.backtest.strategy.bbands_reversion": { en: "Bollinger Reversion",    "zh-CN": "布林带均值回归" },
+  "signal.backtest.strategy.sr_bounce":        { en: "Support / Resistance",   "zh-CN": "支撑 / 阻力位" },
+
+  // Group headers rendered above each row of strategy pills. Purely
+  // organisational — no functional meaning to the engine.
+  "signal.backtest.group.composite":       { en: "Composite",          "zh-CN": "综合策略" },
+  "signal.backtest.group.composite.hint":  { en: "Multi-indicator scoring",
+                                             "zh-CN": "多指标加权评分" },
+  "signal.backtest.group.trend":           { en: "Trend-following",    "zh-CN": "趋势跟踪" },
+  "signal.backtest.group.trend.hint":      { en: "Ride sustained moves",
+                                             "zh-CN": "顺势而为、跟随趋势" },
+  "signal.backtest.group.meanRev":         { en: "Mean reversion",     "zh-CN": "均值回归" },
+  "signal.backtest.group.meanRev.hint":    { en: "Fade extremes, buy dips",
+                                             "zh-CN": "逢极端反手、逢低吸纳" },
+
+  // One-line explainer shown under the strategy picker so the user
+  // knows what the currently-selected strategy actually DOES before
+  // hitting Run. Keep to one sentence.
+  "signal.backtest.strategyHint.technical":        { en: "Composite score across 9 checks — the app's default \"buy/sell\" verdict.",
+                                                     "zh-CN": "9 项检查的综合评分——即应用默认的「买/卖」判断。" },
+  "signal.backtest.strategyHint.resonance":        { en: "6 fast momentum checks aligned at once (a moomoo-style strategy).",
+                                                     "zh-CN": "6 项快速动量指标同时对齐时触发（moomoo 风格公式）。" },
+  "signal.backtest.strategyHint.master":           { en: "Master verdict — fuses Technical + Resonance (fundamentals/news aren't recorded historically).",
+                                                     "zh-CN": "综合裁决——融合技术信号与共振（历史上无基本面/新闻数据）。" },
+  // Same {fast}/{slow}/{period}/{oversold}/{overbought} placeholders
+  // as the strategy labels above — interpolated from
+  // BACKTEST_STRATEGY_PARAMS so a user who tunes the env sees the
+  // hint match the strategy they're actually running.
+  "signal.backtest.strategyHint.sma_cross":        { en: "Long while SMA {fast} is above SMA {slow} (\"Golden Cross\"). Textbook trend follower.",
+                                                     "zh-CN": "SMA {fast} 位于 SMA {slow} 之上时持仓（「金叉」）。教科书级别的趋势跟踪。" },
+  "signal.backtest.strategyHint.ema_cross":        { en: "Long while EMA {fast} is above EMA {slow} — reacts faster than SMA cross.",
+                                                     "zh-CN": "EMA {fast} 位于 EMA {slow} 之上时持仓——反应比 SMA 交叉更快。" },
+  "signal.backtest.strategyHint.macd_cross":       { en: "Long while the MACD line is above the Signal line.",
+                                                     "zh-CN": "MACD 线位于信号线之上时持仓。" },
+  "signal.backtest.strategyHint.rsi_reversion":    { en: "Buy when RSI({period}) ≤ {oversold} (oversold), sell when RSI({period}) ≥ {overbought} (overbought).",
+                                                     "zh-CN": "RSI({period}) ≤ {oversold}（超卖）买入，RSI({period}) ≥ {overbought}（超买）卖出。" },
+  "signal.backtest.strategyHint.kdj_cross":        { en: "Long while K is above D (KDJ golden/death cross).",
+                                                     "zh-CN": "K 线位于 D 线之上时持仓（KDJ 金叉/死叉）。" },
+  "signal.backtest.strategyHint.bbands_reversion": { en: "Buy at the lower band, sell at the upper band.",
+                                                     "zh-CN": "价格触及下轨买入，触及上轨卖出。" },
+  "signal.backtest.strategyHint.sr_bounce":        { en: "Buy when price bounces off support, sell when rejected at resistance.",
+                                                     "zh-CN": "价格于支撑位反弹买入，于阻力位遇阻卖出。" },
+  "signal.backtest.execution":    { en: "Fill timing",               "zh-CN": "成交时点" },
+  "signal.backtest.execution.nextOpen":  { en: "Next open",          "zh-CN": "次日开盘" },
+  "signal.backtest.execution.sameClose": { en: "Same close",         "zh-CN": "当日收盘" },
+  "signal.backtest.executionHint.nextOpen": {
+    en: "Signal fires on close; order fills the next bar's open (realistic).",
+    "zh-CN": "收盘时触发信号，次根 K 线开盘价成交（更符合实盘）。",
+  },
+  "signal.backtest.executionHint.sameClose": {
+    en: "Signal fires and fills on the same bar's close (matches the on-screen verdict).",
+    "zh-CN": "在同一根 K 线的收盘价触发并成交（与页面显示的结论一致）。",
+  },
+  "signal.backtest.sizing":       { en: "Position size",              "zh-CN": "仓位大小" },
+  "signal.backtest.sizing.all_in":         { en: "All-in",           "zh-CN": "全额" },
+  "signal.backtest.sizing.fixed_shares":   { en: "Fixed shares",     "zh-CN": "固定股数" },
+  "signal.backtest.sizing.percent_equity": { en: "% of equity",       "zh-CN": "净值百分比" },
+  "signal.backtest.field.sharesPerBuy":  { en: "Shares per buy",     "zh-CN": "每次买入股数" },
+  "signal.backtest.field.percentEquity": { en: "Percent of equity (1-100)", "zh-CN": "净值百分比（1-100）" },
+  "signal.backtest.period":       { en: "Period",                     "zh-CN": "回测区间" },
+  "signal.backtest.startingCash": { en: "Starting cash",              "zh-CN": "起始资金" },
+  "signal.backtest.fearGreed":    { en: "Fear & Greed",               "zh-CN": "恐惧贪婪指数" },
+  "signal.backtest.fearGreedToggle": {
+    en: "Include current F&G score (best-effort)",
+    "zh-CN": "包含当前恐惧贪婪指数（尽力而为）",
+  },
+  "signal.backtest.fearGreedHint": {
+    en: "Historical F&G data isn't published — enabling this applies today's score to every past bar, which slightly biases the result.",
+    "zh-CN": "CNN 未公开历史恐惧贪婪值——开启后将把今日数值套用到所有历史 K 线，会给结果带来轻微偏差。",
+  },
+  "signal.backtest.run":          { en: "Run backtest",               "zh-CN": "开始回测" },
+  "signal.backtest.running":      { en: "Running…",                   "zh-CN": "运行中…" },
+  "signal.backtest.err.badCash":  { en: "Starting cash must be a positive number.", "zh-CN": "起始资金必须为正数。" },
+  "signal.backtest.err.badShares":{ en: "Shares per buy must be a positive integer.", "zh-CN": "每次买入股数必须为正整数。" },
+  "signal.backtest.err.badPct":   { en: "Percent of equity must be between 1 and 100.", "zh-CN": "净值百分比必须介于 1 到 100 之间。" },
+
+  // Result panel
+  "signal.backtest.headline.window": {
+    en: "Window: {from} → {to} ({days}d)",
+    "zh-CN": "区间：{from} → {to}（{days} 天）",
+  },
+  "signal.backtest.trades":       { en: "{n} trades",                 "zh-CN": "{n} 笔交易" },
+  "signal.backtest.exposure":     { en: "{pct}% invested",            "zh-CN": "{pct}% 持仓时间" },
+  "signal.backtest.buyHold":      { en: "Buy & hold",                 "zh-CN": "买入并持有" },
+  "signal.backtest.outperformed": { en: "Beat buy & hold",            "zh-CN": "跑赢买入并持有" },
+  "signal.backtest.underperformed":{ en: "Lost to buy & hold",        "zh-CN": "跑输买入并持有" },
+  "signal.backtest.unfilledFinal": {
+    en: "The signal turned bullish on the last bar — under Next-open there's no bar left to fill, so this call is a live cue rather than a simulated trade.",
+    "zh-CN": "最后一根 K 线信号转多，但在“次日开盘”模式下已无下一根 K 线可成交——这更适合作为当前的操作提示，而非回测中的成交。",
+  },
+
+  // Metric tiles
+  "signal.backtest.metric.maxDrawdown":     { en: "Max drawdown",     "zh-CN": "最大回撤" },
+  "signal.backtest.metric.maxDrawdownHint": { en: "Worst peak-to-trough loss the strategy ever showed.", "zh-CN": "策略从阶段高点到低点最深的一次亏损。" },
+  "signal.backtest.metric.cagr":            { en: "Annualised",       "zh-CN": "年化收益" },
+  "signal.backtest.metric.cagrHint":        { en: "(Final / start)^(365/days) − 1. Null when < 30 days.", "zh-CN": "（终值/起始）^(365/天数) − 1；不足 30 天则为空。" },
+  "signal.backtest.metric.winRate":         { en: "Win rate",         "zh-CN": "胜率" },
+  "signal.backtest.metric.winRateHint":     { en: "Fraction of round-trips that closed at a gain.", "zh-CN": "以盈利收官的完整交易占比。" },
+  "signal.backtest.metric.payoff":          { en: "Payoff",           "zh-CN": "盈亏比" },
+  "signal.backtest.metric.payoffHint":      { en: "Avg win ÷ |avg loss|. > 1 means winners bigger than losers.", "zh-CN": "平均盈利 ÷ |平均亏损|。大于 1 表示单笔盈利大于亏损。" },
+
+  // Equity + trade log
+  "signal.backtest.equityCurve":  { en: "Equity vs buy & hold",       "zh-CN": "净值曲线 vs 买入并持有" },
+  "signal.backtest.legend":       { en: "solid = strategy · thin = buy & hold", "zh-CN": "实线：策略·细线：买入并持有" },
+  "signal.backtest.equity.empty": { en: "Not enough post-warm-up bars to draw a curve.", "zh-CN": "热身期后 K 线不足，无法绘制曲线。" },
+  // Equity-curve hover tooltip. Fires on both mouse (desktop) and
+  // touch (mobile long-press / drag) — see EquitySparkline in
+  // `components/backtest-panels.tsx`. Kept short so the tooltip
+  // stays legible on a phone.
+  "signal.backtest.equity.tip.strategy":  { en: "Strategy",        "zh-CN": "策略" },
+  "signal.backtest.equity.tip.buyHold":   { en: "Buy & hold",      "zh-CN": "买入并持有" },
+  "signal.backtest.equity.tip.diff":      { en: "vs. buy & hold",  "zh-CN": "与买入并持有对比" },
+  "signal.backtest.equity.tip.invested":  { en: "Invested · {shares} sh", "zh-CN": "持仓中 · {shares} 股" },
+  "signal.backtest.equity.tip.cash":      { en: "Cash only",       "zh-CN": "空仓（纯现金）" },
+  "signal.backtest.equity.tip.vsStart":   { en: "vs. start",       "zh-CN": "较起点" },
+  "signal.backtest.equity.tip.hint":      { en: "Hover / tap the chart to inspect any bar", "zh-CN": "悬停或点按曲线，查看任意一根 K 线" },
+  "signal.backtest.tradeLog":     { en: "Trade log ({n})",            "zh-CN": "交易记录（{n}）" },
+  "signal.backtest.trades.empty": { en: "The strategy never traded in this window.", "zh-CN": "该区间内策略未产生任何交易。" },
+  "signal.backtest.trades.capped":{ en: "Showing latest 200 · save as portfolio for the full list", "zh-CN": "仅显示最近 200 条·保存为组合可查看全部" },
+  "signal.backtest.trades.col.when":   { en: "When",                  "zh-CN": "时间" },
+  "signal.backtest.trades.col.side":   { en: "Side",                  "zh-CN": "方向" },
+  "signal.backtest.trades.col.shares": { en: "Shares",                "zh-CN": "股数" },
+  "signal.backtest.trades.col.price":  { en: "Price",                 "zh-CN": "价格" },
+  "signal.backtest.trades.col.pnl":    { en: "Realized P&L",          "zh-CN": "已实现盈亏" },
+  // Backtest is all-or-nothing serially (one buy → one sell → repeat),
+  // so a buy's FIFO lot is either fully Open (position still held at
+  // window close) or fully Closed (a later sell consumed the whole
+  // thing). There's no "Partial" state — deliberate, matches the
+  // engine's semantics.
+  "signal.backtest.trades.lotStatus.open":   { en: "Open",   "zh-CN": "未卖出" },
+  "signal.backtest.trades.lotStatus.closed": { en: "Closed", "zh-CN": "已全部卖出" },
+  "signal.backtest.trades.lotStatus.openTooltip": {
+    en: "This buy was never closed inside the backtest window — the position was still held when the sim ended.",
+    "zh-CN": "该笔买入在回测区间结束时仍未平仓——策略尚在持仓。",
+  },
+  "signal.backtest.trades.lotStatus.closedTooltip": {
+    en: "A later sell in the log closed this buy in full. The realized P&L is shown on this Buy row (that's where the entry decision made or lost money).",
+    "zh-CN": "该笔买入已被后续卖出全部平仓，已实现盈亏在此买入行显示（真正决定盈亏的是入场时机）。",
+  },
+  "signal.backtest.trades.col.pnlHint": {
+    en: "Buy rows: profit the matching Sell extracted from this buy — that's where the entry decision made or lost money. Sell rows show — because the P&L is booked against the Buy that opened the position, not the Sell that closed it. Rows for still-open buys show — (no matching sell yet).",
+    "zh-CN": "买入行：对应卖出从该笔买入手中取出的利润，代表入场时机的实际盈亏。卖出行显示 —，因为盈亏归属于开仓的买入而非平仓的卖出。尚未平仓的买入行也显示 —。",
+  },
+  "signal.backtest.trades.pnlFromLot": { en: "from lot", "zh-CN": "自该买入" },
+
+  // Save-as-portfolio
+  "signal.backtest.save.title":       { en: "Save this run as a paper portfolio", "zh-CN": "将本次回测保存为纸上组合" },
+  "signal.backtest.save.hint": {
+    en: "Creates a new portfolio pre-populated with these simulated trades so you can practice going forward from the strategy's current state.",
+    "zh-CN": "将上述模拟交易导入一个新组合，之后即可继续按该策略进行纸上练习。",
+  },
+  "signal.backtest.save.placeholder": { en: "Portfolio name",         "zh-CN": "组合名称" },
+  "signal.backtest.save.button":      { en: "Save",                    "zh-CN": "保存" },
+  "signal.backtest.save.saving":      { en: "Saving…",                 "zh-CN": "保存中…" },
+  "signal.backtest.saved.title":      { en: "Saved as \"{name}\"",     "zh-CN": "已保存为“{name}”" },
+  "signal.backtest.saved.hint":       { en: "The portfolio is ready in Paper Trading — switch to it there to place fresh orders.", "zh-CN": "组合已就绪，前往「纸上交易」选择该组合即可继续操作。" },
+  "signal.backtest.saved.open":       { en: "Open Paper Trading",     "zh-CN": "打开纸上交易" },
+
+  // -------- /backtest page chrome, history list, ticker input --------
+  // The page itself; distinct from `signal.backtest.*` (which are the
+  // presentational strings shared with anywhere else the panels might
+  // be reused). Keeping the two namespaces separate means moving the
+  // page won't churn the shared panel strings.
+  "backtest.pageTitle":         { en: "Backtest signals on any ticker",
+                                  "zh-CN": "任意代码策略回测" },
+  "backtest.pageSubtitle":      { en: "Replay Technical, Resonance, or Master Verdict decisions on historical prices — and see what your paper account would have done.",
+                                  "zh-CN": "在历史价格上重放技术信号、共振或综合裁决的买卖判断——看看你的模拟账户会跑成什么样。" },
+  "backtest.tickerLabel":       { en: "Ticker to backtest",
+                                  "zh-CN": "回测代码" },
+  "backtest.tickerSet":         { en: "Set",
+                                  "zh-CN": "确定" },
+  "backtest.tickerHint":        { en: "Currently backtesting {current}. Change it here without affecting the rest of the app.",
+                                  "zh-CN": "当前正在回测 {current}。在此更改不会影响应用其他页面。" },
+  "backtest.err.badTicker":     { en: "Ticker must contain only letters, digits, `.` or `-`.",
+                                  "zh-CN": "代码只能包含字母、数字、`.` 或 `-`。" },
+  "backtest.running":           { en: "Running backtest — fetching history and replaying signals…",
+                                  "zh-CN": "回测运行中——正在获取历史并重放信号…" },
+  "backtest.loadingHistory":    { en: "Loading saved run…",
+                                  "zh-CN": "正在加载已保存的回测…" },
+  "backtest.emptyState.title":  { en: "Configure and run your first backtest",
+                                  "zh-CN": "配置并运行你的第一次回测" },
+  "backtest.emptyState.hint":   { en: "Pick a strategy above and press Run backtest. Every run is saved so you can compare them side-by-side.",
+                                  "zh-CN": "在上方选择策略后点击「运行回测」。每次运行都会被保存，方便你对比多次结果。" },
+
+  // History panel (right sidebar of the page)
+  "backtest.history.title":     { en: "Run history",              "zh-CN": "运行历史" },
+  "backtest.history.count":     { en: "{n} saved run(s)",         "zh-CN": "已保存 {n} 次" },
+  "backtest.history.empty":     { en: "No saved runs yet.",       "zh-CN": "暂无已保存的回测。" },
+  "backtest.history.emptyHint": { en: "Runs you make show up here so you can revisit or compare them later.",
+                                  "zh-CN": "你运行过的回测会出现在此处，方便日后回顾或对比。" },
+  "backtest.history.vsBuyHold": { en: "vs. B&H {buyHold}",        "zh-CN": "vs. 持有 {buyHold}" },
+  "backtest.history.trades":    { en: "{n} trade(s)",             "zh-CN": "{n} 笔交易" },
+  "backtest.history.beat":      { en: "Beat",                     "zh-CN": "超越" },
+  "backtest.history.miss":      { en: "Missed",                   "zh-CN": "落后" },
+  "backtest.history.clear":     { en: "Clear all history",        "zh-CN": "清空全部历史" },
+  "backtest.history.deleteOne": { en: "Delete this run",          "zh-CN": "删除此次运行" },
+  "backtest.history.deleteConfirm": { en: "Delete this backtest run? This cannot be undone.",
+                                      "zh-CN": "确定要删除本次回测？此操作无法撤销。" },
+  "backtest.history.clearConfirm":  { en: "Delete all saved backtest runs? This cannot be undone.",
+                                      "zh-CN": "确定要清空所有已保存的回测？此操作无法撤销。" },
+
+  // Beginner-mode advice (BacktestAdvice). Copy is deliberately
+  // conservative: we want to teach, not to prescribe. Numbers passed
+  // in via placeholders — never hardcoded — so the copy stays honest
+  // regardless of currency or magnitude.
+  "backtest.advice.title":                          { en: "What this means",
+                                                      "zh-CN": "该如何解读" },
+  "backtest.advice.disclaimer":                     { en: "Past performance never guarantees future results. Backtests can look good by luck.",
+                                                      "zh-CN": "历史表现从来不能保证未来收益。回测可能纯属运气看起来漂亮。" },
+  // Headlines
+  "backtest.advice.headline.outperformed":          { en: "The signal grew ${startingCash} into ${finalCash} ({totalReturn}) — better than buy-and-hold's {buyHoldReturn}.",
+                                                      "zh-CN": "策略把 ${startingCash} 做成了 ${finalCash}（{totalReturn}）——优于长期持有的 {buyHoldReturn}。" },
+  "backtest.advice.headline.underperformed":        { en: "The signal ended at ${finalCash} ({totalReturn}) — worse than just holding {ticker}, which returned {buyHoldReturn}.",
+                                                      "zh-CN": "策略最终为 ${finalCash}（{totalReturn}）——不如单纯持有 {ticker} 的 {buyHoldReturn}。" },
+  "backtest.advice.headline.underperformedButPositive": { en: "The signal made money ({totalReturn}) but buy-and-hold made more ({buyHoldReturn}).",
+                                                          "zh-CN": "策略实现了正收益（{totalReturn}），但长期持有赚得更多（{buyHoldReturn}）。" },
+  "backtest.advice.headline.lostLess":               { en: "The signal lost money ({totalReturn}) — but less than buy-and-hold ({buyHoldReturn}). It played defence.",
+                                                       "zh-CN": "策略亏损（{totalReturn}），但亏得比长期持有少（{buyHoldReturn}）。它扮演了防守角色。" },
+  "backtest.advice.headline.fewTrades":              { en: "Only a handful of trades — too small a sample to trust either way.",
+                                                       "zh-CN": "交易次数很少——样本太小，任何结论都不宜轻信。" },
+  // Bullets
+  "backtest.advice.bullet.drawdown":                 { en: "Deepest paper loss along the way: {drawdown} (about ${loss} on a ${startingCash} account). Buy-and-hold's worst was {buyHoldDrawdown}. Ask yourself if you could hold through that.",
+                                                       "zh-CN": "过程中最深的账面回撤：{drawdown}（约 ${startingCash} 本金亏损 ${loss}）。同期长期持有最坏为 {buyHoldDrawdown}。想想现实中你能否忍受这种回撤。" },
+  "backtest.advice.bullet.noTrades":                 { en: "The signal never triggered a trade over this window — try a longer period or a different strategy.",
+                                                       "zh-CN": "此时间窗内策略未产生任何交易——尝试更长周期或换一种策略。" },
+  "backtest.advice.bullet.fewTrades":                { en: "Only {trades} trade(s) / {roundTrips} round-trip(s). A win-rate on so few trades is basically a coin flip.",
+                                                       "zh-CN": "仅 {trades} 笔交易 / {roundTrips} 次完整回合。样本太小，胜率基本等同于掷硬币。" },
+  "backtest.advice.bullet.tradeCount":               { en: "{trades} trade(s) across {roundTrips} round-trip(s) — a reasonable sample to judge the signal's behaviour.",
+                                                       "zh-CN": "共 {trades} 笔交易 / {roundTrips} 次完整回合——足以判断策略行为的样本。" },
+  "backtest.advice.bullet.winRate.strong":           { en: "Won {winRate} of round-trips with an average winner {payoff}× the size of an average loser — the classic \"edge\" profile.",
+                                                       "zh-CN": "回合胜率 {winRate}，平均盈亏比 {payoff}——典型的「有优势」曲线。" },
+  "backtest.advice.bullet.winRate.lowRateHighPayoff": { en: "Won only {winRate} of round-trips — but each winner was {payoff}× an average loser, so a few big wins carry the strategy. Emotionally hard: expect long dry spells.",
+                                                        "zh-CN": "胜率只有 {winRate}，但平均盈亏比高达 {payoff}——靠少数大赢单撑起全局。心理压力大，需忍受漫长干旱期。" },
+  "backtest.advice.bullet.winRate.highRateLowPayoff": { en: "Won {winRate} of round-trips but losers were bigger than winners (payoff {payoff}). Watch for a few outsized losses erasing many small wins.",
+                                                        "zh-CN": "胜率 {winRate}，但亏单大于赢单（盈亏比 {payoff}）。当心少数大亏抹平大量小赢。" },
+  "backtest.advice.bullet.winRate.weak":              { en: "Won {winRate} of round-trips at payoff {payoff}× — neither the hit rate nor the payoff give the strategy an obvious edge.",
+                                                        "zh-CN": "胜率 {winRate}、盈亏比 {payoff}——无论命中率还是赔率都看不出明显优势。" },
+  "backtest.advice.bullet.exposure.low":              { en: "You were invested only {exposure} of the time. A great return earned from very little exposure can be luck; a long, calm one is more meaningful.",
+                                                        "zh-CN": "仅有 {exposure} 时间处于持仓中。低暴露下的高收益可能只是运气；长期平稳的收益更具意义。" },
+  "backtest.advice.bullet.exposure.high":             { en: "You were invested {exposure} of the time — close to just holding the stock, so the signal has to earn its keep over buy-and-hold.",
+                                                        "zh-CN": "持仓时间达到 {exposure}——已接近长期持有，策略必须真正战胜「买入并持有」才有意义。" },
+  "backtest.advice.bullet.exposure.moderate":         { en: "Invested {exposure} of the time. The rest of the window you sat in cash, which reduces risk but also caps upside.",
+                                                        "zh-CN": "持仓时间约 {exposure}。其余时间处于现金状态，降低了风险，也限制了上行空间。" },
+  "backtest.advice.bullet.sameClose":                 { en: "Fills are set to Same-close — the simulation assumed you traded on the close of the same bar the signal fired. Realistic backtests use Next-open.",
+                                                        "zh-CN": "成交价采用「同日收盘」——即假设信号在当日收盘触发时你也在当日收盘成交。更贴近现实的设置是「次日开盘」。" },
+  "backtest.advice.bullet.unfilledFinal":             { en: "The last bar fired a signal that would fill next open on {ticker} — a live call worth watching in real trading.",
+                                                        "zh-CN": "最后一根 K 线触发的信号在实盘中将于次日开盘成交（代码 {ticker}）——值得实时关注。" },
+
+  // Strategy-specific known-weakness bullets (single-indicator only).
+  // Every one names the specific market regime where the rule
+  // reliably fails, so a beginner reading a good result knows to
+  // sanity-check by picking a period that INCLUDES that regime.
+  "backtest.advice.bullet.weakness.smaCross":         { en: "Watch-out: SMA crosses lag. Signals fire when a trend is already half-spent, and whipsaw in sideways markets.",
+                                                        "zh-CN": "注意：SMA 交叉滞后。信号在趋势走了一半后才出现，且在震荡行情中反复被打断。" },
+  "backtest.advice.bullet.weakness.emaCross":         { en: "Watch-out: faster than SMA cross → more whipsaws in choppy markets. Expect many small losses between the big wins.",
+                                                        "zh-CN": "注意：比 SMA 交叉更快 → 在震荡市中更易被反复止损。大胜之间会有很多小亏。" },
+  "backtest.advice.bullet.weakness.macdCross":        { en: "Watch-out: MACD lags. Great on steady trends, terrible on choppy ones where MACD hooks up and down repeatedly.",
+                                                        "zh-CN": "注意：MACD 具有滞后性。在稳定趋势中表现好，在震荡行情中反复穿越，效果很差。" },
+  "backtest.advice.bullet.weakness.rsiReversion":     { en: "Watch-out: fatal in strong trends — RSI can pin above 70 for weeks in a runaway bull, and this rule sells too early.",
+                                                        "zh-CN": "注意：在强势趋势中致命——牛市中 RSI 可能连续数周高于 70，此规则会过早卖出。" },
+  "backtest.advice.bullet.weakness.kdjCross":         { en: "Watch-out: very whippy. Fires often, many false signals. Best on volatile mean-reverting stocks; poor on trending ones.",
+                                                        "zh-CN": "注意：非常敏感、频繁触发，假信号多。更适合波动大、均值回归的股票，趋势股表现差。" },
+  "backtest.advice.bullet.weakness.bbandsReversion":  { en: "Watch-out: fatal in strong trends — price \"walks the band\" and you'd keep catching falling knives on the way down.",
+                                                        "zh-CN": "注意：强势趋势中致命——价格「贴带下行」，你会不断在下跌中「接飞刀」。" },
+  "backtest.advice.bullet.weakness.srBounce":         { en: "Watch-out: support/resistance levels are noisy — the algorithm picks pivots that may or may not be respected. Use as a filter, not a stand-alone signal.",
+                                                        "zh-CN": "注意：支撑/阻力位本身噪声大——算法挑出的枢轴未必会被市场尊重。宜作为过滤器，不宜单独作为信号。" },
+
+  // ---- Stop-loss / take-profit overlay ----------------------------
+  // Titles + subtitles for the SL/TP picker inside the ConfigPanel.
+  "signal.backtest.targets.title":         { en: "Protective exits (SL / TP)", "zh-CN": "保护性平仓（止损/止盈）" },
+  "signal.backtest.targets.subtitle":      { en: "Optional overlay — off by default",
+                                             "zh-CN": "可选叠加——默认关闭" },
+  "signal.backtest.targets.kind.off":      { en: "Off",             "zh-CN": "关闭"     },
+  "signal.backtest.targets.kind.fixed_pct":{ en: "Fixed %",         "zh-CN": "固定百分比" },
+  "signal.backtest.targets.kind.smart":    { en: "Smart pick",      "zh-CN": "智能推荐" },
+  "signal.backtest.targets.stopLoss":      { en: "Stop-loss",       "zh-CN": "止损"     },
+  "signal.backtest.targets.takeProfit":    { en: "Take-profit",     "zh-CN": "止盈"     },
+  "signal.backtest.targets.pctUnit":       { en: "%",               "zh-CN": "%"        },
+  "signal.backtest.targets.leaveBlank":    { en: "Blank = off",     "zh-CN": "留空即关闭" },
+  "signal.backtest.targets.hint.off":      { en: "The signal alone decides when to exit. This is the raw \"does the signal work?\" read.",
+                                             "zh-CN": "仅由信号决定退出时机。这是「信号本身有效吗？」的最纯粹版本。" },
+  "signal.backtest.targets.hint.fixed_pct":{ en: "Every entry gets the same SL/TP percentage attached. Great for measuring how much the strategy relies on trend-following vs. a mechanical exit rule.",
+                                             "zh-CN": "每次开仓都套用相同的止损/止盈百分比。用来衡量策略成绩到底来自趋势追踪，还是来自这条机械式退出规则。" },
+  "signal.backtest.targets.hint.smart":    { en: "Levels adapt to each entry: ATR(14) for volatility, trend regime, and nearest support/resistance — the same recommender the paper-trading \"Smart pick\" button uses live.",
+                                             "zh-CN": "每次开仓自动依据 ATR(14) 波动、趋势阶段以及最近的支撑/阻力位来自动匹配止损止盈价——与模拟交易「智能推荐」按钮使用的算法一致。" },
+  "signal.backtest.err.badTargetPct":      { en: "{field} must be a positive number between 0 and 100.",
+                                             "zh-CN": "「{field}」必须是 0 到 100 之间的正数。" },
+
+  // Exit-mix widget in the ResultsPanel.
+  "signal.backtest.exitMix.title":         { en: "Exit reasons",    "zh-CN": "退出原因分布" },
+  "signal.backtest.exitMix.overlay":       { en: "Overlay: {kind}", "zh-CN": "叠加模式：{kind}" },
+  "signal.backtest.exitMix.signal":        { en: "Signal flip",     "zh-CN": "信号翻转" },
+  "signal.backtest.exitMix.stopLoss":      { en: "Stop-loss",       "zh-CN": "止损"     },
+  "signal.backtest.exitMix.takeProfit":    { en: "Take-profit",     "zh-CN": "止盈"     },
+  "signal.backtest.exitMix.hint":          { en: "How many exits each rule triggered. Lots of stops means the SL saved you from bigger losses; lots of TPs means you locked in gains before the signal itself flipped.",
+                                             "zh-CN": "各类退出规则触发的次数。止损占多 → 保护你免于更大亏损；止盈占多 → 在信号翻转之前就锁定了收益。" },
+
+  // Trade-log chip (Sell row) — full labels for hover / a11y.
+  "signal.backtest.trades.exitReason.stop_loss":   { en: "Exited by stop-loss (protective)",
+                                                     "zh-CN": "止损触发退出（保护性）" },
+  "signal.backtest.trades.exitReason.take_profit": { en: "Exited by take-profit (target hit)",
+                                                     "zh-CN": "止盈触发退出（达到目标）" },
+
+  // Beginner-advice bullets that mention SL/TP behaviour.
+  "backtest.advice.bullet.targets.quiet":     { en: "Your SL/TP levels never actually triggered in this window — the signal always exited first. If that keeps happening, either loosen the targets or accept that the exits are signal-driven.",
+                                                "zh-CN": "本次回测期间没有一次真正触发止损或止盈——每次都是信号先平仓。若一直如此，可考虑放宽止损止盈，或接受由信号本身负责退出。" },
+  "backtest.advice.bullet.targets.stopHeavy": { en: "Stops fired {stops} of {totalExits} exits — the SL was doing most of the risk work. Your headline return above already reflects those cut losses.",
+                                                "zh-CN": "共 {totalExits} 次退出中有 {stops} 次因止损触发——止损承担了主要的风控责任。上方的总收益已经反映了这些「被截断的损失」。" },
+  "backtest.advice.bullet.targets.tpHeavy":   { en: "Take-profit fired {tps} of {totalExits} exits — you were locking in gains before the signal itself flipped bearish. Check whether that helped or hurt vs. running the signal alone.",
+                                                "zh-CN": "共 {totalExits} 次退出中有 {tps} 次因止盈触发——你在信号真正翻空之前就锁定了收益。对比一下仅靠信号本身的结果，看看这样做究竟是加分还是扣分。" },
+  "backtest.advice.bullet.targets.balanced":  { en: "The bracket did what it says on the tin — {stops} stops and {tps} take-profits. A clean 50/50 split usually means the SL/TP percentages are well-matched to this stock's volatility.",
+                                                "zh-CN": "括号单如宣传所述——{stops} 次止损、{tps} 次止盈。接近对半分意味着当前设定的止损止盈百分比与该股票的波动性契合得不错。" },
 
   // -------- 6-Signal Resonance strategy card --------
   "resonance.title":            { en: "6-Signal Resonance",                   "zh-CN": "六指标共振" },
@@ -2043,6 +2415,37 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "paper.bracket.invalid":  { en: "Stop-loss and take-profit must be positive numbers.", "zh-CN": "止损与止盈必须为正数。" },
   "paper.bracket.needPrice":{ en: "Enter a price before choosing a preset.", "zh-CN": "选择预设前请先填写价格。" },
 
+  // -------- Multi-portfolio picker (paper trading) --------
+  // Every string used by `components/paper-portfolio-picker.tsx`. The
+  // dialog handles the full CRUD cycle (create / rename / delete) so
+  // the string count is higher than most other UI blocks.
+  "paper.portfolios.label":        { en: "Portfolio",          "zh-CN": "组合" },
+  "paper.portfolios.empty":        { en: "(none)",             "zh-CN": "（无）" },
+  "paper.portfolios.manage":       { en: "Manage portfolios",  "zh-CN": "管理投资组合" },
+  "paper.portfolios.manageTitle":  { en: "Portfolios",         "zh-CN": "投资组合" },
+  "paper.portfolios.manageHint": {
+    en: "Create a new portfolio for each strategy so trades stay separated. Rename or delete from here — the currently-open one is highlighted.",
+    "zh-CN": "为每种策略新建独立组合，交易数据互不干扰。可在此重命名或删除，当前使用的组合会高亮显示。",
+  },
+  "paper.portfolios.createTitle":  { en: "Create a portfolio",  "zh-CN": "新建投资组合" },
+  "paper.portfolios.create":       { en: "Create",              "zh-CN": "创建" },
+  "paper.portfolios.field.name":   { en: "Name",                "zh-CN": "名称" },
+  "paper.portfolios.field.cash":   { en: "Starting cash",       "zh-CN": "起始资金" },
+  "paper.portfolios.placeholder.name": { en: "e.g. Growth picks", "zh-CN": "例如：成长股" },
+  "paper.portfolios.placeholder.cash": { en: "Use default",     "zh-CN": "使用默认" },
+  "paper.portfolios.newDots":      { en: "New portfolio…",      "zh-CN": "新建投资组合…" },
+  "paper.portfolios.existing":     { en: "Existing ({n})",      "zh-CN": "现有（{n}）" },
+  "paper.portfolios.activeChip":   { en: "Active",              "zh-CN": "当前" },
+  "paper.portfolios.rowStats":     { en: "Cash {cash} · started with {starting}", "zh-CN": "现金 {cash}·起始资金 {starting}" },
+  "paper.portfolios.rename":       { en: "Rename {name}",       "zh-CN": "重命名 {name}" },
+  "paper.portfolios.deleteBtn":    { en: "Delete {name}",       "zh-CN": "删除 {name}" },
+  "paper.portfolios.deleteBlocked":{ en: "Cannot delete the last portfolio", "zh-CN": "至少保留一个投资组合" },
+  "paper.portfolios.deleteConfirm":{
+    en: "Delete \"{name}\"? All positions and trades in this portfolio will be permanently removed.",
+    "zh-CN": "确定要删除“{name}”吗？该组合的所有持仓与交易记录将永久删除。",
+  },
+  "paper.portfolios.err.badCash":  { en: "Starting cash must be a positive number.", "zh-CN": "起始资金必须为正数。" },
+
   // -------- Portfolio-wide analytics --------
   "paper.card.analytics":       { en: "Trading analytics",       "zh-CN": "交易分析" },
   "paper.card.perSymbol":       { en: "Earnings per stock",       "zh-CN": "每只股票盈亏" },
@@ -2083,8 +2486,8 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "paper.trades.col.unrealized":  { en: "Unrealized P&L", "zh-CN": "未实现盈亏" },
   "paper.trades.col.note":        { en: "Note",           "zh-CN": "备注" },
   "paper.trades.col.pnlHint": {
-    en: "Sell rows: this sell's own realized P&L. Buy rows: profit later sells extracted from THIS specific buy lot (FIFO matching).",
-    "zh-CN": "卖出行：该笔卖出的已实现盈亏。买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。",
+    en: "Buy rows: profit later sells extracted from THIS specific buy lot (FIFO matching). Sell rows show — because the P&L is booked against the Buy that opened those shares, not the Sell that closed them.",
+    "zh-CN": "买入行：后续卖出从该笔买入手中取出的利润（先进先出配对）。卖出行显示 —，因为盈亏归属于开仓的买入行，而非平仓的卖出行。",
   },
   "paper.trades.col.unrealizedHint": {
     en: "Buy rows: mark-to-market on shares from THIS lot that are still held. Sells (fully closed by definition) show —.",
@@ -2099,9 +2502,29 @@ export const DICT: Readonly<Record<string, Entry>> = {
     "zh-CN": "该笔买入尚有 {shares} 股未卖出，成本 {cost}。",
   },
   "paper.trades.pnlFromLot": { en: "from lot", "zh-CN": "自该买入" },
+  // Lot-status chip on Buy rows in the trades table. Mirrors the
+  // My-Portfolio drilldown's status pill (open / partial / closed)
+  // so the user sees at a glance which buys are still open vs.
+  // fully consumed by later sells. Sell rows never get one — by
+  // definition a sell doesn't open a lot.
+  "paper.trades.lotStatus.open":    { en: "Open",    "zh-CN": "未卖出" },
+  "paper.trades.lotStatus.partial": { en: "Partial", "zh-CN": "部分卖出" },
+  "paper.trades.lotStatus.closed":  { en: "Closed",  "zh-CN": "已全部卖出" },
+  "paper.trades.lotStatus.openTooltip": {
+    en: "No shares from this buy have been sold yet.",
+    "zh-CN": "该笔买入尚未有股份被卖出。",
+  },
+  "paper.trades.lotStatus.partialTooltip": {
+    en: "Some shares from this buy have been sold, some are still held.",
+    "zh-CN": "该笔买入的部分股份已被卖出，其余仍持有。",
+  },
+  "paper.trades.lotStatus.closedTooltip": {
+    en: "Every share from this buy has been sold in later trades.",
+    "zh-CN": "该笔买入的所有股份都已在后续交易中被卖出。",
+  },
   "paper.trades.lotFootnote": {
-    en: "Realized P&L on Buy rows uses FIFO lot matching (i.e. which buy funded which sell), so you can tell which entries actually made money.",
-    "zh-CN": "买入行的“已实现盈亏”采用先进先出（FIFO）配对——追溯每笔卖出实际消化了哪笔买入的股份，让你一眼看出哪笔入场真的赚了钱。",
+    en: "Realized P&L is attributed to the Buy row that opened each FIFO lot — that's where the money was actually made. Sell rows show the cash proceeds only. The lot-status chip on each Buy tells you whether it's still open, partially consumed, or fully closed.",
+    "zh-CN": "已实现盈亏归属到开仓的买入行（真正赚钱或亏钱的位置），卖出行仅展示成交金额；采用先进先出（FIFO）配对。买入行旁的状态标签显示该笔买入尚未卖出、已部分卖出或已全部卖出。",
   },
   "paper.trades.filter.symbol":     { en: "Filter by symbol",   "zh-CN": "按代码筛选" },
   "paper.trades.filter.side":       { en: "Filter by side",     "zh-CN": "按方向筛选" },
@@ -2120,6 +2543,28 @@ export const DICT: Readonly<Record<string, Entry>> = {
   "paper.trades.expanded.flatTitle":{ en: "You no longer hold {symbol}", "zh-CN": "已无 {symbol} 持仓" },
   "paper.trades.expanded.flatHint": { en: "Stop-loss and take-profit only apply to open positions. Buy again to re-open a position you can protect.", "zh-CN": "止损 / 止盈仅作用于在持仓位。请重新买入以建立可保护的仓位。" },
   "paper.trades.expanded.tradeAgain":{ en: "Trade {symbol} again", "zh-CN": "再次交易 {symbol}" },
+  // "This trade is closed" panel — rendered instead of the SL/TP
+  // editor when the specific row the user expanded has nothing left
+  // to protect. That happens for every Sell (they close lots, not
+  // open them) and every Buy whose FIFO lot has been fully consumed
+  // by later sells. Previously the editor rendered on these rows
+  // whenever the SYMBOL still had open shares from OTHER buys — a
+  // confusing "click the closed trade, get an editor that isn't
+  // about this trade" UX. The hint below now points the user at
+  // the Buy row that still has open shares if they want to adjust
+  // SL/TP.
+  "paper.trades.expanded.sellClosedTitle": {
+    en: "This sell is complete",
+    "zh-CN": "该卖出已完成",
+  },
+  "paper.trades.expanded.buyClosedTitle": {
+    en: "This buy's lot is closed",
+    "zh-CN": "该买入的批次已全部卖出",
+  },
+  "paper.trades.expanded.closedHintOpen": {
+    en: "There's nothing to protect on this row. You still hold shares of {symbol} from other buys — expand an Open or Partial Buy row for this symbol above to adjust stop-loss / take-profit.",
+    "zh-CN": "此行已无仓位可保护。你仍通过其他买入持有 {symbol} 的股份——请在上方展开一个“未卖出”或“部分卖出”的买入行来调整止损 / 止盈。",
+  },
 
   // Reason bullets emitted by the recommender. Values (in braces) match
   // the `Reason.values` keys in lib/target-recommender.ts.

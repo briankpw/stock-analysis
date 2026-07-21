@@ -48,6 +48,10 @@ const resetIds = () => {
 function trade(partial: Partial<Trade> & Pick<Trade, "symbol" | "side" | "shares" | "price">): Trade {
   return {
     id: partial.id ?? nextId++,
+    // Analytics is portfolio-agnostic — every test uses the same
+    // arbitrary portfolio id so the field is required (post-v15
+    // schema) without contaminating any of the analytics math.
+    portfolioId: partial.portfolioId ?? 1,
     symbol: partial.symbol,
     side: partial.side,
     shares: partial.shares,

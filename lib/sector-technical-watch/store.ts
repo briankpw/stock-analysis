@@ -20,6 +20,10 @@
 import { getDb } from "@/lib/db";
 import type { Verdict } from "@/lib/technical-signal";
 import { findSegment } from "@/lib/segments";
+import {
+  normalizeFrequency,
+  type NotifyFrequency,
+} from "@/lib/alert-frequency";
 
 // Segment IDs are stable URL slugs from `SEGMENTS[]`. The source of
 // truth is `lib/segments.ts`, so the character set is a–z, 0–9 plus
@@ -62,6 +66,11 @@ export interface SectorTechnicalAlert {
   notifyOnChange: boolean;
   /** Filter for on-change firings. */
   minStrength: SectorTechnicalAlertStrength;
+  /**
+   * How often the ON-CHANGE path is allowed to fire. Does NOT affect
+   * the daily-digest. See `lib/alert-frequency.ts`.
+   */
+  frequency: NotifyFrequency;
   /** Last verdict we notified about — used to detect band crossings. */
   lastVerdict: Verdict | null;
   /** Score at last notification (for the "was +42, now -18" delta). */
@@ -70,6 +79,8 @@ export interface SectorTechnicalAlert {
   lastDigestLocalDate: string | null;
   /** ISO timestamp of the most recent notification of any kind. */
   lastNotifiedAt: string | null;
+  /** ISO timestamp of the last on-change fire (feeds frequency gate). */
+  lastChangeNotifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +91,7 @@ export interface UpsertSectorTechnicalAlertInput {
   timezone?: string;
   notifyOnChange?: boolean;
   minStrength?: SectorTechnicalAlertStrength;
+  frequency?: NotifyFrequency;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +151,8 @@ export function normalizeStrength(
 
 const SELECT_COLS =
   "segment_id, daily_time, timezone, notify_on_change, min_strength, " +
-  "last_verdict, last_score, last_digest_local_date, last_notified_at, " +
-  "created_at, updated_at";
+  "notify_frequency, last_verdict, last_score, last_digest_local_date, " +
+  "last_notified_at, last_change_notified_at, created_at, updated_at";
 
 export function listSectorTechnicalAlerts(): SectorTechnicalAlert[] {
   const rows = getDb()
@@ -180,14 +192,18 @@ export function upsertSectorTechnicalAlert(
   const notifyOnChange =
     input.notifyOnChange === undefined ? true : Boolean(input.notifyOnChange);
   const minStrength = normalizeStrength(input.minStrength);
+  const frequency = normalizeFrequency(input.frequency);
   const now = new Date().toISOString();
   const existing = findSectorTechnicalAlert(segmentId);
   if (existing) {
+    const frequencyChanged = existing.frequency !== frequency;
     getDb()
       .prepare(
         "UPDATE sector_technical_alerts SET " +
           "daily_time = ?, timezone = ?, notify_on_change = ?, " +
-          "min_strength = ?, updated_at = ? " +
+          "min_strength = ?, notify_frequency = ?, " +
+          (frequencyChanged ? "last_change_notified_at = NULL, " : "") +
+          "updated_at = ? " +
           "WHERE segment_id = ?",
       )
       .run(
@@ -195,6 +211,7 @@ export function upsertSectorTechnicalAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         segmentId,
       );
@@ -203,8 +220,8 @@ export function upsertSectorTechnicalAlert(
       .prepare(
         "INSERT INTO sector_technical_alerts " +
           "(segment_id, daily_time, timezone, notify_on_change, min_strength, " +
-          " created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          " notify_frequency, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         segmentId,
@@ -212,6 +229,7 @@ export function upsertSectorTechnicalAlert(
         timezone,
         notifyOnChange ? 1 : 0,
         minStrength,
+        frequency,
         now,
         now,
       );
@@ -222,10 +240,12 @@ export function upsertSectorTechnicalAlert(
     timezone,
     notifyOnChange,
     minStrength,
+    frequency,
     lastVerdict: null,
     lastScore: null,
     lastDigestLocalDate: null,
     lastNotifiedAt: null,
+    lastChangeNotifiedAt: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -276,12 +296,14 @@ export function markSectorTechnicalChangeFired(
   getDb()
     .prepare(
       "UPDATE sector_technical_alerts SET " +
-        "last_verdict = ?, last_score = ?, last_notified_at = ?, updated_at = ? " +
+        "last_verdict = ?, last_score = ?, last_notified_at = ?, " +
+        "last_change_notified_at = ?, updated_at = ? " +
         "WHERE segment_id = ?",
     )
     .run(
       verdict,
       score,
+      now,
       now,
       now,
       String(segmentId).trim().toLowerCase(),
@@ -345,6 +367,7 @@ function rowToAlert(row: Record<string, unknown>): SectorTechnicalAlert {
     timezone: String(row.timezone ?? "UTC"),
     notifyOnChange: Boolean(row.notify_on_change),
     minStrength: coerceStrength(row.min_strength),
+    frequency: normalizeFrequency(row.notify_frequency),
     lastVerdict: coerceVerdict(row.last_verdict),
     lastScore:
       row.last_score === null || row.last_score === undefined
@@ -352,6 +375,8 @@ function rowToAlert(row: Record<string, unknown>): SectorTechnicalAlert {
         : Number(row.last_score),
     lastDigestLocalDate: (row.last_digest_local_date as string | null) ?? null,
     lastNotifiedAt: (row.last_notified_at as string | null) ?? null,
+    lastChangeNotifiedAt:
+      (row.last_change_notified_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
